@@ -3949,6 +3949,40 @@ test("confirmed idle cleanup is count-only, plan-bound, and records shutdown fai
   }, (error) => error.payload?.reasonCode === "idle-plan-stale" && error.exitCode === 5);
 });
 
+test("idle cleanup audit append failures do not mark shut down aliases for repair", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const fixture = readJson(paths.simctl.statePath);
+  for (const device of fixture.devices) {
+    device.state = "Booted";
+  }
+  writeJson(paths.simctl.statePath, fixture);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  const preview = cleanupIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  fs.rmSync(resolvedPaths.eventsPath, { force: true });
+  fs.mkdirSync(resolvedPaths.eventsPath);
+
+  const result = cleanupIdleBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    apply: true,
+    confirmPlanId: preview.planId,
+    processExists: () => true,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(result.eligibleCount, 3);
+  assert.equal(result.shutdownCount, 3);
+  assert.equal(result.failureCount, 0);
+  assert.equal(result.status, "success");
+  const registry = readJson(resolvedPaths.registryPath);
+  assert.equal(registry.aliases["ui-1"].powerState, "shutdown");
+  assert.notEqual(registry.aliases["ui-1"].driftReason, "idle-shutdown-failed");
+});
+
 test("idle cleanup preview does not reclaim stale containment-aware leases", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);

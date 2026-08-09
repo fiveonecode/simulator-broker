@@ -792,7 +792,10 @@ test("idle mutations surface final snapshot refresh failures", () => {
     });
   }, (error) =>
     error.payload?.reasonCode === "snapshot-refresh-failed"
-    && error.payload?.error === "Failed to refresh the app snapshot after the idle command committed.");
+    && error.payload?.error === "Failed to refresh the app snapshot after the idle command committed."
+    && error.cause?.message.includes(snapshotDirectory)
+    && error.payload?.cause === undefined
+    && !JSON.stringify(error.payload).includes(snapshotDirectory));
   assert.equal(readJson(paths.idlePolicyPath).graceSeconds, 60);
 });
 

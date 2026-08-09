@@ -1093,10 +1093,15 @@ export function executeBrokerCommand(paths, request) {
         if (contractError) {
           throw contractError;
         }
-        throw new BrokerError("Failed to refresh the app snapshot after the idle command committed.", {
-          cause: error?.message ?? String(error),
+        const snapshotError = new BrokerError("Failed to refresh the app snapshot after the idle command committed.", {
           reasonCode: "snapshot-refresh-failed",
         });
+        Object.defineProperty(snapshotError, "cause", {
+          configurable: true,
+          value: error,
+          writable: true,
+        });
+        throw snapshotError;
       }
       const contractError = contractSnapshotRefreshError(error);
       if (contractError) {

@@ -44,7 +44,6 @@ function defaultCandidateFiles(root) {
     "ls-files",
     "-z",
     "--cached",
-    "--others",
     "--exclude-standard",
   ], {
     cwd: root,

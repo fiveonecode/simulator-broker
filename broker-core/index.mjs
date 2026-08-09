@@ -4001,19 +4001,6 @@ function performIdleShutdowns(paths, state, candidates, options, timestamp, { co
         state,
         timestamp,
       });
-      registryEntry.powerState = "shutdown";
-      registryEntry.lastShutdownAt = timestamp;
-      registryEntry.updatedAt = timestamp;
-      shutdownCount += 1;
-      appendEventRecord(paths, "idle.simulator.shutdown", {
-        alias: hostAlias.alias,
-        actorType: options.actorType ?? "system",
-        jobId: null,
-        leaseId: null,
-        payload: { reasonCode: "idle-grace-expired", source },
-        projectId: null,
-        purposeId: null,
-      }, timestamp);
     } catch {
       registryEntry.health = "repair-needed";
       registryEntry.driftReason = "idle-shutdown-failed";
@@ -4030,7 +4017,21 @@ function performIdleShutdowns(paths, state, candidates, options, timestamp, { co
         projectId: null,
         purposeId: null,
       }, timestamp);
+      continue;
     }
+    registryEntry.powerState = "shutdown";
+    registryEntry.lastShutdownAt = timestamp;
+    registryEntry.updatedAt = timestamp;
+    shutdownCount += 1;
+    appendEventRecord(paths, "idle.simulator.shutdown", {
+      alias: hostAlias.alias,
+      actorType: options.actorType ?? "system",
+      jobId: null,
+      leaseId: null,
+      payload: { reasonCode: "idle-grace-expired", source },
+      projectId: null,
+      purposeId: null,
+    }, timestamp);
   }
 
   const lastCleanupResult = {
