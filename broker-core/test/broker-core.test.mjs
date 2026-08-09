@@ -1299,6 +1299,26 @@ test("system simctl boot propagates nonzero command results", () => {
   }, (error) => error.exitCode === 60 && error.stderr === "Unable to boot device");
 });
 
+test("system simctl boot waits for boot status before returning", () => {
+  const calls = [];
+  const adapter = createSystemSimctlAdapter({
+    commandRunner(args, options) {
+      calls.push({ args, options });
+      return "";
+    },
+  });
+
+  adapter.bootDevice("SIM-BOOT");
+
+  assert.deepEqual(calls.map((call) => call.args), [
+    ["boot", "SIM-BOOT"],
+    ["bootstatus", "SIM-BOOT", "-b"],
+  ]);
+  assert.equal(calls[0].options.allowFailure, true);
+  assert.equal(calls[0].options.timeoutMs, SIMCTL_COMMAND_TIMEOUT_MS);
+  assert.equal(calls[1].options.timeoutMs, SIMCTL_COMMAND_TIMEOUT_MS);
+});
+
 test("system simctl inventory commands use an expanded output buffer", () => {
   const calls = [];
   const adapter = createSystemSimctlAdapter({
@@ -3741,6 +3761,28 @@ test("idle policy is absent by default, strictly bounded, and stored outside pro
   assert.equal(fs.existsSync(resolvedPaths.idlePolicyPath), false);
 });
 
+test("malformed idle policy JSON maps to public-safe invalid config", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  fs.writeFileSync(resolvedPaths.idlePolicyPath, "{not-json\n");
+
+  for (const operation of [
+    () => idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+    () => reconcileIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+  ]) {
+    assert.throws(operation, (error) => {
+      const serialized = JSON.stringify(error.payload);
+      return error.payload?.reasonCode === "invalid-config"
+        && error.exitCode === 2
+        && serialized.includes(paths.root) === false
+        && "stack" in error.payload === false;
+    });
+  }
+});
+
 test("stale lease recovery starts a fresh idle grace period", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
@@ -3800,6 +3842,32 @@ test("idle reconciliation waits for the broker mutation lock", () => {
   assert.throws(() => {
     reconcileIdleBroker(resolvedPaths, {
       leaseLockTimeoutMilliseconds: 1,
+      processExists: (pid) => pid === process.pid,
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => error.payload?.reasonCode === "alias-busy");
+});
+
+test("idle reconciliation supports nonblocking lease mutation lock attempts", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  fs.mkdirSync(resolvedPaths.leaseLockDir, { recursive: true });
+  writeJson(resolvedPaths.leaseLockOwnerPath, {
+    pid: process.pid,
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  assert.throws(() => {
+    reconcileIdleBroker(resolvedPaths, {
+      leaseMutationLockWait: false,
       processExists: (pid) => pid === process.pid,
       simctlAdapter: paths.simctl.adapter,
     });

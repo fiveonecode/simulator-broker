@@ -14,10 +14,27 @@ const PROHIBITED_TRACKED_BASENAMES = new Set([
   "app-snapshot.json",
   "brokerd.json",
   "brokerd.log",
+  "events.ndjson",
   "host-config.json",
   "idle-policy.json",
+  "known-projects.json",
   "registry.json",
 ]);
+
+const PROHIBITED_TRACKED_STATE_DIRS = new Set([
+  "capacity-transactions",
+  "evidence",
+  "leases",
+  "pins",
+]);
+
+function isProhibitedTrackedArtifact(relativeFile) {
+  if (PROHIBITED_TRACKED_BASENAMES.has(path.posix.basename(relativeFile))) {
+    return true;
+  }
+  const segments = relativeFile.split("/");
+  return segments.some((segment) => PROHIBITED_TRACKED_STATE_DIRS.has(segment));
+}
 
 function lineNumberForOffset(text, offset) {
   let line = 1;
@@ -81,7 +98,7 @@ export function scanPublicSurface({
 
   for (const relativeFile of candidateFiles) {
     const normalizedRelativeFile = relativeFile.split(path.sep).join("/");
-    if (PROHIBITED_TRACKED_BASENAMES.has(path.posix.basename(normalizedRelativeFile))) {
+    if (isProhibitedTrackedArtifact(normalizedRelativeFile)) {
       issues.push({
         line: 1,
         path: normalizedRelativeFile,

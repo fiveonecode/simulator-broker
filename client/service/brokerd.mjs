@@ -26,6 +26,7 @@ const SERVICE_REQUEST_BODY_TIMEOUT_MS = 30_000;
 const SERVICE_COMMAND_BODY_MAX_BYTES = 64 * 1024;
 const SERVICE_LOCK_OWNER_PID_IDENTITY_TOLERANCE_MS = 15_000;
 const IDLE_RECONCILE_INTERVAL_MS = 30_000;
+const LEASE_MUTATION_LOCK_BUSY_REASON_CODE = "alias-busy";
 
 function writeJsonAtomic(filePath, payload) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
@@ -771,13 +772,18 @@ export async function startBrokerService(paths, options = {}) {
 
   const writeSnapshot = options.writeAppSnapshotArtifact ?? writeAppSnapshotArtifactUnderMutationLock;
   const reconcileIdle = options.reconcileIdleBroker ?? reconcileIdleBroker;
-  const runIdleReconciliation = (source) => {
+  const runIdleReconciliation = (source, { waitForLeaseMutationLock = true } = {}) => {
+    const lockOptions = waitForLeaseMutationLock ? {} : { leaseMutationLockWait: false };
     const result = reconcileIdle(paths, {
       ...(options.idleReconcileOptions ?? {}),
+      ...lockOptions,
       persistNoChanges: false,
       source,
     });
-    writeSnapshot(paths, options.idleSnapshotOptions ?? {});
+    writeSnapshot(paths, {
+      ...(options.idleSnapshotOptions ?? {}),
+      ...lockOptions,
+    });
     return result;
   };
 
@@ -1096,8 +1102,11 @@ export async function startBrokerService(paths, options = {}) {
         }
         idleReconcileRunning = true;
         try {
-          runIdleReconciliation("service-timer");
+          runIdleReconciliation("service-timer", { waitForLeaseMutationLock: false });
         } catch (error) {
+          if (error instanceof BrokerError && error.payload?.reasonCode === LEASE_MUTATION_LOCK_BUSY_REASON_CODE) {
+            return;
+          }
           (options.onIdleReconcileError ?? console.error)(error);
         } finally {
           idleReconcileRunning = false;

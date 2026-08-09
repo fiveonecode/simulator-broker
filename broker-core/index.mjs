@@ -1456,7 +1456,17 @@ function validateIdlePolicy(rawPolicy) {
 }
 
 function readIdlePolicy(paths) {
-  const rawPolicy = readJsonIfExists(paths.idlePolicyPath);
+  let rawPolicy;
+  try {
+    rawPolicy = readJsonIfExists(paths.idlePolicyPath);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new BrokerError("Idle policy contains invalid JSON.", {
+        reasonCode: "invalid-config",
+      });
+    }
+    throw error;
+  }
   return rawPolicy === null ? null : validateIdlePolicy(rawPolicy);
 }
 
@@ -2593,6 +2603,7 @@ function withLeaseMutationLock(paths, work, {
   processSampler = processExists === defaultProcessExists ? defaultProcessSampler : null,
   pollMs = DEFAULT_LOCK_POLL_MS,
   timeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
+  wait = true,
 } = {}) {
   ensureStatePaths(paths);
   const startedAt = Date.now();
@@ -2609,6 +2620,12 @@ function withLeaseMutationLock(paths, work, {
     } catch (error) {
       if (error?.code !== "EEXIST") {
         throw error;
+      }
+
+      if (!wait) {
+        throw new BrokerError("The broker lease mutation lock is already held.", {
+          reasonCode: "alias-busy",
+        });
       }
 
       const lockSnapshot = readLockSnapshot(paths.leaseLockDir, paths.leaseLockOwnerPath, {
@@ -3873,6 +3890,7 @@ export function writeAppSnapshotArtifactUnderMutationLock(paths, options = {}) {
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+    wait: options.leaseMutationLockWait !== false,
   });
 }
 
@@ -4106,6 +4124,7 @@ export function reconcileIdleBroker(paths, options = {}) {
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+    wait: options.leaseMutationLockWait !== false,
   });
 }
 

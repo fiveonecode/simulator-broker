@@ -52,21 +52,72 @@ test("public surface scan applies an ignored operator denylist without echoing i
 test("public surface scan rejects tracked broker state artifacts and ignores binary content", () => {
   const root = makeTempDir();
   fs.mkdirSync(path.join(root, "fixtures"));
+  fs.mkdirSync(path.join(root, "state", "capacity-transactions"), { recursive: true });
+  fs.mkdirSync(path.join(root, "state", "evidence", "lease-1"), { recursive: true });
+  fs.mkdirSync(path.join(root, "state", "leases"), { recursive: true });
+  fs.mkdirSync(path.join(root, "state", "pins"), { recursive: true });
   fs.writeFileSync(path.join(root, "fixtures", "idle-policy.json"), "{}\n");
+  fs.writeFileSync(path.join(root, "state", "capacity-transactions", "txn.json"), "{}\n");
+  fs.writeFileSync(path.join(root, "state", "events.ndjson"), "{}\n");
+  fs.writeFileSync(path.join(root, "state", "evidence", "lease-1", "broker-status-after.json"), "{}\n");
+  fs.writeFileSync(path.join(root, "state", "known-projects.json"), "{}\n");
+  fs.writeFileSync(path.join(root, "state", "leases", "lease-1.json"), "{}\n");
+  fs.writeFileSync(path.join(root, "state", "pins", "pin-1.json"), "{}\n");
   fs.writeFileSync(path.join(root, "image.bin"), Buffer.from([0, 1, 2, 3]));
 
   const report = scanPublicSurface({
-    files: ["fixtures/idle-policy.json", "image.bin"],
+    files: [
+      "fixtures/idle-policy.json",
+      "state/capacity-transactions/txn.json",
+      "state/events.ndjson",
+      "state/evidence/lease-1/broker-status-after.json",
+      "state/known-projects.json",
+      "state/leases/lease-1.json",
+      "state/pins/pin-1.json",
+      "image.bin",
+    ],
     homePath: "",
     root,
   });
 
   assert.equal(report.ok, false);
-  assert.deepEqual(report.issues, [{
-    line: 1,
-    path: "fixtures/idle-policy.json",
-    rule: "prohibited-local-artifact",
-  }]);
+  assert.deepEqual(report.issues, [
+    {
+      line: 1,
+      path: "fixtures/idle-policy.json",
+      rule: "prohibited-local-artifact",
+    },
+    {
+      line: 1,
+      path: "state/capacity-transactions/txn.json",
+      rule: "prohibited-local-artifact",
+    },
+    {
+      line: 1,
+      path: "state/events.ndjson",
+      rule: "prohibited-local-artifact",
+    },
+    {
+      line: 1,
+      path: "state/evidence/lease-1/broker-status-after.json",
+      rule: "prohibited-local-artifact",
+    },
+    {
+      line: 1,
+      path: "state/known-projects.json",
+      rule: "prohibited-local-artifact",
+    },
+    {
+      line: 1,
+      path: "state/leases/lease-1.json",
+      rule: "prohibited-local-artifact",
+    },
+    {
+      line: 1,
+      path: "state/pins/pin-1.json",
+      rule: "prohibited-local-artifact",
+    },
+  ]);
 });
 
 test("default public surface candidates ignore untracked scratch files", () => {

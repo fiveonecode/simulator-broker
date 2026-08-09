@@ -232,6 +232,52 @@ function runCliAsync(fixture, envOverrides, ...args) {
   });
 }
 
+function runCliAsyncWithTimeout(fixture, envOverrides, timeoutMs, ...args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [
+      CLI_PATH,
+      "--host-config", fixture.hostConfigPath,
+      "--state-root", fixture.stateRoot,
+      ...args,
+    ], {
+      env: {
+        ...process.env,
+        ...fixture.simctl?.env,
+        ...envOverrides,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, timeoutMs);
+    timeout.unref?.();
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (status, signal) => {
+      clearTimeout(timeout);
+      resolve({
+        json: stdout ? JSON.parse(stdout) : null,
+        signal,
+        status,
+        stderr,
+        stdout,
+        timedOut,
+      });
+    });
+  });
+}
+
 function listen(server, socketPath) {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -729,6 +775,33 @@ test("capacity apply contains snapshot refresh failures after finalization", () 
   const transactions = fs.readdirSync(paths.capacityTransactionsDir)
     .map((entry) => readJson(path.join(paths.capacityTransactionsDir, entry)));
   assert.equal(transactions.some((transaction) => transaction.status === "finalized"), true);
+});
+
+test("idle cleanup preview skips final app snapshot refresh", () => {
+  const fixture = makeFixture();
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  const snapshotDirectory = path.join(fixture.root, "snapshot-directory");
+  fs.mkdirSync(snapshotDirectory);
+  const paths = {
+    ...resolveBrokerPaths({
+      hostConfigPath: fixture.hostConfigPath,
+      projectFilePath: fixture.projectFilePath,
+      stateRoot: fixture.stateRoot,
+    }),
+    appSnapshotPath: snapshotDirectory,
+  };
+
+  const preview = executeBrokerCommand(paths, {
+    command: "cleanup",
+    group: "idle",
+    options: {
+      processExists: () => true,
+      simctlAdapter: fixture.simctl.adapter,
+    },
+  });
+
+  assert.equal(preview.mode, "preview");
+  assert.equal(preview.status, "no_changes");
 });
 
 test("lease acquire preserves the committed lease when snapshot refresh fails", () => {
@@ -1271,7 +1344,7 @@ test("service lease acquire timeout includes reset and boot-on-acquire budgets",
     command: "acquire",
     group: "lease",
     options: {},
-  }), 1_305_250);
+  }), 1_425_250);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "acquire",
     group: "lease",
@@ -1280,7 +1353,7 @@ test("service lease acquire timeout includes reset and boot-on-acquire budgets",
       resetLockTimeoutMilliseconds: 120_000,
       resetSettleMilliseconds: 500,
     },
-  }), 1_425_500);
+  }), 1_545_500);
 });
 
 test("service idle timeouts cover serialized state, snapshots, and bounded shutdown work", () => {
@@ -1380,6 +1453,11 @@ test("service mutation timeouts cover broker lock waits", () => {
     group: "pin",
     options: {},
   }), 885_000);
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "boot",
+    group: "simulators",
+    options: {},
+  }), 1_125_000);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "shutdown",
     group: "simulators",
@@ -1494,6 +1572,18 @@ test("service startup timeout budgets stale containment from lease files", () =>
       + staleContainmentBudgetMs
       + 5_000,
   );
+});
+
+test("service start stops waiting when the spawned brokerd exits before readiness", async () => {
+  const fixture = makeFixture();
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  fs.writeFileSync(path.join(fixture.stateRoot, "idle-policy.json"), "{not-json\n");
+
+  const result = await runCliAsyncWithTimeout(fixture, {}, 3000, "service", "start");
+
+  assert.equal(result.timedOut, false, result.stderr);
+  assert.equal(result.status, 3);
+  assert.equal(result.json.reasonCode, "service-unavailable");
 });
 
 test("service probe treats request timeout as unavailable instead of missing", async (t) => {

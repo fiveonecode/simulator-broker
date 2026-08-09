@@ -166,6 +166,7 @@ export function createSystemSimctlAdapter({ commandRunner = defaultCommandRunner
       if (typeof result === "object" && result !== null && result.exitCode !== 0) {
         throwSimctlResult(args, result);
       }
+      runCommand(["bootstatus", simulatorId, "-b"]);
     },
     createDevice(name, deviceTypeId, runtimeId) {
       return String(runCommand(["create", name, deviceTypeId, runtimeId])).trim();

@@ -1084,7 +1084,8 @@ export function executeBrokerCommand(paths, request) {
     snapshotOptions.skipLeaseIds = [snapshotLeaseId];
   }
   const isReadOnlyCapacityCommand = request.group === "capacity" && options.apply !== true;
-  if (!isReadOnlyCapacityCommand) {
+  const isIdleCleanupPreview = request.group === "idle" && request.command === "cleanup" && options.apply !== true;
+  if (!isReadOnlyCapacityCommand && !isIdleCleanupPreview) {
     try {
       writeAppSnapshotArtifactUnderMutationLock(paths, snapshotOptions);
     } catch (error) {

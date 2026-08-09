@@ -185,16 +185,68 @@ async function serviceStatus(paths) {
   };
 }
 
-async function waitForService(paths, { timeoutMs = 5000 } = {}) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    const probe = await probeService(paths, { timeoutMs: 250 });
-    if (probe) {
-      return probe;
+function observeChildExit(child) {
+  return new Promise((resolve, reject) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve({ code: child.exitCode, signal: child.signalCode });
+      return;
     }
-    await sleep(100);
+    child.once("exit", (code, signal) => {
+      resolve({ code, signal });
+    });
+    child.once("error", reject);
+  });
+}
+
+async function waitForSpawnedService(paths, child, { timeoutMs = 5000 } = {}) {
+  const startedAt = Date.now();
+  const childExit = observeChildExit(child);
+  while (Date.now() - startedAt < timeoutMs) {
+    const outcome = await Promise.race([
+      probeService(paths, { timeoutMs: 250 }).then((probe) => ({ probe })),
+      childExit.then((exit) => ({ exit })),
+    ]);
+    if (outcome.exit) {
+      const probe = await probeService(paths, { timeoutMs: 250 });
+      if (probe) {
+        return {
+          childExit: null,
+          probe,
+        };
+      }
+      return {
+        childExit: outcome.exit,
+        probe: null,
+      };
+    }
+    if (outcome.probe) {
+      return {
+        childExit: null,
+        probe: outcome.probe,
+      };
+    }
+    const delay = await Promise.race([
+      sleep(100).then(() => null),
+      childExit.then((exit) => exit),
+    ]);
+    if (delay) {
+      const probe = await probeService(paths, { timeoutMs: 250 });
+      if (probe) {
+        return {
+          childExit: null,
+          probe,
+        };
+      }
+      return {
+        childExit: delay,
+        probe: null,
+      };
+    }
   }
-  return null;
+  return {
+    childExit: null,
+    probe: null,
+  };
 }
 
 async function waitForServiceToStop(paths, { timeoutMs = 5000 } = {}) {
@@ -254,7 +306,17 @@ async function startService(paths) {
   child.unref();
   fs.closeSync(logFd);
 
-  const probe = await waitForService(paths, { timeoutMs: serviceStartupTimeoutMs({ paths }) });
+  const { childExit, probe } = await waitForSpawnedService(paths, child, { timeoutMs: serviceStartupTimeoutMs({ paths }) });
+  if (childExit) {
+    throw new BrokerError("Broker service exited before it became available.", {
+      exitStatus: childExit.code,
+      logPath: paths.serviceLogPath,
+      reasonCode: "service-unavailable",
+      serviceMetadataPath: paths.serviceMetadataPath,
+      serviceSocketPath: paths.serviceSocketPath,
+      signal: childExit.signal,
+    });
+  }
   if (!probe) {
     terminateSpawnedService(child);
     throw new BrokerError("Broker service failed to start.", {

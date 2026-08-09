@@ -925,6 +925,8 @@ test("brokerd reconciles immediately, every thirty seconds, refreshes snapshots,
     stateRoot: fixture.stateRoot,
   });
   const sources = [];
+  const reconcileLockWaits = [];
+  const snapshotLockWaits = [];
   let snapshotCount = 0;
   let intervalMilliseconds = null;
   let timerCallback = null;
@@ -937,6 +939,7 @@ test("brokerd reconciles immediately, every thirty seconds, refreshes snapshots,
     },
     reconcileIdleBroker(_servicePaths, options) {
       sources.push(options.source);
+      reconcileLockWaits.push(options.leaseMutationLockWait);
       return { ok: true };
     },
     setIntervalFn(callback, milliseconds) {
@@ -944,16 +947,21 @@ test("brokerd reconciles immediately, every thirty seconds, refreshes snapshots,
       intervalMilliseconds = milliseconds;
       return timer;
     },
-    writeAppSnapshotArtifact() {
+    writeAppSnapshotArtifact(_servicePaths, options) {
+      snapshotLockWaits.push(options.leaseMutationLockWait);
       snapshotCount += 1;
     },
   });
 
   assert.deepEqual(sources, ["service-startup"]);
+  assert.deepEqual(reconcileLockWaits, [undefined]);
+  assert.deepEqual(snapshotLockWaits, [undefined]);
   assert.equal(snapshotCount, 1);
   assert.equal(intervalMilliseconds, 30_000);
   timerCallback();
   assert.deepEqual(sources, ["service-startup", "service-timer"]);
+  assert.deepEqual(reconcileLockWaits, [undefined, false]);
+  assert.deepEqual(snapshotLockWaits, [undefined, false]);
   assert.equal(snapshotCount, 2);
 
   await service.shutdown({ exitProcess: false });
