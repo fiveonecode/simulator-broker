@@ -110,7 +110,7 @@ struct BrokerCommandRequest: Sendable {
   private static let hostBootstrapReplacementStateLoads = 1
   private static let hostBootstrapRetirementStateLoads = 1
   private static let hostBootstrapSimctlCommandsPerAlias = 5
-  private static let leaseAcquireResetSimctlCommands = 2
+  private static let leaseAcquireSimctlCommands = 3
   private static let processSamplerInvocationsPerStateLoad = 1
   private static let processSamplerTimeoutSeconds = 10
   private static let simctlInventoryCommandsPerStateLoad = 3
@@ -200,6 +200,13 @@ struct BrokerCommandRequest: Sendable {
         + snapshotLockBudget
         + stateLoadBudget
         + simulatorLifecycleSimctlBudgetSeconds(paths: paths)
+    }
+    if group == "idle" {
+      return Self.defaultCommandTimeoutSeconds
+        + leaseLockTimeoutSeconds
+        + snapshotLockBudget
+        + stateLoadBudget
+        + idleShutdownSimctlBudgetSeconds(paths: paths)
     }
     if usesLeaseMutationLock {
       return Self.defaultCommandTimeoutSeconds
@@ -412,7 +419,7 @@ struct BrokerCommandRequest: Sendable {
 
   private var leaseAcquireResetSimctlBudgetSeconds: Int {
     group == "lease" && command == "acquire"
-      ? Self.leaseAcquireResetSimctlCommands * Self.simctlCommandTimeoutSeconds
+      ? Self.leaseAcquireSimctlCommands * Self.simctlCommandTimeoutSeconds
       : 0
   }
 
@@ -433,6 +440,9 @@ struct BrokerCommandRequest: Sendable {
     }
     if group == "simulators" {
       return ["boot", "erase", "repair", "shutdown"].contains(command)
+    }
+    if group == "idle" {
+      return true
     }
     return false
   }
@@ -490,6 +500,21 @@ struct BrokerCommandRequest: Sendable {
     return commandCount * Self.simctlCommandTimeoutSeconds
   }
 
+  private func idleShutdownSimctlBudgetSeconds(paths: BrokerRuntimePaths?) -> Int {
+    guard group == "idle",
+          command == "reconcile" || (command == "cleanup" && options["apply"]?.boolValue == true)
+    else {
+      return 0
+    }
+    guard let paths,
+          let data = try? Data(contentsOf: paths.hostConfigURL),
+          let hostConfig = try? JSONDecoder().decode(BrokerHostConfigTimeoutSummary.self, from: data)
+    else {
+      return Self.hostBootstrapAliasCount * Self.simctlCommandTimeoutSeconds
+    }
+    return (hostConfig.aliases?.count ?? 0) * Self.simctlCommandTimeoutSeconds
+  }
+
   private func timeoutSeconds(option: String, fallbackMilliseconds: Int = 0) -> Int {
     let milliseconds = timeoutMilliseconds(option: option, fallbackMilliseconds: fallbackMilliseconds)
     guard milliseconds > 0 else {
@@ -537,12 +562,45 @@ private struct BrokerHostConfigTimeoutSummary: Decodable {
 
 struct BrokerCommandEnvelope: Decodable, Sendable {
   let currentHolder: BrokerLeaseSummary?
+  let eligibleCount: Int?
   let error: String?
   let exitCode: Int?
+  let failureCount: Int?
   let ok: Bool?
+  let planId: String?
   let reasonCode: String?
   let requiredConfirmationFields: [String]?
+  let shutdownCount: Int?
+  let status: String?
   let unchanged: Bool?
+
+  init(
+    currentHolder: BrokerLeaseSummary?,
+    eligibleCount: Int? = nil,
+    error: String?,
+    exitCode: Int?,
+    failureCount: Int? = nil,
+    ok: Bool?,
+    planId: String? = nil,
+    reasonCode: String?,
+    requiredConfirmationFields: [String]?,
+    shutdownCount: Int? = nil,
+    status: String? = nil,
+    unchanged: Bool?
+  ) {
+    self.currentHolder = currentHolder
+    self.eligibleCount = eligibleCount
+    self.error = error
+    self.exitCode = exitCode
+    self.failureCount = failureCount
+    self.ok = ok
+    self.planId = planId
+    self.reasonCode = reasonCode
+    self.requiredConfirmationFields = requiredConfirmationFields
+    self.shutdownCount = shutdownCount
+    self.status = status
+    self.unchanged = unchanged
+  }
 }
 
 struct BrokerLifecycleOverrideRequest: Identifiable, Sendable {

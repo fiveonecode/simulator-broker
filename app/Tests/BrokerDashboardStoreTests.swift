@@ -3,6 +3,99 @@ import XCTest
 
 @MainActor
 final class BrokerDashboardStoreTests: XCTestCase {
+  func testIdlePolicyCommandsUseHumanActorAndRefreshSnapshot() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let commandClient = RecordingCommandClient()
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: commandClient,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+
+    try await store.applyIdlePolicy(graceSeconds: 120)
+    try await store.disableIdlePolicy()
+
+    let requests = await commandClient.requests()
+    XCTAssertEqual(requests.count, 2)
+    XCTAssertEqual(requests[0].group, "idle")
+    XCTAssertEqual(requests[0].command, "enable")
+    XCTAssertEqual(requests[0].options["graceSeconds"]?.intValue, 120)
+    XCTAssertEqual(requests[0].options["actorType"]?.stringValue, "human")
+    XCTAssertEqual(requests[0].options["actorId"]?.stringValue, "simulator-broker-app")
+    XCTAssertEqual(requests[1].group, "idle")
+    XCTAssertEqual(requests[1].command, "disable")
+    XCTAssertEqual(requests[1].options["actorType"]?.stringValue, "human")
+    XCTAssertEqual(requests[1].options["actorId"]?.stringValue, "simulator-broker-app")
+  }
+
+  func testIdlePolicyRejectsInvalidDurationBeforeSending() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let commandClient = RecordingCommandClient()
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: commandClient,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+
+    do {
+      try await store.applyIdlePolicy(graceSeconds: 59)
+      XCTFail("Expected invalid duration")
+    } catch {
+      XCTAssertEqual(error.localizedDescription, "Enter a whole number of seconds from 60 through 86400.")
+    }
+    let requests = await commandClient.requests()
+    XCTAssertTrue(requests.isEmpty)
+  }
+
+  func testIdleCleanupStagesCountOnlyPreviewThenSendsConfirmedPlan() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let commandClient = RecordingCommandClient()
+    await commandClient.enqueueResponse(
+      BrokerCommandEnvelope(
+        currentHolder: nil,
+        eligibleCount: 2,
+        error: nil,
+        exitCode: nil,
+        ok: true,
+        planId: "cleanup-plan",
+        reasonCode: nil,
+        requiredConfirmationFields: nil,
+        status: "changes_required",
+        unchanged: nil
+      )
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: commandClient,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+
+    store.requestIdleCleanup()
+    try await waitUntil { store.pendingIdleCleanupRequest != nil }
+    XCTAssertEqual(store.pendingIdleCleanupRequest?.eligibleCount, 2)
+    XCTAssertEqual(store.pendingIdleCleanupRequest?.planId, "cleanup-plan")
+
+    store.confirmIdleCleanup()
+    try await waitUntil { await commandClient.requests().count == 2 }
+    let requests = await commandClient.requests()
+    XCTAssertEqual(requests[0].group, "idle")
+    XCTAssertEqual(requests[0].command, "cleanup")
+    XCTAssertTrue(requests[0].options.isEmpty)
+    XCTAssertEqual(requests[1].group, "idle")
+    XCTAssertEqual(requests[1].command, "cleanup")
+    XCTAssertEqual(requests[1].options["apply"]?.boolValue, true)
+    XCTAssertEqual(requests[1].options["confirmPlanId"]?.stringValue, "cleanup-plan")
+    XCTAssertEqual(requests[1].options["actorType"]?.stringValue, "human")
+    XCTAssertEqual(requests[1].options["actorId"]?.stringValue, "simulator-broker-app")
+    XCTAssertNil(store.pendingIdleCleanupRequest)
+  }
+
   func testCreatePinSendsProjectFilePathPurposeAndNote() async throws {
     let snapshot = try loadFixture(named: "busy-snapshot")
     let loadedState = makeLoadedState(snapshot: snapshot)
@@ -1011,11 +1104,15 @@ final class BrokerDashboardStoreTests: XCTestCase {
 private actor RecordingCommandClient: BrokerCommandSending {
   private var recordedRequests: [BrokerCommandRequest] = []
   private var stubbedError: Error?
+  private var stubbedResponses: [BrokerCommandEnvelope] = []
 
   func send(_ request: BrokerCommandRequest) async throws -> BrokerCommandEnvelope {
     recordedRequests.append(request)
     if let stubbedError {
       throw stubbedError
+    }
+    if stubbedResponses.isEmpty == false {
+      return stubbedResponses.removeFirst()
     }
     return BrokerCommandEnvelope(
       currentHolder: nil,
@@ -1034,6 +1131,10 @@ private actor RecordingCommandClient: BrokerCommandSending {
 
   func setError(_ error: Error?) {
     stubbedError = error
+  }
+
+  func enqueueResponse(_ response: BrokerCommandEnvelope) {
+    stubbedResponses.append(response)
   }
 }
 

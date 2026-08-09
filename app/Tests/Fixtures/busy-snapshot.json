@@ -3,6 +3,13 @@
   "generatedAt": "2026-04-09T10:15:00Z",
   "hostConfigPath": "/tmp/simbroker-fixture/host-config.json",
   "hostId": "fixture-host",
+  "idle": {
+    "configured": false,
+    "eligibleCount": 0,
+    "graceSeconds": null,
+    "lastCleanupResult": null,
+    "nextScheduledCleanupAt": null
+  },
   "stateRoot": "/tmp/simbroker-fixture/state",
   "overview": {
     "leaseSaturation": 0.67,

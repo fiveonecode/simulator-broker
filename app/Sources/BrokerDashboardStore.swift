@@ -78,11 +78,15 @@ final class BrokerDashboardStore {
   var loadedState: BrokerLoadedState?
   var pendingClearPinRequest: BrokerPendingClearPinRequest?
   var pendingCreatePinRequest: BrokerPendingCreatePinRequest?
+  var pendingIdleCleanupRequest: BrokerPendingIdleCleanupRequest?
   var pendingLifecycleRequest: BrokerPendingLifecycleRequest?
   var pendingOverrideRequest: BrokerLifecycleOverrideRequest?
   var pendingReleaseLeaseRequest: BrokerPendingLeaseReleaseRequest?
   var selectedPane: BrokerNavigationPane = .overview {
     didSet {
+      if selectedPane != .overview {
+        pendingIdleCleanupRequest = nil
+      }
       guard selectedPane != .simulators else {
         return
       }
@@ -594,6 +598,110 @@ final class BrokerDashboardStore {
         )
       }
       return response.unchanged == true ? "brokerd is already running." : "brokerd started."
+    }
+  }
+
+  func applyIdlePolicy(graceSeconds: Int) async throws {
+    guard (60 ... 86_400).contains(graceSeconds) else {
+      throw BrokerServiceCommandClientError.transportFailure("Enter a whole number of seconds from 60 through 86400.")
+    }
+    let request = BrokerCommandRequest(
+      command: "enable",
+      group: "idle",
+      options: [
+        "actorId": .string(Self.appHumanActorId),
+        "actorType": .string("human"),
+        "graceSeconds": .int(graceSeconds),
+      ]
+    )
+    try await executeMutation(
+      actionName: "idle-enable",
+      successMessage: "Automatic shutdown updated."
+    ) { [self, request] in
+      _ = try await self.commandClient.send(request)
+    }
+  }
+
+  func disableIdlePolicy() async throws {
+    let request = BrokerCommandRequest(
+      command: "disable",
+      group: "idle",
+      options: [
+        "actorId": .string(Self.appHumanActorId),
+        "actorType": .string("human"),
+      ]
+    )
+    try await executeMutation(
+      actionName: "idle-disable",
+      successMessage: "Automatic shutdown disabled."
+    ) { [self, request] in
+      _ = try await self.commandClient.send(request)
+    }
+  }
+
+  func requestIdleCleanup() {
+    guard canSendCommands, isApplyingAction == false else {
+      return
+    }
+    Task {
+      isApplyingAction = true
+      defer { isApplyingAction = false }
+      do {
+        let response = try await commandClient.send(
+          BrokerCommandRequest(command: "cleanup", group: "idle", options: [:])
+        )
+        guard let eligibleCount = response.eligibleCount,
+              let planId = response.planId,
+              planId.isEmpty == false
+        else {
+          throw BrokerServiceCommandClientError.invalidJSONResponse
+        }
+        pendingIdleCleanupRequest = BrokerPendingIdleCleanupRequest(
+          eligibleCount: eligibleCount,
+          planId: planId
+        )
+        lastErrorMessage = nil
+      } catch {
+        lastErrorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  func confirmIdleCleanup() {
+    guard let pendingIdleCleanupRequest else {
+      return
+    }
+    self.pendingIdleCleanupRequest = nil
+    Task {
+      do {
+        try await applyConfirmedIdleCleanup(pendingIdleCleanupRequest)
+      } catch {
+        lastErrorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  private func applyConfirmedIdleCleanup(_ cleanup: BrokerPendingIdleCleanupRequest) async throws {
+    let request = BrokerCommandRequest(
+      command: "cleanup",
+      group: "idle",
+      options: [
+        "actorId": .string(Self.appHumanActorId),
+        "actorType": .string("human"),
+        "apply": .bool(true),
+        "confirmPlanId": .string(cleanup.planId),
+      ]
+    )
+    do {
+      try await executeMutation(
+        actionName: "idle-cleanup",
+        successMessage: "Idle cleanup completed. Review the last result below."
+      ) { [self, request] in
+        _ = try await self.commandClient.send(request)
+      }
+    } catch {
+      _ = await refresh(silent: true)
+      throw error
     }
   }
 

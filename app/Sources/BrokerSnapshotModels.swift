@@ -5,6 +5,7 @@ struct BrokerAppSnapshot: Decodable, Sendable {
   let generatedAt: String
   let hostConfigPath: String?
   let hostId: String
+  let idle: BrokerIdleSummary
   let ok: Bool
   let overview: BrokerOverview
   let pins: [BrokerPin]
@@ -12,6 +13,23 @@ struct BrokerAppSnapshot: Decodable, Sendable {
   let recentEvents: [BrokerEvent]
   let simulators: [BrokerSimulator]
   let stateRoot: String
+}
+
+struct BrokerIdleSummary: Decodable, Sendable {
+  let configured: Bool
+  let eligibleCount: Int
+  let graceSeconds: Int?
+  let lastCleanupResult: BrokerIdleCleanupResult?
+  let nextScheduledCleanupAt: String?
+}
+
+struct BrokerIdleCleanupResult: Decodable, Sendable {
+  let completedAt: String
+  let eligibleCount: Int
+  let failureCount: Int
+  let shutdownCount: Int
+  let source: String
+  let status: String
 }
 
 struct BrokerOverview: Decodable, Sendable {

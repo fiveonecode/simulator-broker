@@ -44,6 +44,8 @@ struct OverviewScreen: View {
             )
           }
 
+          AutomaticShutdownSection(store: store, idle: snapshot.idle)
+
           GroupBox("Broker source") {
             LazyVGrid(
               columns: [

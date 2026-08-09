@@ -99,7 +99,7 @@ final class BrokerServiceClientTests: XCTestCase {
       ).executionTimeoutSeconds,
       7100
     )
-    XCTAssertEqual(BrokerCommandRequest(command: "acquire", group: "lease", options: [:]).executionTimeoutSeconds, 1191)
+    XCTAssertEqual(BrokerCommandRequest(command: "acquire", group: "lease", options: [:]).executionTimeoutSeconds, 1311)
     XCTAssertEqual(BrokerCommandRequest(command: "release", group: "lease", options: [:]).executionTimeoutSeconds, 890)
     XCTAssertEqual(BrokerCommandRequest(command: "release", group: "lease", options: [:]).transferTimeoutSeconds, 950)
     XCTAssertEqual(BrokerCommandRequest(command: "create", group: "pin", options: [:]).executionTimeoutSeconds, 890)
@@ -107,6 +107,11 @@ final class BrokerServiceClientTests: XCTestCase {
     XCTAssertEqual(BrokerCommandRequest(command: "status", group: "host", options: [:]).executionTimeoutSeconds, 890)
     XCTAssertEqual(BrokerCommandRequest(command: "status", group: "doctor", options: [:]).executionTimeoutSeconds, 890)
     XCTAssertEqual(BrokerCommandRequest(command: "explain", group: "lease", options: [:]).executionTimeoutSeconds, 890)
+    XCTAssertEqual(BrokerCommandRequest(command: "status", group: "idle", options: [:]).executionTimeoutSeconds, 890)
+    XCTAssertEqual(
+      BrokerCommandRequest(command: "cleanup", group: "idle", options: ["apply": .bool(true)]).executionTimeoutSeconds,
+      1610
+    )
     XCTAssertEqual(BrokerCommandRequest(command: "shutdown", group: "simulators", options: [:]).executionTimeoutSeconds, 1010)
     XCTAssertEqual(BrokerCommandRequest(command: "shutdown", group: "simulators", options: [:]).transferTimeoutSeconds, 1070)
     XCTAssertEqual(BrokerCommandRequest(command: "erase", group: "simulators", options: [:]).executionTimeoutSeconds, 1130)
@@ -165,6 +170,23 @@ final class BrokerServiceClientTests: XCTestCase {
       ).executionTimeoutSeconds,
       4930
     )
+  }
+
+  func testIdleCleanupEnvelopeDecodesCountOnlyPlanFields() throws {
+    let envelope = try JSONDecoder().decode(BrokerCommandEnvelope.self, from: Data("""
+    {
+      "eligibleCount": 2,
+      "ok": true,
+      "planId": "cleanup-plan",
+      "schemaVersion": 1,
+      "status": "changes_required"
+    }
+    """.utf8))
+
+    XCTAssertEqual(envelope.eligibleCount, 2)
+    XCTAssertEqual(envelope.planId, "cleanup-plan")
+    XCTAssertEqual(envelope.status, "changes_required")
+    XCTAssertTrue(envelope.ok == true)
   }
 
   func testCommandTransferTimeoutsCoverStaleContainmentBudget() throws {
