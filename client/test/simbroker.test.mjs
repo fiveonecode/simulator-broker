@@ -369,6 +369,34 @@ test("project validate can discover the project file from --repo-root", () => {
   assert.equal(result.json.projectConfig.projectId, "cli-demo");
 });
 
+test("project forget removes an inactive registration and refreshes the local app snapshot", () => {
+  const fixture = makeFixture();
+
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  assert.equal(runCli(fixture, "project", "validate", "--repo-root", fixture.repoRoot).status, 0);
+
+  const forgotten = runCli(fixture, "project", "forget", "--project-id", "cli-demo");
+  assert.equal(forgotten.status, 0);
+  assert.equal(forgotten.json.transport, "direct");
+  assert.equal(forgotten.json.forgotten, true);
+  assert.equal(Object.hasOwn(readJson(path.join(fixture.stateRoot, "known-projects.json")).projects, "cli-demo"), false);
+  const snapshot = readJson(path.join(fixture.stateRoot, "app-snapshot.json"));
+  assert.equal(snapshot.projects.some((project) => project.projectId === "cli-demo"), false);
+
+  const repeated = runCli(fixture, "project", "forget", "--project-id", "cli-demo");
+  assert.equal(repeated.status, 0);
+  assert.equal(repeated.json.unchanged, true);
+
+  const missingId = runCli(fixture, "project", "forget");
+  assert.equal(missingId.status, 2);
+  assert.equal(missingId.json.reasonCode, "missing-flag");
+
+  const unknownFlag = runCli(fixture, "project", "forget", "--project-id", "cli-demo", "--project-idd", "typo");
+  assert.equal(unknownFlag.status, 2);
+  assert.equal(unknownFlag.json.reasonCode, "invalid-flag");
+  assert.equal(unknownFlag.json.flag, "project-idd");
+});
+
 test("project init honors explicit false for overwrite", () => {
   const fixture = makeFixture();
   const projectFilePath = path.join(fixture.repoRoot, ".simulator-broker/project.json");
@@ -401,8 +429,14 @@ test("doctor returns actual health data for the doctor command surface", () => {
   assert.deepEqual(doctorResult.json.issues, []);
 });
 
-test("group help returns useful command lists for lease and host", () => {
+test("group help returns useful command lists for project, lease, host, and capacity", () => {
   const fixture = makeFixture();
+
+  const projectHelp = runCli(fixture, "project", "--help");
+  assert.equal(projectHelp.status, 0);
+  assert.equal(projectHelp.json.ok, true);
+  assert.equal(projectHelp.json.group, "project");
+  assert.ok(projectHelp.json.commands.some((command) => command.includes("project forget")));
 
   const leaseHelp = runCli(fixture, "lease", "--help");
   assert.equal(leaseHelp.status, 0);

@@ -88,6 +88,16 @@ Use this sequence when replacing an existing local install. Do not take the brok
 
 The installer preserves the host config and broker state. It can stop and restart a service when the existing wrapper is intact, but stopping the service and quitting the app first avoids leaving an old daemon or app process attached to a replaced runtime.
 
+## Removing a Stale Local Project Registration
+
+If a repository has been moved or deleted, remove only its local broker registration with an explicit project ID:
+
+```bash
+simbroker project forget --project-id <project-id> --json
+```
+
+The command is idempotent, updates the broker-owned app snapshot, and preserves the repository itself and historical audit events. It refuses to remove a project that still has an active lease or pin; release or clear those first instead of editing `known-projects.json` by hand.
+
 Troubleshooting a broken local install:
 
 - if `command -v simbroker` resolves to a repo checkout such as `.../Projects/simulator-broker/client/bin/simbroker.mjs`, the machine is still using a dev wrapper rather than the installed runtime

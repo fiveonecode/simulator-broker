@@ -23,6 +23,7 @@ A first extracted implementation slice now exists:
 - app-side operator controls for pin create and clear, lease release, and lifecycle actions over the shared broker authority
 - app launch-time fixture overrides through `--state-root`, `--host-config`, optional `--cli-path`, plus direct pane/detail targeting for deterministic screenshot and smoke scenarios
 - broker-owned state artifacts are restricted to the current user, and lease, containment, pin, and lifecycle mutations share the broker mutation authority whether invoked directly, through the service, or from the app
+- inactive local project registrations can be removed only through the explicit, locked `project forget --project-id <id>` command; it is idempotent, refreshes the shared app snapshot, preserves the repository and audit history, and rejects projects with active leases or pins
 - the macOS app test wrapper now supports build-only reruns, focused `-only-testing` filters, and stable `xcresult` output for runtime triage
 - the macOS app emits unified `Logger` telemetry for startup, refresh, setup, broker actions, and override-required command outcomes
 - the repo-owned macOS entrypoints now fail fast with actionable messages when `xcodegen` or `xcodebuild` is missing or misconfigured
@@ -89,6 +90,10 @@ After the app shows the broker is ready, onboard each consumer repo with:
 simbroker project init --repo-root /path/to/repo
 simbroker project validate --repo-root /path/to/repo
 ```
+
+If a repository has been moved or deleted and no active lease or pin belongs to
+it, remove only its stale local registration with `simbroker project forget
+--project-id <project-id>`.
 
 `npm run package:local` is the local-debug bundle path for local development convenience. It is not the primary contributor onboarding path and it is not a Gatekeeper-ready distribution artifact.
 

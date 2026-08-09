@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.13.12`
-> **Last Updated:** `2026-08-04`
+> **Version:** `0.13.13`
+> **Last Updated:** `2026-08-10`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -83,7 +83,7 @@ The extracted system must work for any repo that uses AI agentic development har
 - fail invalid explicit alias or simulator overrides
 - avoid borrowing aliases across configured role pools
 - serialize slow erase/reset work for UI roles under a dedicated reset lock
-- serialize release, process registration, lease containment, pin clearing, lifecycle operations, final app snapshot artifact writes, and state-refresh operations that normalize registry or stale lease state through the broker mutation authority so lease, pin, registry, lifecycle state, and shared app snapshots cannot race each other
+- serialize release, process registration, lease containment, pin clearing, inactive project-registration cleanup, lifecycle operations, final app snapshot artifact writes, and state-refresh operations that normalize registry or stale lease state through the broker mutation authority so lease, pin, registry, lifecycle state, and shared app snapshots cannot race each other
 
 ### Current integration surface
 
@@ -170,6 +170,7 @@ Current implementation slice:
 
 - `project validate` and `project show`
 - `project init`
+- `project forget --project-id <id>` removes only an explicit inactive local registration under the broker mutation lock; it is idempotent, publishes the refreshed app snapshot, preserves the repository and audit history, and rejects active lease or pin references with `project-in-use`
 - `host init` and `host status`
 - `lease acquire`, `lease explain`, `lease show`, and `lease release`
 - `lease register-process` for wrapper-owned downstream command metadata
@@ -259,6 +260,7 @@ Default operational decisions for v1:
 - direct out-of-band boot or shutdown is observable drift but not automatically blocking when alias identity is intact
 - destructive or identity-changing out-of-band drift is blocking until repair completes
 - broker health states are `healthy`, `state-drift`, `repair-needed`, and `repairing`
+- local project-registration cleanup must use the broker-owned `project forget --project-id <id>` command rather than editing broker state files; it may remove only an explicit registration with no active lease or pin, records a global `project.forgotten` audit event that does not itself restore the removed project to the Projects read model, and refreshes the shared app snapshot
 
 Failure-contract defaults for v1:
 
@@ -456,6 +458,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.13.13 | 2026-08-10 | Added locked, explicit, idempotent cleanup for inactive local project registrations with lease/pin conflict protection and snapshot refresh. |
 | 0.13.12 | 2026-08-04 | Clarified startup-lock sampler timeout coverage, per-state-load stale containment budget retries, deterministic snapshot host-config fixtures, and non-remediable erase conflicts. |
 | 0.13.11 | 2026-08-03 | Clarified stale containment timeout budgets, startup-lock PID lifetime validation, snapshot host-config identity, and repair-only live-holder overrides. |
 | 0.13.7 | 2026-08-03 | Clarified unknown flag rejection before destructive commands, explicit containment diagnostic booleans, capacity-check inventory budgets, serialized final app snapshot writers, and command-specific app setup timeouts. |

@@ -373,6 +373,23 @@ test("service lifecycle routes CLI commands through brokerd and falls back after
   assert.equal(release.json.transport, "direct");
 });
 
+test("service routes project forget through brokerd and refreshes the shared app snapshot", async (t) => {
+  const fixture = makeFixture();
+  t.after(async () => stopServiceIfRunning(fixture));
+
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  assert.equal(runCli(fixture, "project", "validate", "--repo-root", fixture.repoRoot).status, 0);
+  assert.equal(runCli(fixture, "service", "start").status, 0);
+
+  const forgotten = runCli(fixture, "project", "forget", "--project-id", "service-demo");
+  assert.equal(forgotten.status, 0);
+  assert.equal(forgotten.json.transport, "service");
+  assert.equal(forgotten.json.forgotten, true);
+  assert.equal(Object.hasOwn(readJson(path.join(fixture.stateRoot, "known-projects.json")).projects, "service-demo"), false);
+  const snapshot = readJson(path.join(fixture.stateRoot, "app-snapshot.json"));
+  assert.equal(snapshot.projects.some((project) => project.projectId === "service-demo"), false);
+});
+
 test("service recomputes execution budgets before command dispatch", async (t) => {
   const fixture = makeFixture();
   t.after(async () => stopServiceIfRunning(fixture));

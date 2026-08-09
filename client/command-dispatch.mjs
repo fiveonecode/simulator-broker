@@ -13,6 +13,7 @@ import {
   doctorBroker,
   eraseSimulatorBroker,
   explainLeaseBroker,
+  forgetKnownProjectBroker,
   hostStatusBroker,
   initBroker,
   initProjectBroker,
@@ -394,6 +395,16 @@ function helpPayload(group) {
       group: "host",
       usage: "simbroker host <command>",
     },
+    project: {
+      commands: [
+        "project validate --repo-root <repo> [--json]",
+        "project show --repo-root <repo> [--json]",
+        "project init --repo-root <repo> [--project-id <id>] [--project-name <name>]",
+        "project forget --project-id <id> [--json]",
+      ],
+      group: "project",
+      usage: "simbroker project <command>",
+    },
     lease: {
       commands: [
         "lease acquire --purpose <purpose> [--lease-file <path>] [--owner-pid <pid>] [--owner-pgid <pgid>]",
@@ -446,6 +457,7 @@ export function createCommandRequest(paths, group, command, flags) {
         type: "command",
       };
     case "host:":
+    case "project:":
     case "lease:":
     case "capacity:":
       return {
@@ -486,6 +498,19 @@ export function createCommandRequest(paths, group, command, flags) {
         group: "project",
         command: "init",
         options: projectInitOptions(paths, flags),
+        type: "command",
+      };
+    case "project:forget":
+      rejectUnknownFlags(flags, new Set([
+        "project-id",
+        ...commonRequestFlags(),
+      ]));
+      return {
+        group: "project",
+        command: "forget",
+        options: {
+          projectId: requireFlag(flags, "project-id"),
+        },
         type: "command",
       };
     case "host:init":
@@ -839,6 +864,7 @@ export function executeBrokerCommand(paths, request) {
   switch (`${request.group}:${request.command}`) {
     case "help:global":
     case "help:host":
+    case "help:project":
     case "help:lease":
     case "help:capacity":
       return helpPayload(request.command);
@@ -853,6 +879,9 @@ export function executeBrokerCommand(paths, request) {
       break;
     case "project:init":
       payload = initProjectBroker(paths, options);
+      break;
+    case "project:forget":
+      payload = forgetKnownProjectBroker(paths, options);
       break;
     case "host:init":
       payload = initBroker(paths, options);

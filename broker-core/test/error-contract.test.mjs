@@ -21,6 +21,7 @@ test("broker error contract maps reason codes to stable exit codes", () => {
   assert.equal(resolveBrokerExitCode("service-command-expired"), BROKER_EXIT_CODES.unavailable);
   assert.equal(resolveBrokerExitCode("service-identity-mismatch"), BROKER_EXIT_CODES.unavailable);
   assert.equal(resolveBrokerExitCode("service-stop-timeout"), BROKER_EXIT_CODES.unavailable);
+  assert.equal(resolveBrokerExitCode("project-in-use"), BROKER_EXIT_CODES.unavailable);
   assert.equal(resolveBrokerExitCode("unhealthy-alias"), BROKER_EXIT_CODES.repairNeeded);
   assert.equal(resolveBrokerExitCode("capacity-repair-required"), BROKER_EXIT_CODES.repairNeeded);
   assert.equal(resolveBrokerExitCode("human-override-required"), BROKER_EXIT_CODES.overrideRequired);
@@ -49,6 +50,7 @@ test("service-facing HTTP status mapping stays aligned with the exit code contra
   assert.equal(resolveBrokerHttpStatus("service-command-expired"), 409);
   assert.equal(resolveBrokerHttpStatus("service-identity-mismatch"), 409);
   assert.equal(resolveBrokerHttpStatus("service-stop-timeout"), 409);
+  assert.equal(resolveBrokerHttpStatus("project-in-use"), 409);
   assert.equal(resolveBrokerHttpStatus("unhealthy-alias"), 423);
   assert.equal(resolveBrokerHttpStatus("capacity-repair-required"), 423);
   assert.equal(resolveBrokerHttpStatus("human-override-required"), 412);

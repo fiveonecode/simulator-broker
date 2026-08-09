@@ -106,6 +106,16 @@ function requirePositiveInteger(value, flagName) {
   });
 }
 
+function requireProjectId(value) {
+  if (typeof value === "string" && value.trim() !== "") {
+    return value;
+  }
+  throw new BrokerError("Flag --project-id must be a non-empty string.", {
+    flag: "project-id",
+    reasonCode: "invalid-flag",
+  });
+}
+
 function optionalNonNegativeInteger(value, flagName) {
   if (value === undefined || value === null) {
     return undefined;
@@ -3522,6 +3532,55 @@ export function validateProjectBroker(paths, options = {}) {
 
 export function showProjectBroker(paths, options = {}) {
   return validateProjectBroker(paths, options);
+}
+
+export function forgetKnownProjectBroker(paths, options = {}) {
+  const timestamp = nowIso(options.now);
+  const projectId = requireProjectId(options.projectId);
+  return withLeaseMutationLock(paths, () => {
+    const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+    const activeLeaseCount = state.leases.filter((lease) => lease.projectId === projectId).length;
+    const pinCount = state.pins.filter((pin) => pin.projectId === projectId).length;
+    if (activeLeaseCount > 0 || pinCount > 0) {
+      throw new BrokerError(`Cannot forget project ${projectId} while it has active leases or pins.`, {
+        activeLeaseCount,
+        pinCount,
+        projectId,
+        reasonCode: "project-in-use",
+      });
+    }
+
+    if (Object.hasOwn(state.knownProjects.projects, projectId) === false) {
+      return {
+        ok: true,
+        projectId,
+        unchanged: true,
+      };
+    }
+
+    delete state.knownProjects.projects[projectId];
+    state.knownProjects.updatedAt = timestamp;
+    writeKnownProjects(paths, state.knownProjects);
+    appendEventRecord(paths, "project.forgotten", {
+      alias: null,
+      leaseId: null,
+      payload: {
+        projectId,
+      },
+      projectId: null,
+      purposeId: null,
+    }, timestamp);
+    return {
+      forgotten: true,
+      ok: true,
+      projectId,
+    };
+  }, {
+    now: timestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  });
 }
 
 function loadEventRecords(paths) {

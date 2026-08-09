@@ -82,6 +82,7 @@ Owns:
 - stable JSON output
 - repo project discovery and validation
 - repo project scaffolding through `project init`
+- explicit removal of inactive local project registrations through `project forget`
 - compatibility wrappers for repos that want thin local helper commands
 - automatic routing through `brokerd` when the local service is available
 - lifecycle-control flags for explicit actor identity, active-lease references, and human override confirmation

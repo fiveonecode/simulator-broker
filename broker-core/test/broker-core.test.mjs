@@ -16,6 +16,7 @@ import {
   doctorBroker,
   eraseSimulatorBroker,
   explainLeaseBroker,
+  forgetKnownProjectBroker,
   hostStatusBroker,
   initBroker,
   initProjectBroker,
@@ -318,6 +319,120 @@ test("project validation records known projects under the lease mutation lock", 
       simctlAdapter: paths.simctl.adapter,
     });
   }, (error) => error.payload?.reasonCode === "alias-busy");
+});
+
+test("project forget removes an inactive local registration, preserves audit history, and is idempotent", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  validateProjectBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  const forgotten = forgetKnownProjectBroker(resolvedPaths, runtimeOptions(paths, {
+    now: "2026-08-10T00:00:00.000Z",
+    processExists: () => true,
+    projectId: "demo-app",
+  }));
+  assert.deepEqual(forgotten, {
+    forgotten: true,
+    ok: true,
+    projectId: "demo-app",
+  });
+
+  const knownProjects = readJson(resolvedPaths.knownProjectsPath);
+  assert.equal(Object.hasOwn(knownProjects.projects, "demo-app"), false);
+  const events = readEventsBroker(resolvedPaths, { limit: 10 }).events;
+  assert.equal(events.some((event) => event.type === "project.forgotten" && event.payload?.projectId === "demo-app"), true);
+  const snapshot = appSnapshotBroker(resolvedPaths, runtimeOptions(paths, {
+    eventLimit: 10,
+    processExists: () => true,
+  }));
+  assert.equal(snapshot.projects.some((project) => project.projectId === "demo-app"), false);
+
+  const repeated = forgetKnownProjectBroker(resolvedPaths, runtimeOptions(paths, {
+    now: "2026-08-10T00:01:00.000Z",
+    processExists: () => true,
+    projectId: "demo-app",
+  }));
+  assert.deepEqual(repeated, {
+    ok: true,
+    projectId: "demo-app",
+    unchanged: true,
+  });
+});
+
+test("project forget refuses a registered project with an active lease or pin", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  validateProjectBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, runtimeOptions(paths, {
+    actorId: "agent-forget-test",
+    actorType: "agent",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+  })).lease;
+
+  assert.throws(() => {
+    forgetKnownProjectBroker(resolvedPaths, runtimeOptions(paths, {
+      processExists: (pid) => pid === process.pid,
+      projectId: "demo-app",
+    }));
+  }, (error) => error.payload?.reasonCode === "project-in-use"
+    && error.payload?.activeLeaseCount === 1
+    && error.payload?.pinCount === 0);
+  assert.equal(Object.hasOwn(readJson(resolvedPaths.knownProjectsPath).projects, "demo-app"), true);
+
+  releaseLeaseBroker(resolvedPaths, runtimeOptions(paths, {
+    leaseId: lease.leaseId,
+    processExists: (pid) => pid === process.pid,
+  }));
+  createPinBroker(resolvedPaths, runtimeOptions(paths, {
+    actorId: "human-forget-test",
+    actorType: "human",
+    alias: "ui-1",
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+  }));
+
+  assert.throws(() => {
+    forgetKnownProjectBroker(resolvedPaths, runtimeOptions(paths, {
+      processExists: () => true,
+      projectId: "demo-app",
+    }));
+  }, (error) => error.payload?.reasonCode === "project-in-use"
+    && error.payload?.activeLeaseCount === 0
+    && error.payload?.pinCount === 1);
+  assert.equal(Object.hasOwn(readJson(resolvedPaths.knownProjectsPath).projects, "demo-app"), true);
+});
+
+test("project forget waits on the lease mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+
+  validateProjectBroker(resolvedPaths, runtimeOptions(paths));
+  fs.mkdirSync(resolvedPaths.leaseLockDir, { recursive: true });
+  writeJson(resolvedPaths.leaseLockOwnerPath, {
+    pid: process.pid,
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  assert.throws(() => {
+    forgetKnownProjectBroker(resolvedPaths, runtimeOptions(paths, {
+      leaseLockTimeoutMilliseconds: 1,
+      processExists: (pid) => pid === process.pid,
+      projectId: "demo-app",
+    }));
+  }, (error) => error.payload?.reasonCode === "alias-busy");
+  assert.equal(Object.hasOwn(readJson(resolvedPaths.knownProjectsPath).projects, "demo-app"), true);
 });
 
 test("project init waits on the lease mutation lock before writing config", () => {

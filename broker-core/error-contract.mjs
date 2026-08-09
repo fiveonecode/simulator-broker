@@ -43,6 +43,7 @@ const UNAVAILABLE_REASON_CODES = new Set([
   "lease-conflict",
   "no-matching-alias",
   "pin-conflict",
+  "project-in-use",
   "process-sampler-timeout",
   "runtime-not-found",
   "simctl-timeout",
