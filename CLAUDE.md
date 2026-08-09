@@ -23,7 +23,7 @@ Use local operator-provided context if available. Do not commit private/local co
    Chat commentary for detached/event-waited runs must be event-based only: started/detached, phase change, pass, fail, timeout, process exited without result, or user decision needed. Do not post timer-based heartbeat updates while status reports no material change.
    After context compaction, interruption, or takeover of a long-running run, recover state by reading `detached-run.json`, git status, stdout/stderr logs referenced by the artifact, and the final result file such as `verify-result.json`. Do not infer current run state from chat history.
 7. Update specs if behavior, contracts, or project structure changed.
-8. Every meaningful task commit must be a structured git commit using the required sections: `Why:`, `Changed:`, `Verification:`, `Affected:`, `Refs:`, `Session:`.
+8. Every meaningful task commit must be a structured git commit using the required sections: `Why:`, `Changed:`, `Verification:`, `Affected:`, `Refs:`, `Session:`. Commit messages are durable public output: use repo-relative paths, GitHub URLs, commit SHAs, and public task artifact labels such as `task-sessions/<session-name>`; never include machine-local or parent-relative paths. `agent:complete` rejects detected local-path forms in every new commit touching task paths.
 9. Run `npm run agent:complete -- --session-dir <dir>` before claiming completion. If it reports `blocked`, the task is incomplete/blocked, not done.
 10. Report exact verification commands, pass/fail outcomes, artifact paths, and the closing commit SHA.
 

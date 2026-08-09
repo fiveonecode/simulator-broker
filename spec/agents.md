@@ -71,7 +71,7 @@ Operational rules:
 - `agent:verify` records the task-tree fingerprint for the declared paths, and `agent:complete` rejects required verification proof when the fingerprint is missing or those paths changed after the passing run.
 - `agent:complete` evaluates forbidden path constraints per selected manifest, so a path forbidden by any selected manifest fails close-out even when another selected manifest allows it.
 - For `long-running` sessions, `agent:complete` requires populated `task-plan`, `session-handoff`, and `advisory-evaluation` artifacts.
-- Every meaningful task commit must use a structured git message with `Why:`, `Changed:`, `Verification:`, `Affected:`, `Refs:`, and `Session:` sections.
+- Every meaningful task commit must use a structured git message with `Why:`, `Changed:`, `Verification:`, `Affected:`, `Refs:`, and `Session:` sections. Commit messages are durable public output: use repo-relative paths, GitHub URLs, commit SHAs, and public task artifact labels such as `task-sessions/<session-name>`; never include machine-local or parent-relative paths. `agent:complete` rejects detected local-path forms in every new commit touching task paths.
 - Normal Symphony runs must use the repo-owned `WORKFLOW.md`, may not edit its
   protected validation paths from an ordinary implementation task, and stop at
   validated local handoff unless a human explicitly requests PR handoff.
