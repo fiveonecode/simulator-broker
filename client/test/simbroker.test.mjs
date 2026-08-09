@@ -1101,6 +1101,39 @@ test("lease release request carries requester actor flags", () => {
   assert.equal(request.options.actorId, "operator-1");
 });
 
+test("idle command requests enforce explicit policy and confirmed cleanup shapes", () => {
+  const { flags: enableFlags } = parseArgs([
+    "--grace-seconds", "60",
+    "--actor-type", "human",
+    "--actor-id", "operator-1",
+  ]);
+  const enable = createCommandRequest({}, "idle", "enable", enableFlags);
+  assert.deepEqual(enable.options, {
+    actorId: "operator-1",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+
+  const { flags: cleanupFlags } = parseArgs([
+    "--apply",
+    "--confirm", "plan-1",
+    "--actor-type", "human",
+    "--actor-id", "operator-1",
+  ]);
+  const cleanup = createCommandRequest({}, "idle", "cleanup", cleanupFlags);
+  assert.deepEqual(cleanup.options, {
+    actorId: "operator-1",
+    actorType: "human",
+    apply: true,
+    confirmPlanId: "plan-1",
+  });
+
+  const { flags: invalidPreviewFlags } = parseArgs(["--actor-id", "operator-1"]);
+  assert.throws(() => {
+    createCommandRequest({}, "idle", "cleanup", invalidPreviewFlags);
+  }, (error) => error.payload?.reasonCode === "invalid-flag");
+});
+
 test("events watch follow rejects non-positive poll intervals", () => {
   for (const value of ["0", "-1"]) {
     const { flags } = parseArgs([
@@ -1198,12 +1231,12 @@ test("service containment timeout scales with term wait and diagnostics", () => 
   }), 905_000);
 });
 
-test("service lease acquire timeout includes reset-on-acquire budget", () => {
+test("service lease acquire timeout includes reset and boot-on-acquire budgets", () => {
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "acquire",
     group: "lease",
     options: {},
-  }), 1_185_250);
+  }), 1_305_250);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "acquire",
     group: "lease",
@@ -1212,7 +1245,31 @@ test("service lease acquire timeout includes reset-on-acquire budget", () => {
       resetLockTimeoutMilliseconds: 120_000,
       resetSettleMilliseconds: 500,
     },
-  }), 1_305_500);
+  }), 1_425_500);
+});
+
+test("service idle timeouts cover serialized state, snapshots, and bounded shutdown work", () => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "status",
+    group: "idle",
+    options: {},
+  }, { paths }), 885_000);
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "cleanup",
+    group: "idle",
+    options: { apply: true },
+  }, { paths }), 1_125_000);
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "reconcile",
+    group: "idle",
+    options: {},
+  }, { paths }), 1_125_000);
 });
 
 test("service mutation timeouts cover broker lock waits", () => {
@@ -1363,10 +1420,10 @@ test("service command timeout budgets stale containment sampling from lease file
   assert.equal(serviceCommandTimeoutMs(request, { paths }), 945_000 + (2 * staleContainmentBudgetMs));
 });
 
-test("service startup timeout covers startup lock, snapshot process, and inventory work", () => {
+test("service startup timeout covers startup reconciliation, snapshot, and lock work", () => {
   assert.equal(
     serviceStartupTimeoutMs(),
-    (3 * SIMCTL_COMMAND_TIMEOUT_MS) + (3 * PROCESS_SAMPLER_TIMEOUT_MS) + 5_000,
+    (12 * SIMCTL_COMMAND_TIMEOUT_MS) + (4 * PROCESS_SAMPLER_TIMEOUT_MS) + 5_000,
   );
 });
 
@@ -1724,7 +1781,7 @@ test("local event follow with a limit pages bursts without dropping older unseen
           secondLeaseFile,
         ).status, 0);
       }
-      if (sleepCount >= 3) {
+      if (sleepCount >= 4) {
         abortController.abort();
       }
     },

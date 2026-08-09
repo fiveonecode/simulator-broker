@@ -1,10 +1,10 @@
-# macOS App Task Specs
+# Implementation Task Specs
 Related: `spec/README.md`, `spec/agents.md`, `spec/build-and-test.md`, `app/README.md`
 
 ## Purpose
 
-This directory contains the worker-ready implementation tasks derived from the April 11, 2026 macOS app audit.
-All nine task specs in this directory are now implemented; keep them as source-of-truth contracts plus completion history for the remediation set.
+This directory contains worker-ready implementation tasks for cross-layer broker work and the April 11, 2026 macOS app audit.
+The nine audit tasks and the public-safe on-demand lifecycle task are implemented; keep them as source-of-truth contracts plus completion history.
 
 Each task spec is written so a worker can take ownership of one issue or one tightly related issue cluster and execute it end to end without opening a clarification loop first.
 
@@ -29,6 +29,12 @@ Each task document must be treated as a full worker contract:
 | App test workflow is full-suite-only and weak for focused reruns and triage | `spec/tasks/macos-runtime-test-triage.md` |
 | Install and package smoke tests do not prove the installed app launches | `spec/tasks/macos-installed-app-launch-smoke.md` |
 | Portable package flow is still local-debug signed and not distribution-ready | `spec/tasks/macos-distribution-readiness.md` |
+
+## Cross-layer feature contracts
+
+| Feature | Task spec |
+|---|---|
+| Deterministic warm reuse, boot-on-acquire, local idle shutdown, operator controls, and public-surface safety | `spec/tasks/public-safe-on-demand-simulator-lifecycle.md` |
 
 ## Not included here
 

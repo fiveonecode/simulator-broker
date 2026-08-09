@@ -19,8 +19,9 @@ Owns:
 - lease lifecycle
 - broker-mediated lifecycle policy for boot, shutdown, erase, and repair
 - registry state
-- fairness and role ordering
+- deterministic pin/warm/shutdown selection ordering
 - stale lease recovery
+- idle-policy state, eligibility, reconciliation, and count-only cleanup plans
 - reset-lock and mutation-lock semantics
 - simulator inventory and `simctl` adapter boundaries
 - policy parsing and validation
@@ -43,6 +44,8 @@ Current implementation slice:
 - real simulator provisioning during `host init --bootstrap-config`
 - registry drift synchronization and repair rebinding through broker-managed lifecycle flows
 - reset-lock coordination for `erase-on-acquire`
+- boot-on-acquire and most-recent-release warm reuse
+- state-root-only idle policy and safe idle shutdown under the broker mutation lock
 - capacity check and confirmed reconcile using the same repo/host policy,
   `simctl` adapter boundary, mutation lock, local transaction journal, rollback,
   and recovery model as the rest of broker authority
@@ -67,6 +70,8 @@ Current implementation slice:
   through the same broker-core evaluator and apply engine as direct CLI mode
 - canonical `app-snapshot.json` artifact written into broker state for the macOS app
 - command endpoint consumed directly by the macOS app for broker-backed operator actions
+- immediate startup idle reconciliation, a non-overlapping 30-second scheduler,
+  and snapshot refresh after each reconciliation
 
 Does not own:
 
@@ -91,6 +96,10 @@ Owns:
 - capacity commands: `capacity check` diagnoses whether repo purposes can
   acquire capacity now; `capacity reconcile` previews and, with exact human
   confirmation, applies additive broker-managed capacity
+- idle commands: status, explicit human enable/disable, reconcile, and
+  count-only cleanup preview plus exact human-confirmed apply
+- lazy `brokerd` startup for normal acquisitions when idle policy is configured,
+  while explicit local-only mode remains unscheduled
 
 The CLI remains a thin control surface. It does not own simulator selection or registry mutation rules, but it may run wrapper-oriented orchestration that registers a local downstream process and calls broker-core containment.
 
@@ -110,6 +119,8 @@ Current implementation slice:
 - explicit `--state-root` launch override plus direct pane/detail targeting for fixture, smoke, and operator review runs without rewriting the default broker install root
 - filterable simulator table plus detail panes for leases, pins, lifecycle fields, and event attribution
 - broker-backed operator actions for pin create and clear, lease release, and lifecycle commands with confirmation and override flows
+- Overview Automatic shutdown status, explicit duration entry, policy
+  apply/disable, and count-confirmed cleanup over broker transport
 
 Does not own:
 
@@ -123,6 +134,10 @@ The app must not become the only authority for broker policy. Repo-owned policy 
 The app and CLI must operate on the same broker authority and observe the same state model. No simulator mutation may exist only in the app.
 
 All lifecycle actions for broker-managed aliases, including boot, shutdown, erase, repair, pin, and release, must route through the broker authority rather than direct client `simctl` calls.
+
+Lease acquisition itself boots the selected alias before returning. Idle policy
+and cleanup are also broker-only mutations; neither the app nor a consumer repo
+may write broker state files directly.
 
 All destructive cleanup for broker-managed build/test leases must also route through broker authority. Repo wrappers may start downstream commands, but process ownership metadata, memory checks, evidence bundles, lease release, and audit events belong to the broker contract.
 
@@ -140,10 +155,14 @@ The broker must remain transparent: clients need explainable denial reasons, hol
 - repo purpose definitions may include explicit iOS version or device family requirements
 - normal automation requests purposes and capabilities, not hardcoded aliases
 - explicit alias pins are an operator action, not the default repo integration path
+- idle shutdown policy belongs only to machine-local broker state and is absent
+  until a human chooses a valid duration
 
 ## Baseline Broker Constraints
 
 - deterministic reservation, not opportunistic picking from `simctl` output
+- one selection order: matching pin, compatible booted alias, compatible
+  shutdown alias; most recent release first inside a tier
 - explicit alias pools per role
 - manual aliases protected from automation
 - `erase-on-acquire` only for UI-like roles

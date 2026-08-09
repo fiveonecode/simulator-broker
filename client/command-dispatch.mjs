@@ -9,17 +9,22 @@ import {
   bootSimulatorBroker,
   checkCapacityBroker,
   clearPinBroker,
+  cleanupIdleBroker,
   createPinBroker,
+  disableIdlePolicyBroker,
   doctorBroker,
+  enableIdlePolicyBroker,
   eraseSimulatorBroker,
   explainLeaseBroker,
   forgetKnownProjectBroker,
   hostStatusBroker,
   initBroker,
   initProjectBroker,
+  idleStatusBroker,
   listSimulatorsBroker,
   containLeaseBroker,
   readEventsBroker,
+  reconcileIdleBroker,
   registerLeaseProcessBroker,
   reconcileCapacityBroker,
   repairSimulatorBroker,
@@ -372,6 +377,57 @@ function capacityOptions(paths, flags, { applyAllowed = false } = {}) {
   };
 }
 
+function idleHumanOptions(flags) {
+  return {
+    actorId: requireFlag(flags, "actor-id"),
+    actorType: requireFlag(flags, "actor-type"),
+  };
+}
+
+function idleEnableOptions(flags) {
+  rejectUnknownFlags(flags, new Set([
+    "actor-id",
+    "actor-type",
+    "grace-seconds",
+    ...commonRequestFlags(),
+  ]));
+  return {
+    ...idleHumanOptions(flags),
+    graceSeconds: requirePositiveIntegerFlag(flags, "grace-seconds"),
+  };
+}
+
+function idleDisableOptions(flags) {
+  rejectUnknownFlags(flags, new Set([
+    "actor-id",
+    "actor-type",
+    ...commonRequestFlags(),
+  ]));
+  return idleHumanOptions(flags);
+}
+
+function idleCleanupOptions(flags) {
+  rejectUnknownFlags(flags, new Set([
+    "actor-id",
+    "actor-type",
+    "apply",
+    "confirm",
+    ...commonRequestFlags(),
+  ]));
+  const apply = parseBooleanFlag(flags, "apply");
+  if (!apply && (flags.has("confirm") || flags.has("actor-id") || flags.has("actor-type"))) {
+    throw new BrokerError("Idle cleanup confirmation and actor flags require --apply.", {
+      reasonCode: "invalid-flag",
+    });
+  }
+  return {
+    actorId: flagValue(flags, "actor-id"),
+    actorType: flagValue(flags, "actor-type"),
+    apply,
+    confirmPlanId: flagValue(flags, "confirm"),
+  };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -386,6 +442,18 @@ function helpPayload(group) {
       ],
       group: "capacity",
       usage: "simbroker capacity <command>",
+    },
+    idle: {
+      commands: [
+        "idle status",
+        "idle enable --grace-seconds <60-86400> --actor-type human --actor-id <operator-id>",
+        "idle disable --actor-type human --actor-id <operator-id>",
+        "idle reconcile",
+        "idle cleanup",
+        "idle cleanup --apply --confirm <plan-id> --actor-type human --actor-id <operator-id>",
+      ],
+      group: "idle",
+      usage: "simbroker idle <command>",
     },
     host: {
       commands: [
@@ -426,6 +494,7 @@ function helpPayload(group) {
         "project",
         "lease",
         "capacity",
+        "idle",
         "events",
         "pin",
         "simulators",
@@ -460,6 +529,7 @@ export function createCommandRequest(paths, group, command, flags) {
     case "project:":
     case "lease:":
     case "capacity:":
+    case "idle:":
       return {
         group: "help",
         command: group,
@@ -539,6 +609,43 @@ export function createCommandRequest(paths, group, command, flags) {
         group: "capacity",
         command: "reconcile",
         options: capacityOptions(paths, flags, { applyAllowed: true }),
+        type: "command",
+      };
+    case "idle:status":
+      rejectUnknownFlags(flags, new Set(commonRequestFlags()));
+      return {
+        group: "idle",
+        command: "status",
+        options: {},
+        type: "command",
+      };
+    case "idle:enable":
+      return {
+        group: "idle",
+        command: "enable",
+        options: idleEnableOptions(flags),
+        type: "command",
+      };
+    case "idle:disable":
+      return {
+        group: "idle",
+        command: "disable",
+        options: idleDisableOptions(flags),
+        type: "command",
+      };
+    case "idle:reconcile":
+      rejectUnknownFlags(flags, new Set(commonRequestFlags()));
+      return {
+        group: "idle",
+        command: "reconcile",
+        options: {},
+        type: "command",
+      };
+    case "idle:cleanup":
+      return {
+        group: "idle",
+        command: "cleanup",
+        options: idleCleanupOptions(flags),
         type: "command",
       };
     case "simulators:list":
@@ -867,6 +974,7 @@ export function executeBrokerCommand(paths, request) {
     case "help:project":
     case "help:lease":
     case "help:capacity":
+    case "help:idle":
       return helpPayload(request.command);
     case "doctor:status":
       payload = doctorBroker(paths, options);
@@ -894,6 +1002,21 @@ export function executeBrokerCommand(paths, request) {
       break;
     case "capacity:reconcile":
       payload = reconcileCapacityBroker(paths, options);
+      break;
+    case "idle:status":
+      payload = idleStatusBroker(paths, options);
+      break;
+    case "idle:enable":
+      payload = enableIdlePolicyBroker(paths, options);
+      break;
+    case "idle:disable":
+      payload = disableIdlePolicyBroker(paths, options);
+      break;
+    case "idle:reconcile":
+      payload = reconcileIdleBroker(paths, options);
+      break;
+    case "idle:cleanup":
+      payload = cleanupIdleBroker(paths, options);
       break;
     case "simulators:list":
       payload = listSimulatorsBroker(paths, options);
@@ -965,6 +1088,16 @@ export function executeBrokerCommand(paths, request) {
     try {
       writeAppSnapshotArtifactUnderMutationLock(paths, snapshotOptions);
     } catch (error) {
+      if (request.group === "idle") {
+        payload = {
+          ...payload,
+          snapshotRefresh: {
+            ok: false,
+            reasonCode: error?.payload?.reasonCode ?? error?.reasonCode ?? "snapshot-refresh-failed",
+          },
+        };
+        return payload;
+      }
       const contractError = contractSnapshotRefreshError(error);
       if (contractError) {
         throw contractError;

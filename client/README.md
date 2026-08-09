@@ -13,6 +13,11 @@ Current command families:
 - `host status`
 - `capacity check`
 - `capacity reconcile`
+- `idle status`
+- `idle enable`
+- `idle disable`
+- `idle reconcile`
+- `idle cleanup`
 - `project init`
 - `project validate`
 - `project show`
@@ -37,3 +42,11 @@ Onboarding helpers now included:
 - `capacity check` reports whether repo purposes have usable broker capacity
 - `capacity reconcile` previews missing additive capacity and applies only when
   a human operator confirms the exact current plan ID
+- `idle enable` requires a human operator and an explicit duration from 60
+  through 86400 seconds; no duration is configured by default
+- `idle cleanup` returns a count-only preview and applies only when a human
+  confirms the exact current plan ID
+
+Normal policy-enabled lease acquisition starts `brokerd` lazily when needed so
+scheduled reconciliation remains active. Explicit local-only mode does not
+schedule reconciliation and reports that limitation.

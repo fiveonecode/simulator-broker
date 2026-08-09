@@ -13,7 +13,7 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
 - `references/` — public-safe reference notes; copied product snapshots are not checked in
 - `app/` — XcodeGen spec, SwiftUI source, and XCTest coverage for the macOS operator app
 - `broker-core/` — reusable broker logic; current file-backed slice, lease containment helpers, shared `simctl` adapter, and error-contract boundaries live here
-- `client/` — CLI, local service, and compatibility layer; `client/bin/` contains `simbroker` and `brokerd`, and `client/service/` contains the Unix-socket authority implementation
+- `client/` — CLI, local service, and compatibility layer; `client/bin/` contains `simbroker` and `brokerd`, `client/service/` contains the Unix-socket authority implementation, and `client/public-surface.mjs` implements the public text safety gate
 - `script/` — canonical app run-loop entrypoints and shared macOS build preflight helpers such as `build_and_run.sh`
 - `scripts/` — repo-owned helper scripts including the canonical
   `validate.sh` full-repository gate, app generation, repo-local install,
@@ -33,6 +33,12 @@ The broker state root may contain runtime artifacts in addition to source-of-tru
 - `leases/` — active lease JSON files
 - `events.ndjson` — append-only audit events
 - `registry.json`, `pins/`, and `known-projects.json` — broker state
+- `idle-policy.json` — optional policy containing only `version` and
+  `graceSeconds`; absent by default and written only through broker commands
 - `evidence/` — default lease containment evidence root when a wrapper does not provide a run-local evidence path
+
+No state artifact belongs in a consumer repository. In particular,
+`idle-policy.json`, app snapshots, daemon metadata, host config, aliases,
+simulator IDs, and operator attribution remain machine-local.
 
 Consumer wrappers should prefer a run-local evidence directory such as `<run-dir>/simulator-broker-evidence` so failure bundles travel with the rest of the job artifacts.

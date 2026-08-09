@@ -23,6 +23,10 @@ const HOST_CONFIG_VERSION = 1;
 const KNOWN_PROJECTS_VERSION = 1;
 const PROJECT_CONFIG_VERSION = 1;
 const REGISTRY_VERSION = 1;
+const IDLE_POLICY_VERSION = 1;
+const IDLE_SCHEMA_VERSION = 1;
+const MIN_IDLE_GRACE_SECONDS = 60;
+const MAX_IDLE_GRACE_SECONDS = 86_400;
 const ALLOWED_DEVICE_FAMILIES = new Set(["iPhone", "iPad"]);
 const ALLOWED_RESET_POLICIES = new Set(["none", "erase-on-acquire"]);
 const ALLOWED_HEALTH_STATES = new Set(["healthy", "state-drift", "repair-needed", "repairing"]);
@@ -89,6 +93,21 @@ function normalizeNonNegativeInteger(value) {
   }
   const number = Number(value);
   return Number.isInteger(number) && number >= 0 ? number : null;
+}
+
+function requireBoundedInteger(value, flagName, minimum, maximum) {
+  const number = Number(value);
+  if (Number.isInteger(number) && number >= minimum && number <= maximum) {
+    return number;
+  }
+  if (value === undefined || value === null) {
+    throw new BrokerError(`Missing required flag --${flagName}.`, {
+      reasonCode: "missing-flag",
+    });
+  }
+  throw new BrokerError(`Flag --${flagName} must be an integer from ${minimum} through ${maximum}.`, {
+    reasonCode: "invalid-flag",
+  });
 }
 
 function requirePositiveInteger(value, flagName) {
@@ -1381,8 +1400,154 @@ function normalizeRegistry(rawRegistry, hostConfig, timestamp) {
   }
   return {
     aliases,
+    idle: {
+      lastCleanupResult: normalizeIdleCleanupResult(rawRegistry.idle?.lastCleanupResult),
+    },
     updatedAt: timestamp,
     version: REGISTRY_VERSION,
+  };
+}
+
+function normalizeIdleCleanupResult(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const completedAt = typeof value.completedAt === "string" ? value.completedAt : null;
+  const source = typeof value.source === "string" ? value.source : null;
+  const status = typeof value.status === "string" ? value.status : null;
+  const eligibleCount = normalizeNonNegativeInteger(value.eligibleCount);
+  const shutdownCount = normalizeNonNegativeInteger(value.shutdownCount);
+  const failureCount = normalizeNonNegativeInteger(value.failureCount);
+  if (!completedAt || !source || !status || eligibleCount === null || shutdownCount === null || failureCount === null) {
+    return null;
+  }
+  return {
+    completedAt,
+    eligibleCount,
+    failureCount,
+    shutdownCount,
+    source,
+    status,
+  };
+}
+
+function validateIdlePolicy(rawPolicy) {
+  const policy = requireObject(rawPolicy, "idle-policy");
+  const keys = Object.keys(policy).sort();
+  if (keys.length !== 2 || keys[0] !== "graceSeconds" || keys[1] !== "version") {
+    throw new BrokerError("idle-policy may contain only version and graceSeconds.", {
+      reasonCode: "invalid-config",
+    });
+  }
+  validateVersion(policy.version, IDLE_POLICY_VERSION, "idle-policy");
+  const graceSeconds = Number(policy.graceSeconds);
+  if (!Number.isInteger(graceSeconds)
+    || graceSeconds < MIN_IDLE_GRACE_SECONDS
+    || graceSeconds > MAX_IDLE_GRACE_SECONDS) {
+    throw new BrokerError(`idle-policy.graceSeconds must be an integer from ${MIN_IDLE_GRACE_SECONDS} through ${MAX_IDLE_GRACE_SECONDS}.`, {
+      field: "idle-policy.graceSeconds",
+      reasonCode: "invalid-config",
+    });
+  }
+  return {
+    graceSeconds,
+    version: IDLE_POLICY_VERSION,
+  };
+}
+
+function readIdlePolicy(paths) {
+  const rawPolicy = readJsonIfExists(paths.idlePolicyPath);
+  return rawPolicy === null ? null : validateIdlePolicy(rawPolicy);
+}
+
+function requireHumanIdleActor(options, action) {
+  if (options.actorType !== "human") {
+    throw new BrokerError(`${action} requires --actor-type human.`, {
+      reasonCode: "idle-human-required",
+    });
+  }
+  if (typeof options.actorId !== "string" || options.actorId.trim() === "") {
+    throw new BrokerError(`${action} requires --actor-id <operator-id>.`, {
+      reasonCode: "idle-human-required",
+    });
+  }
+  return options.actorId.trim();
+}
+
+function idleBaseCandidates(state) {
+  return state.hostConfig.aliases.filter((hostAlias) => {
+    const registryEntry = state.registry.aliases[hostAlias.alias];
+    return registryEntry.powerState === "booted"
+      && registryEntry.health === "healthy"
+      && !state.leasesByAlias.has(hostAlias.alias)
+      && !state.pinsByAlias.has(hostAlias.alias)
+      && !hostAlias.capabilities.includes("manual-persistent");
+  });
+}
+
+function idleDeadline(registryEntry, graceSeconds) {
+  const releasedAtMs = Date.parse(registryEntry.lastLeaseReleasedAt ?? "");
+  if (!Number.isFinite(releasedAtMs)) {
+    return null;
+  }
+  return releasedAtMs + (graceSeconds * 1_000);
+}
+
+function idleEligibleCandidates(state, policy, timestamp) {
+  const nowMs = Date.parse(timestamp);
+  return idleBaseCandidates(state).filter((hostAlias) => {
+    const deadline = idleDeadline(state.registry.aliases[hostAlias.alias], policy.graceSeconds);
+    return deadline !== null && deadline <= nowMs;
+  });
+}
+
+function buildIdleSummary(paths, state, timestamp) {
+  const policy = readIdlePolicy(paths);
+  if (!policy) {
+    return {
+      configured: false,
+      eligibleCount: 0,
+      graceSeconds: null,
+      lastCleanupResult: state.registry.idle.lastCleanupResult,
+      nextScheduledCleanupAt: null,
+    };
+  }
+  const baseCandidates = idleBaseCandidates(state);
+  const deadlines = baseCandidates
+    .map((hostAlias) => idleDeadline(state.registry.aliases[hostAlias.alias], policy.graceSeconds))
+    .filter((deadline) => deadline !== null);
+  return {
+    configured: true,
+    eligibleCount: idleEligibleCandidates(state, policy, timestamp).length,
+    graceSeconds: policy.graceSeconds,
+    lastCleanupResult: state.registry.idle.lastCleanupResult,
+    nextScheduledCleanupAt: deadlines.length === 0
+      ? null
+      : new Date(Math.max(Date.parse(timestamp), Math.min(...deadlines))).toISOString(),
+  };
+}
+
+function idleCleanupPlan(state) {
+  const candidates = idleBaseCandidates(state);
+  const fingerprint = {
+    candidates: candidates.map((hostAlias) => ({
+      alias: hostAlias.alias,
+      simulatorId: hostAlias.simulatorId,
+    })).sort((left, right) => left.alias.localeCompare(right.alias)),
+    command: "idle.cleanup",
+    schemaVersion: IDLE_SCHEMA_VERSION,
+  };
+  return {
+    candidates,
+    publicPlan: {
+      command: "idle.cleanup",
+      eligibleCount: candidates.length,
+      mode: "preview",
+      ok: true,
+      planId: sha256Digest(fingerprint),
+      schemaVersion: IDLE_SCHEMA_VERSION,
+      status: candidates.length > 0 ? "changes_required" : "no_changes",
+    },
   };
 }
 
@@ -1506,9 +1671,22 @@ function buildCandidateAnalysis({ hostConfig, registry, leasesByAlias, pinsByAli
 
 function sortCandidates(candidates) {
   return [...candidates].sort((left, right) => {
-    const leaseComparison = compareNullableTimestamps(left.registryEntry.lastLeaseStartedAt, right.registryEntry.lastLeaseStartedAt);
-    if (leaseComparison !== 0) {
-      return leaseComparison;
+    const tier = (candidate) => {
+      if (candidate.pin) {
+        return 0;
+      }
+      return candidate.registryEntry.powerState === "booted" ? 1 : 2;
+    };
+    const tierComparison = tier(left) - tier(right);
+    if (tierComparison !== 0) {
+      return tierComparison;
+    }
+    const releaseComparison = compareNullableTimestamps(
+      right.registryEntry.lastLeaseReleasedAt,
+      left.registryEntry.lastLeaseReleasedAt,
+    );
+    if (releaseComparison !== 0) {
+      return releaseComparison;
     }
     return left.index - right.index;
   });
@@ -1758,12 +1936,14 @@ function createAppSnapshot(paths, state, { eventLimit = 50, timestamp } = {}) {
     aliasSnapshot(hostAlias, state.registry.aliases[hostAlias.alias], state.leasesByAlias.get(hostAlias.alias), state.pinsByAlias.get(hostAlias.alias)));
   const recentEvents = [...recentEventPayload.events]
     .sort((left, right) => sortByDescendingTimestamp(left, right, (event) => event.timestamp));
+  const idle = buildIdleSummary(paths, state, timestamp);
 
   return {
     activeLeases,
     generatedAt: timestamp,
     hostConfigPath: paths.hostConfigPath,
     hostId: state.hostConfig.hostId,
+    idle,
     ok: true,
     overview: {
       leaseSaturation: simulators.length === 0
@@ -2589,6 +2769,7 @@ function assertBrokerPathsDistinct(paths) {
     brokerPathEntry("stateRoot", paths.stateRoot, { kind: "root" }),
     brokerPathEntry("appSnapshotPath", paths.appSnapshotPath),
     brokerPathEntry("knownProjectsPath", paths.knownProjectsPath),
+    brokerPathEntry("idlePolicyPath", paths.idlePolicyPath),
     brokerPathEntry("registryPath", paths.registryPath),
     brokerPathEntry("eventsPath", paths.eventsPath),
     brokerPathEntry("serviceLogPath", paths.serviceLogPath),
@@ -3211,6 +3392,7 @@ export function resolveBrokerPaths({
     evidenceDir: path.join(resolvedStateRoot, "evidence"),
     eventsPath: path.join(resolvedStateRoot, "events.ndjson"),
     hostConfigPath: resolvedHostConfigPath,
+    idlePolicyPath: path.join(resolvedStateRoot, "idle-policy.json"),
     knownProjectsPath: path.join(resolvedStateRoot, "known-projects.json"),
     leaseLockDir: path.join(resolvedStateRoot, "locks", "lease-mutation.lock"),
     leaseLockOwnerPath: path.join(resolvedStateRoot, "locks", "lease-mutation.lock", "owner.json"),
@@ -3687,6 +3869,288 @@ export function writeAppSnapshotArtifactUnderMutationLock(paths, options = {}) {
     ...options,
     now: timestamp,
   }), {
+    now: timestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  });
+}
+
+export function idlePolicyConfiguredBroker(paths) {
+  return readIdlePolicy(paths) !== null;
+}
+
+export function enableIdlePolicyBroker(paths, options = {}) {
+  const timestamp = nowIso(options.now);
+  const actorId = requireHumanIdleActor(options, "Idle policy enable");
+  const graceSeconds = requireBoundedInteger(
+    options.graceSeconds,
+    "grace-seconds",
+    MIN_IDLE_GRACE_SECONDS,
+    MAX_IDLE_GRACE_SECONDS,
+  );
+  return withLeaseMutationLock(paths, () => {
+    ensureStatePaths(paths);
+    writeJsonAtomicRestricted(paths.idlePolicyPath, {
+      graceSeconds,
+      version: IDLE_POLICY_VERSION,
+    });
+    appendEventRecord(paths, "idle.policy.enabled", {
+      alias: null,
+      actorType: "human",
+      jobId: null,
+      leaseId: null,
+      payload: {
+        actorId,
+        graceSeconds,
+      },
+      projectId: null,
+      purposeId: null,
+    }, timestamp);
+    return {
+      command: "idle.enable",
+      configured: true,
+      graceSeconds,
+      ok: true,
+      schemaVersion: IDLE_SCHEMA_VERSION,
+    };
+  }, {
+    now: timestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  });
+}
+
+export function disableIdlePolicyBroker(paths, options = {}) {
+  const timestamp = nowIso(options.now);
+  const actorId = requireHumanIdleActor(options, "Idle policy disable");
+  return withLeaseMutationLock(paths, () => {
+    const unchanged = !fs.existsSync(paths.idlePolicyPath);
+    removeIfExists(paths.idlePolicyPath);
+    appendEventRecord(paths, "idle.policy.disabled", {
+      alias: null,
+      actorType: "human",
+      jobId: null,
+      leaseId: null,
+      payload: {
+        actorId,
+        unchanged,
+      },
+      projectId: null,
+      purposeId: null,
+    }, timestamp);
+    return {
+      command: "idle.disable",
+      configured: false,
+      graceSeconds: null,
+      ok: true,
+      schemaVersion: IDLE_SCHEMA_VERSION,
+      unchanged,
+    };
+  }, {
+    now: timestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  });
+}
+
+export function idleStatusBroker(paths, options = {}) {
+  const timestamp = nowIso(options.now);
+  return withLeaseMutationLock(paths, () => {
+    const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+    return {
+      command: "idle.status",
+      ok: true,
+      schemaVersion: IDLE_SCHEMA_VERSION,
+      ...buildIdleSummary(paths, state, timestamp),
+    };
+  }, {
+    now: timestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  });
+}
+
+function idleCleanupStatus(shutdownCount, failureCount) {
+  if (failureCount > 0) {
+    return "repair_needed";
+  }
+  return shutdownCount > 0 ? "success" : "no_changes";
+}
+
+function performIdleShutdowns(paths, state, candidates, options, timestamp, { command, eventType, source }) {
+  const adapter = resolveLifecycleAdapter(options);
+  let shutdownCount = 0;
+  let failureCount = 0;
+  for (const hostAlias of candidates) {
+    const registryEntry = state.registry.aliases[hostAlias.alias];
+    try {
+      invokeLifecycleAdapter("shutdown", adapter, {
+        action: "shutdown",
+        alias: hostAlias.alias,
+        hostAlias,
+        paths,
+        requester: {
+          actorId: options.actorId ?? "idle-policy",
+          actorType: options.actorType ?? "system",
+          jobId: null,
+        },
+        state,
+        timestamp,
+      });
+      registryEntry.powerState = "shutdown";
+      registryEntry.lastShutdownAt = timestamp;
+      registryEntry.updatedAt = timestamp;
+      shutdownCount += 1;
+      appendEventRecord(paths, "idle.simulator.shutdown", {
+        alias: hostAlias.alias,
+        actorType: options.actorType ?? "system",
+        jobId: null,
+        leaseId: null,
+        payload: { reasonCode: "idle-grace-expired", source },
+        projectId: null,
+        purposeId: null,
+      }, timestamp);
+    } catch {
+      registryEntry.health = "repair-needed";
+      registryEntry.driftReason = "idle-shutdown-failed";
+      registryEntry.updatedAt = timestamp;
+      state.registry.updatedAt = timestamp;
+      failureCount += 1;
+      writeRegistry(paths, state.registry);
+      appendEventRecord(paths, "idle.simulator.shutdown_failed", {
+        alias: hostAlias.alias,
+        actorType: options.actorType ?? "system",
+        jobId: null,
+        leaseId: null,
+        payload: { reasonCode: "idle-shutdown-failed", source },
+        projectId: null,
+        purposeId: null,
+      }, timestamp);
+    }
+  }
+
+  const lastCleanupResult = {
+    completedAt: timestamp,
+    eligibleCount: candidates.length,
+    failureCount,
+    shutdownCount,
+    source,
+    status: idleCleanupStatus(shutdownCount, failureCount),
+  };
+  if (candidates.length > 0 || options.persistNoChanges !== false) {
+    state.registry.idle.lastCleanupResult = lastCleanupResult;
+    state.registry.updatedAt = timestamp;
+    writeRegistry(paths, state.registry);
+    appendEventRecord(paths, eventType, {
+      alias: null,
+      actorType: options.actorType ?? "system",
+      jobId: null,
+      leaseId: null,
+      payload: {
+        eligibleCount: candidates.length,
+        failureCount,
+        shutdownCount,
+        source,
+        status: lastCleanupResult.status,
+      },
+      projectId: null,
+      purposeId: null,
+    }, timestamp);
+  }
+  return {
+    command,
+    eligibleCount: candidates.length,
+    failureCount,
+    lastCleanupResult,
+    ok: true,
+    schemaVersion: IDLE_SCHEMA_VERSION,
+    shutdownCount,
+    status: lastCleanupResult.status,
+  };
+}
+
+export function reconcileIdleBroker(paths, options = {}) {
+  const timestamp = nowIso(options.now);
+  return withLeaseMutationLock(paths, () => {
+    const policy = readIdlePolicy(paths);
+    if (!policy) {
+      return {
+        command: "idle.reconcile",
+        configured: false,
+        eligibleCount: 0,
+        failureCount: 0,
+        ok: true,
+        schemaVersion: IDLE_SCHEMA_VERSION,
+        shutdownCount: 0,
+        status: "not_configured",
+      };
+    }
+    const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+    const candidates = idleEligibleCandidates(state, policy, timestamp);
+    return {
+      configured: true,
+      graceSeconds: policy.graceSeconds,
+      ...performIdleShutdowns(paths, state, candidates, options, timestamp, {
+        command: "idle.reconcile",
+        eventType: "idle.reconciled",
+        source: options.source ?? "manual-reconcile",
+      }),
+    };
+  }, {
+    now: timestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  });
+}
+
+export function cleanupIdleBroker(paths, options = {}) {
+  const timestamp = nowIso(options.now);
+  if (options.apply !== true) {
+    return withLeaseMutationLock(paths, () => {
+      const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+      return idleCleanupPlan(state).publicPlan;
+    }, {
+      now: timestamp,
+      processExists: options.processExists,
+      processSampler: options.processSampler,
+      timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+    });
+  }
+
+  const actorId = requireHumanIdleActor(options, "Idle cleanup apply");
+  if (typeof options.confirmPlanId !== "string" || options.confirmPlanId.trim() === "") {
+    throw new BrokerError("Idle cleanup apply requires --confirm <plan-id>.", {
+      reasonCode: "idle-confirmation-required",
+    });
+  }
+  return withLeaseMutationLock(paths, () => {
+    const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+    const plan = idleCleanupPlan(state);
+    if (options.confirmPlanId !== plan.publicPlan.planId) {
+      throw new BrokerError("Idle cleanup confirmation is stale; rerun preview and confirm the current plan.", {
+        reasonCode: "idle-plan-stale",
+      });
+    }
+    const result = performIdleShutdowns(paths, state, plan.candidates, {
+      ...options,
+      actorId,
+      actorType: "human",
+    }, timestamp, {
+      command: "idle.cleanup",
+      eventType: "idle.cleanup.applied",
+      source: "confirmed-cleanup",
+    });
+    return {
+      ...result,
+      mode: "apply",
+      planId: plan.publicPlan.planId,
+    };
+  }, {
     now: timestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
@@ -5100,12 +5564,12 @@ function acquireSelection(paths, options = {}) {
   };
 }
 
-function rollbackAcquireLease(paths, state, leaseRecord, timestamp, error) {
+function rollbackAcquireLease(paths, state, leaseRecord, timestamp, reasonCode) {
   removeLeaseRecordFiles(paths, leaseRecord);
   const registryEntry = state.registry.aliases[leaseRecord.alias];
   registryEntry.activeLeaseId = null;
   registryEntry.health = "repair-needed";
-  registryEntry.driftReason = error?.message ?? "reset-on-acquire-failed";
+  registryEntry.driftReason = reasonCode;
   registryEntry.updatedAt = timestamp;
   state.registry.updatedAt = timestamp;
   writeRegistry(paths, state.registry);
@@ -5137,6 +5601,50 @@ function maybeResetLeaseOnAcquire(paths, state, leaseRecord, options = {}) {
   registryEntry.updatedAt = leaseRecord.startedAt;
   state.registry.updatedAt = leaseRecord.startedAt;
   writeRegistry(paths, state.registry);
+}
+
+function maybeBootLeaseOnAcquire(paths, state, leaseRecord, options = {}) {
+  const registryEntry = state.registry.aliases[leaseRecord.alias];
+  if (registryEntry.powerState === "booted") {
+    return false;
+  }
+  const hostAlias = findHostAliasOrThrow(state, leaseRecord.alias);
+  const adapter = resolveLifecycleAdapter(options);
+  invokeLifecycleAdapter("boot", adapter, {
+    action: "boot",
+    alias: leaseRecord.alias,
+    hostAlias,
+    paths,
+    requester: {
+      actorId: leaseRecord.actorId,
+      actorType: leaseRecord.actorType,
+      jobId: leaseRecord.jobId,
+    },
+    state,
+    timestamp: leaseRecord.startedAt,
+  });
+  registryEntry.powerState = "booted";
+  registryEntry.health = "healthy";
+  registryEntry.driftReason = null;
+  registryEntry.lastBootedAt = leaseRecord.startedAt;
+  registryEntry.updatedAt = leaseRecord.startedAt;
+  state.registry.updatedAt = leaseRecord.startedAt;
+  writeRegistry(paths, state.registry);
+  appendEventRecord(paths, "simulator.booted", {
+    alias: leaseRecord.alias,
+    actorType: leaseRecord.actorType,
+    jobId: leaseRecord.jobId,
+    leaseId: leaseRecord.leaseId,
+    payload: {
+      action: "boot",
+      actorId: leaseRecord.actorId,
+      implicitOnAcquire: true,
+      powerState: "booted",
+    },
+    projectId: leaseRecord.projectId,
+    purposeId: leaseRecord.purposeId,
+  }, leaseRecord.startedAt);
+  return true;
 }
 
 export function acquireLeaseBroker(paths, options = {}) {
@@ -5220,13 +5728,25 @@ export function acquireLeaseBroker(paths, options = {}) {
     try {
       maybeResetLeaseOnAcquire(paths, selection.state, leaseRecord, options);
     } catch (error) {
-      rollbackAcquireLease(paths, selection.state, leaseRecord, selection.timestamp, error);
+      rollbackAcquireLease(paths, selection.state, leaseRecord, selection.timestamp, "reset-on-acquire-failed");
       throw new BrokerError(`Failed to reset alias ${leaseRecord.alias} before handing out the lease.`, {
         alias: leaseRecord.alias,
         cause: error?.message ?? String(error),
         leaseId: leaseRecord.leaseId,
         reasonCode: "reset-on-acquire-failed",
         resetPolicy: leaseRecord.resetPolicy,
+        simulatorId: leaseRecord.simulatorId,
+      });
+    }
+    try {
+      maybeBootLeaseOnAcquire(paths, selection.state, leaseRecord, options);
+    } catch (error) {
+      rollbackAcquireLease(paths, selection.state, leaseRecord, selection.timestamp, "boot-on-acquire-failed");
+      throw new BrokerError(`Failed to boot alias ${leaseRecord.alias} before handing out the lease.`, {
+        alias: leaseRecord.alias,
+        cause: error?.message ?? String(error),
+        leaseId: leaseRecord.leaseId,
+        reasonCode: "boot-on-acquire-failed",
         simulatorId: leaseRecord.simulatorId,
       });
     }

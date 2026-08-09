@@ -373,6 +373,97 @@ test("service lifecycle routes CLI commands through brokerd and falls back after
   assert.equal(release.json.transport, "direct");
 });
 
+test("policy-enabled lease acquisition lazily starts brokerd and local-only reports its limitation", async (t) => {
+  const fixture = makeFixture(1);
+  t.after(async () => stopServiceIfRunning(fixture));
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+
+  const unconfigured = runCliWithEnv(fixture, { SIMBROKER_LOCAL_ONLY: "1" }, "idle", "status");
+  assert.equal(unconfigured.status, 0);
+  assert.equal(unconfigured.json.configured, false);
+  assert.deepEqual(unconfigured.json.scheduler, {
+    active: false,
+    limitation: "local-only-mode",
+  });
+
+  const enabled = runCli(
+    fixture,
+    "idle",
+    "enable",
+    "--grace-seconds",
+    "60",
+    "--actor-type",
+    "human",
+    "--actor-id",
+    "operator",
+  );
+  assert.equal(enabled.status, 0, enabled.stderr);
+  assert.equal(enabled.json.transport, "direct");
+  assert.deepEqual(enabled.json.scheduler, {
+    active: false,
+    limitation: "service-not-running",
+  });
+  assert.equal(runCli(fixture, "service", "status").json.running, false);
+
+  const acquire = runCli(
+    fixture,
+    "lease",
+    "acquire",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--actor-type",
+    "agent",
+    "--actor-id",
+    "agent-lazy-start",
+    "--owner-pid",
+    String(process.pid),
+  );
+  assert.equal(acquire.status, 0, acquire.stderr);
+  assert.equal(acquire.json.transport, "service");
+  assert.deepEqual(acquire.json.scheduler, {
+    active: true,
+    limitation: null,
+  });
+  assert.equal(runCli(fixture, "service", "status").json.running, true);
+
+  const status = runCli(fixture, "idle", "status");
+  assert.equal(status.status, 0, status.stderr);
+  assert.equal(status.json.transport, "service");
+  assert.equal(status.json.scheduler.active, true);
+  assert.equal(Object.hasOwn(status.json, "servedBy"), false);
+  assert.equal(JSON.stringify(status.json).includes(fixture.root), false);
+
+  const release = runCli(fixture, "lease", "release", "--lease-id", acquire.json.lease.leaseId);
+  assert.equal(release.status, 0, release.stderr);
+  const preview = runCli(fixture, "idle", "cleanup");
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.equal(preview.json.eligibleCount, 1);
+  assert.equal(Object.hasOwn(preview.json, "servedBy"), false);
+  assert.equal(JSON.stringify(preview.json).includes("ui-1"), false);
+  assert.equal(JSON.stringify(preview.json).includes("SIM-UI-1"), false);
+  assert.equal(JSON.stringify(preview.json).includes(fixture.root), false);
+  const cleanup = runCli(
+    fixture,
+    "idle",
+    "cleanup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--actor-type",
+    "human",
+    "--actor-id",
+    "operator",
+  );
+  assert.equal(cleanup.status, 0, cleanup.stderr);
+  assert.equal(cleanup.json.shutdownCount, 1);
+  assert.equal(Object.hasOwn(cleanup.json, "servedBy"), false);
+  assert.equal(JSON.stringify(cleanup.json).includes("ui-1"), false);
+  assert.equal(JSON.stringify(cleanup.json).includes("SIM-UI-1"), false);
+  assert.equal(JSON.stringify(cleanup.json).includes(fixture.root), false);
+});
+
 test("service routes project forget through brokerd and refreshes the shared app snapshot", async (t) => {
   const fixture = makeFixture();
   t.after(async () => stopServiceIfRunning(fixture));
@@ -824,6 +915,49 @@ test("brokerd publishes service metadata only after startup snapshot refresh", a
   assert.equal(snapshotRefreshed, true);
   assert.equal(fs.existsSync(paths.serviceSocketPath), true);
   assert.equal(fs.existsSync(paths.serviceMetadataPath), true);
+});
+
+test("brokerd reconciles immediately, every thirty seconds, refreshes snapshots, and cancels the timer", async () => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    serviceSocketPath: path.join(fixture.root, "timer.sock"),
+    stateRoot: fixture.stateRoot,
+  });
+  const sources = [];
+  let snapshotCount = 0;
+  let intervalMilliseconds = null;
+  let timerCallback = null;
+  let timerCleared = false;
+  const timer = { unref() {} };
+  const service = await startBrokerService(paths, {
+    clearIntervalFn(value) {
+      assert.equal(value, timer);
+      timerCleared = true;
+    },
+    reconcileIdleBroker(_servicePaths, options) {
+      sources.push(options.source);
+      return { ok: true };
+    },
+    setIntervalFn(callback, milliseconds) {
+      timerCallback = callback;
+      intervalMilliseconds = milliseconds;
+      return timer;
+    },
+    writeAppSnapshotArtifact() {
+      snapshotCount += 1;
+    },
+  });
+
+  assert.deepEqual(sources, ["service-startup"]);
+  assert.equal(snapshotCount, 1);
+  assert.equal(intervalMilliseconds, 30_000);
+  timerCallback();
+  assert.deepEqual(sources, ["service-startup", "service-timer"]);
+  assert.equal(snapshotCount, 2);
+
+  await service.shutdown({ exitProcess: false });
+  assert.equal(timerCleared, true);
 });
 
 test("service startup lock waits while another stale-lock reclaimer is active", () => {

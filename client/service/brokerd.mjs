@@ -16,7 +16,8 @@ import {
   BrokerError,
   appSnapshotBroker,
   readEventsBroker,
-  writeAppSnapshotArtifact,
+  reconcileIdleBroker,
+  writeAppSnapshotArtifactUnderMutationLock,
 } from "../../broker-core/index.mjs";
 import { executeBrokerCommand, streamEventsLocal } from "../command-dispatch.mjs";
 import { serviceCommandExecutionTimeoutMs } from "./service-client.mjs";
@@ -24,6 +25,7 @@ import { serviceCommandExecutionTimeoutMs } from "./service-client.mjs";
 const SERVICE_REQUEST_BODY_TIMEOUT_MS = 30_000;
 const SERVICE_COMMAND_BODY_MAX_BYTES = 64 * 1024;
 const SERVICE_LOCK_OWNER_PID_IDENTITY_TOLERANCE_MS = 15_000;
+const IDLE_RECONCILE_INTERVAL_MS = 30_000;
 
 function writeJsonAtomic(filePath, payload) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
@@ -767,9 +769,20 @@ export async function startBrokerService(paths, options = {}) {
     transport: "unix-http",
   };
 
+  const writeSnapshot = options.writeAppSnapshotArtifact ?? writeAppSnapshotArtifactUnderMutationLock;
+  const reconcileIdle = options.reconcileIdleBroker ?? reconcileIdleBroker;
+  const runIdleReconciliation = (source) => {
+    const result = reconcileIdle(paths, {
+      ...(options.idleReconcileOptions ?? {}),
+      persistNoChanges: false,
+      source,
+    });
+    writeSnapshot(paths, options.idleSnapshotOptions ?? {});
+    return result;
+  };
+
   try {
-    const writeStartupSnapshot = options.writeAppSnapshotArtifact ?? writeAppSnapshotArtifact;
-    writeStartupSnapshot(paths);
+    runIdleReconciliation("service-startup");
   } catch (error) {
     releaseStartupLock();
     removeIfExists(paths.serviceMetadataPath);
@@ -779,6 +792,8 @@ export async function startBrokerService(paths, options = {}) {
 
   let shuttingDown = false;
   let server = null;
+  let idleReconcileTimer = null;
+  let idleReconcileRunning = false;
   const activeConnections = new Set();
   const activeRequests = new Set();
   const activeEventStreams = new Set();
@@ -817,6 +832,10 @@ export async function startBrokerService(paths, options = {}) {
       return;
     }
     shuttingDown = true;
+    if (idleReconcileTimer !== null) {
+      (options.clearIntervalFn ?? clearInterval)(idleReconcileTimer);
+      idleReconcileTimer = null;
+    }
     removeIfExists(paths.serviceMetadataPath);
     for (const stream of activeEventStreams) {
       stream.controller.abort();
@@ -898,7 +917,7 @@ export async function startBrokerService(paths, options = {}) {
         assertExpectedServiceIdentity(metadata, body.expectedServiceIdentity);
         assertCommandFreshForDispatch(paths, body);
         const payload = executeBrokerCommand(paths, body);
-        const serviceMetadata = body.group === "capacity" ? {} : { servedBy: metadata };
+        const serviceMetadata = body.group === "capacity" || body.group === "idle" ? {} : { servedBy: metadata };
         sendJson(response, 200, {
           ok: true,
           ...payload,
@@ -1071,6 +1090,20 @@ export async function startBrokerService(paths, options = {}) {
       restoreUmask();
       fs.chmodSync(paths.serviceSocketPath, 0o600);
       writeJsonAtomic(paths.serviceMetadataPath, metadata);
+      idleReconcileTimer = (options.setIntervalFn ?? setInterval)(() => {
+        if (idleReconcileRunning || shuttingDown) {
+          return;
+        }
+        idleReconcileRunning = true;
+        try {
+          runIdleReconciliation("service-timer");
+        } catch (error) {
+          (options.onIdleReconcileError ?? console.error)(error);
+        } finally {
+          idleReconcileRunning = false;
+        }
+      }, IDLE_RECONCILE_INTERVAL_MS);
+      idleReconcileTimer?.unref?.();
       releaseStartupLock();
       resolve({
         metadata,
