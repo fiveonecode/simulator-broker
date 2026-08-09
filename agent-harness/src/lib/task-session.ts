@@ -48,6 +48,23 @@ const ADVISORY_EVALUATION_MARKDOWN_FILE_NAME = "advisory-evaluation.md";
 const ADVISORY_EVALUATION_RUBRIC_FILE_NAME = "advisory-evaluation-rubric.json";
 const VERIFY_RESULTS_DIRECTORY = "verify";
 const COMMIT_SECTION_HEADERS = ["Why:", "Changed:", "Verification:", "Affected:", "Refs:", "Session:"];
+const STRUCTURED_COMMIT_LOCAL_PATH_MESSAGE =
+  "Commit message contains local machine path(s). Use repo-relative paths, GitHub URLs, commit SHAs, or public task artifact labels instead of local paths.";
+const STRUCTURED_COMMIT_LOCAL_PATH_PATTERNS = [
+  /(^|[\s("'<=:[,;-])\/Users\/[^\s`"'<>),;]*/u,
+  /(^|[\s("'<=:[,;-])\/home\/[^\s`"'<>),;]*/u,
+  /(^|[\s("'<=:[,;-])\/root\/[^\s`"'<>),;]*/u,
+  /(^|[\s("'<=:[,;-])\/tmp\/[^\s`"'<>),;]*/u,
+  /(^|[\s("'<=:[,;-])\/var\/(?:tmp|folders)\/[^\s`"'<>),;]*/u,
+  /(^|[\s("'<=:[,;-])\/private\/var\/[^\s`"'<>),;]*/u,
+  /(^|[\s("'<=:[,;-])\/(?:workspace|workspaces|opt|scratch)\/[^\s`"'<>),;]*/u,
+  /(^|[\s("'<=:[,;-])\/nix\/store\/[^\s`"'<>),;]*/u,
+  /(^|[\s("'<=:[,;-])~[A-Za-z0-9_-]*[\\/][^\s`"'<>),;]*/u,
+  /\bfile:\/\/(?:localhost)?\/[^\s`"'<>),;]*/iu,
+  /(^|[\s("'<=:[,;-])[A-Za-z]:[\\/][^\s`"'<>),;]*/u,
+  /(^|[\s("'<=:[,;-])\\\\[^\\\s]+\\[^\s`"'<>),;]*/u,
+  /(^|[\s("'<=:[,;-])\.\.[\\/][^\s`"'<>),;]*/u,
+];
 const WORKTREE_ALLOWLIST = ["artifacts/agent-harness/**"];
 const DETACHED_RECOVERY_BLOCKING_STATUSES = new Set<DetachedRunStatus>([
   "failed",
@@ -339,7 +356,13 @@ function isWorktreeEntryAllowed(entry: WorkingTreeStatusEntry): boolean {
   );
 }
 
-function getStructuredCommitMessageIssues(message: string): string[] {
+function getCommitMessageLocalPathIssues(message: string): string[] {
+  return STRUCTURED_COMMIT_LOCAL_PATH_PATTERNS.some((pattern) => pattern.test(message))
+    ? [STRUCTURED_COMMIT_LOCAL_PATH_MESSAGE]
+    : [];
+}
+
+function getStructuredCommitSectionIssues(message: string): string[] {
   const sections = getStructuredCommitSections(message);
 
   return COMMIT_SECTION_HEADERS.flatMap((header) => {
@@ -350,6 +373,13 @@ function getStructuredCommitMessageIssues(message: string): string[] {
 
     return sectionBody.length === 0 ? [`Commit section ${header} is empty.`] : [];
   });
+}
+
+function getStructuredCommitMessageIssues(message: string): string[] {
+  return [
+    ...getStructuredCommitSectionIssues(message),
+    ...getCommitMessageLocalPathIssues(message),
+  ];
 }
 
 function getStructuredCommitSections(message: string): Map<string, string> {
@@ -386,8 +416,16 @@ function normalizeSessionIdentifier(value: string): string {
 function getSessionIdentifiers(sessionDir: string, repoRoot: string): string[] {
   const absoluteSessionDir = normalizeSessionIdentifier(path.resolve(sessionDir));
   const relativeSessionDir = normalizeSessionIdentifier(path.relative(repoRoot, absoluteSessionDir));
+  const taskSessionMatch = /\/agent-harness\/simulator-broker-app\/([^/]+)(?:\/.*)?$/u.exec(absoluteSessionDir);
+  const publicSessionIdentifiers = [
+    taskSessionMatch ? `task-sessions/${taskSessionMatch[1]}` : undefined,
+    taskSessionMatch?.[1],
+  ];
 
-  return [...new Set([absoluteSessionDir, relativeSessionDir].filter(Boolean))];
+  return [...new Set(
+    [absoluteSessionDir, relativeSessionDir, ...publicSessionIdentifiers]
+      .filter((identifier): identifier is string => typeof identifier === "string" && identifier.length > 0),
+  )];
 }
 
 function isSessionIdentifierLeadingBoundary(character: string | undefined): boolean {

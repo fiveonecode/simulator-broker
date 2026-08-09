@@ -182,7 +182,7 @@ npm run agent:complete -- --session-dir "$HOME/.codex/agent-harness/simulator-br
 - `WORKFLOW.md` invokes `./scripts/validate.sh` for normal Symphony validation.
   The validator runs `npm test` plus the canonical diff-integrity check.
 - `npm run agent:complete -- --session-dir <dir>` is the close-out gate; it fails unless the required verification profiles passed against the current task-tree fingerprint and any blocking obligations are satisfied or the session is explicitly reported blocked.
-- Every meaningful task commit must use a structured git message with `Why:`, `Changed:`, `Verification:`, `Affected:`, `Refs:`, and `Session:` sections.
+- Every meaningful task commit must use a structured git message with `Why:`, `Changed:`, `Verification:`, `Affected:`, `Refs:`, and `Session:` sections. Commit messages are durable public output: use repo-relative paths, GitHub URLs, commit SHAs, and public task artifact labels such as `task-sessions/<session-name>` instead of machine-local or parent-relative paths. `agent:complete` rejects detected local-path forms in every new commit touching task paths.
 - `agent:complete` enforces a clean close-out: no new uncommitted task changes, no malformed task commit messages, no changed paths outside selected manifest path constraints, and no leftover untracked junk outside allowlisted local artifact paths.
 - For `long-running` sessions, `agent:complete` also requires populated `task-plan`, `session-handoff`, and `advisory-evaluation` artifacts.
 

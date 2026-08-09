@@ -93,7 +93,11 @@ function runGit(repoRoot: string, args: string[]): string {
   }).replace(/\r?\n$/, "");
 }
 
-function makeStructuredCommitMessage(summary: string): string {
+function makeStructuredCommitMessage(
+  summary: string,
+  session = "artifacts/agent-harness/test-session",
+  verification = "Harness unit test fixture only.",
+): string {
   return [
     summary,
     "",
@@ -102,13 +106,13 @@ function makeStructuredCommitMessage(summary: string): string {
     "Changed:",
     "- Updated the task path fixture for this test case.",
     "Verification:",
-    "- Harness unit test fixture only.",
+    `- ${verification}`,
     "Affected:",
     "- broker-core/index.mjs",
     "Refs:",
     "- spec/build-and-test.md",
     "Session:",
-    "- artifacts/agent-harness/test-session",
+    `- ${session}`,
   ].join("\n");
 }
 
@@ -522,6 +526,84 @@ describe("task completion gate", () => {
     expect(result.status).toBe("failed");
     expect(result.commitCheck.details.join(" ")).toContain("Missing commit section Why:");
     rmSync(repoRoot, { force: true, recursive: true });
+  });
+
+  it("rejects local machine paths in every new commit touching task paths", () => {
+    const { repoRoot, sessionDir, taskFilePath } = createRepoFixture();
+    const contextPack = makeContextPack();
+    contextPack.verificationObligations = [];
+    const contract = writeTaskSession(sessionDir, contextPack, repoRoot);
+
+    commitTaskChange(
+      repoRoot,
+      taskFilePath,
+      makeStructuredCommitMessage("Leaky task commit", undefined, "Evidence at /Users/alice/.codex/private-task-session."),
+    );
+    commitTaskChange(repoRoot, taskFilePath);
+    writeVerifyResult(sessionDir, "implementation", makeCurrentVerifyResult(repoRoot, contract, {
+      profileId: "implementation",
+      proofKind: "code",
+    }));
+
+    const result = evaluateTaskCompletion(sessionDir, repoRoot, readTaskContract(sessionDir), loadSessionVerifyResults(sessionDir));
+
+    expect(result.status).toBe("failed");
+    expect(result.commitCheck.details.join(" ")).toContain("Commit message contains local machine path(s).");
+    rmSync(repoRoot, { force: true, recursive: true });
+  });
+
+  it("rejects parent-relative task-session paths in commit messages", () => {
+    const { repoRoot, sessionDir, taskFilePath } = createRepoFixture();
+    const contextPack = makeContextPack();
+    contextPack.verificationObligations = [];
+    const contract = writeTaskSession(sessionDir, contextPack, repoRoot);
+
+    commitTaskChange(
+      repoRoot,
+      taskFilePath,
+      makeStructuredCommitMessage("Escaping task-session reference", undefined, "Evidence at ../../.codex/private-task-session."),
+    );
+    writeVerifyResult(sessionDir, "implementation", makeCurrentVerifyResult(repoRoot, contract, {
+      profileId: "implementation",
+      proofKind: "code",
+    }));
+
+    const result = evaluateTaskCompletion(sessionDir, repoRoot, readTaskContract(sessionDir), loadSessionVerifyResults(sessionDir));
+
+    expect(result.status).toBe("failed");
+    expect(result.commitCheck.details.join(" ")).toContain("Commit message contains local machine path(s).");
+    rmSync(repoRoot, { force: true, recursive: true });
+  });
+
+  it("accepts public-safe artifact labels for simulator-broker task sessions", () => {
+    const { repoRoot, taskFilePath } = createRepoFixture();
+    const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "agent-harness-public-session-root-"));
+    const sessionName = "public-safe-commit-metadata";
+    const sessionDir = path.join(sessionRoot, "agent-harness", "simulator-broker-app", sessionName);
+    const contextPack = makeContextPack();
+    contextPack.verificationObligations = [];
+    const contract = writeTaskSession(sessionDir, contextPack, repoRoot);
+
+    commitTaskChange(
+      repoRoot,
+      taskFilePath,
+      makeStructuredCommitMessage(
+        "Public-safe task commit",
+        `task-session: [task artifact: task-sessions/${sessionName}]`,
+        `Verification recorded in [task artifact: task-sessions/${sessionName}/verify/implementation].`,
+      ),
+    );
+    writeVerifyResult(sessionDir, "implementation", makeCurrentVerifyResult(repoRoot, contract, {
+      profileId: "implementation",
+      proofKind: "code",
+    }));
+
+    const result = evaluateTaskCompletion(sessionDir, repoRoot, readTaskContract(sessionDir), loadSessionVerifyResults(sessionDir));
+
+    expect(result.status).toBe("passed");
+    expect(result.commitCheck.passed).toBe(true);
+    rmSync(repoRoot, { force: true, recursive: true });
+    rmSync(sessionRoot, { force: true, recursive: true });
   });
 
   it("does not match task session identifiers by prefix", () => {
