@@ -764,6 +764,38 @@ test("lease acquire preserves the committed lease when snapshot refresh fails", 
   assert.equal(fs.existsSync(path.join(paths.leasesDir, `${acquired.lease.leaseId}.json`)), true);
 });
 
+test("idle mutations surface final snapshot refresh failures", () => {
+  const fixture = makeFixture();
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  const snapshotDirectory = path.join(fixture.root, "snapshot-directory");
+  fs.mkdirSync(snapshotDirectory);
+  const paths = {
+    ...resolveBrokerPaths({
+      hostConfigPath: fixture.hostConfigPath,
+      projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+      stateRoot: fixture.stateRoot,
+    }),
+    appSnapshotPath: snapshotDirectory,
+  };
+
+  assert.throws(() => {
+    executeBrokerCommand(paths, {
+      command: "enable",
+      group: "idle",
+      options: {
+        actorId: "operator",
+        actorType: "human",
+        graceSeconds: 60,
+        processExists: () => true,
+        simctlAdapter: fixture.simctl.adapter,
+      },
+    });
+  }, (error) =>
+    error.payload?.reasonCode === "snapshot-refresh-failed"
+    && error.payload?.error === "Failed to refresh the app snapshot after the idle command committed.");
+  assert.equal(readJson(paths.idlePolicyPath).graceSeconds, 60);
+});
+
 test("final snapshot refresh propagates process sampler timeouts", () => {
   const fixture = makeFixture();
   const projectFilePath = path.join(fixture.repoRoot, ".simulator-broker/project.json");
@@ -1423,7 +1455,41 @@ test("service command timeout budgets stale containment sampling from lease file
 test("service startup timeout covers startup reconciliation, snapshot, and lock work", () => {
   assert.equal(
     serviceStartupTimeoutMs(),
-    (12 * SIMCTL_COMMAND_TIMEOUT_MS) + (4 * PROCESS_SAMPLER_TIMEOUT_MS) + 5_000,
+    (12 * SIMCTL_COMMAND_TIMEOUT_MS) + (4 * PROCESS_SAMPLER_TIMEOUT_MS) + 120_000 + 5_000,
+  );
+});
+
+test("service startup timeout budgets stale containment from lease files", () => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  writeJson(path.join(paths.leasesDir, "stale-containment-1.json"), {
+    leaseId: "stale-containment-1",
+    runtime: {
+      commandPid: 4242,
+    },
+  });
+  writeJson(path.join(paths.leasesDir, "stale-containment-2.json"), {
+    leaseId: "stale-containment-2",
+    runtime: {
+      ownerPgid: 5252,
+    },
+  });
+  const staleContainmentBudgetMs = 2 * (
+    (STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS * PROCESS_SAMPLER_TIMEOUT_MS)
+    + DEFAULT_CONTAINMENT_TERM_WAIT_MS
+    + DEFAULT_CONTAINMENT_POST_KILL_WAIT_MS
+  );
+
+  assert.equal(
+    serviceStartupTimeoutMs({ paths }),
+    (8 * SIMCTL_COMMAND_TIMEOUT_MS)
+      + (4 * PROCESS_SAMPLER_TIMEOUT_MS)
+      + 120_000
+      + staleContainmentBudgetMs
+      + 5_000,
   );
 });
 

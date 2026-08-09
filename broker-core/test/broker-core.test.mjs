@@ -3949,6 +3949,50 @@ test("confirmed idle cleanup is count-only, plan-bound, and records shutdown fai
   }, (error) => error.payload?.reasonCode === "idle-plan-stale" && error.exitCode === 5);
 });
 
+test("idle cleanup preview does not reclaim stale containment-aware leases", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const processes = makeProcessFixture([
+    { command: "xcodebuild test SIM-UI-1", pgid: 2000, pid: 2000, ppid: 1, rssBytes: 40 * 1024 * 1024 },
+  ]);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "dead-agent",
+    actorType: "agent",
+    ownerPid: 999999,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  registerLeaseProcessBroker(resolvedPaths, {
+    command: "xcodebuild test",
+    commandPgid: 2000,
+    commandPid: 2000,
+    leaseId: lease.leaseId,
+    processExists: () => true,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const preview = cleanupIdleBroker(resolvedPaths, {
+    processController: processes.controller,
+    processExists: () => false,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+    termWaitMs: 0,
+  });
+
+  assert.equal(preview.eligibleCount, 1);
+  assert.equal(preview.status, "changes_required");
+  assert.equal(processes.isAlive(2000), true);
+  assert.deepEqual(processes.actions, []);
+  assert.equal(fs.existsSync(path.join(paths.stateRoot, "leases", `${lease.leaseId}.json`)), true);
+  assert.equal(readEventsBroker(resolvedPaths).events.some((event) => event.type === "lease.contained"), false);
+});
+
 test("releasing a healthy lease is not blocked by unrelated stale containment failure", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);

@@ -3,6 +3,24 @@ import XCTest
 
 @MainActor
 final class BrokerDashboardStoreTests: XCTestCase {
+  func testSnapshotDecodesMissingIdleAsUnconfiguredDefault() throws {
+    let fixturesRoot = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .appending(path: "Fixtures")
+    let data = try Data(contentsOf: fixturesRoot.appending(path: "busy-snapshot.json"))
+    var jsonObject = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    jsonObject.removeValue(forKey: "idle")
+    let snapshotData = try JSONSerialization.data(withJSONObject: jsonObject)
+
+    let snapshot = try JSONDecoder().decode(BrokerAppSnapshot.self, from: snapshotData)
+
+    XCTAssertFalse(snapshot.idle.configured)
+    XCTAssertEqual(snapshot.idle.eligibleCount, 0)
+    XCTAssertNil(snapshot.idle.graceSeconds)
+    XCTAssertNil(snapshot.idle.lastCleanupResult)
+    XCTAssertNil(snapshot.idle.nextScheduledCleanupAt)
+  }
+
   func testIdlePolicyCommandsUseHumanActorAndRefreshSnapshot() async throws {
     let snapshot = try loadFixture(named: "busy-snapshot")
     let loadedState = makeLoadedState(snapshot: snapshot)

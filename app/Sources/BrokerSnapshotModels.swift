@@ -13,6 +13,37 @@ struct BrokerAppSnapshot: Decodable, Sendable {
   let recentEvents: [BrokerEvent]
   let simulators: [BrokerSimulator]
   let stateRoot: String
+
+  private enum CodingKeys: String, CodingKey {
+    case activeLeases
+    case generatedAt
+    case hostConfigPath
+    case hostId
+    case idle
+    case ok
+    case overview
+    case pins
+    case projects
+    case recentEvents
+    case simulators
+    case stateRoot
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    activeLeases = try container.decode([BrokerLease].self, forKey: .activeLeases)
+    generatedAt = try container.decode(String.self, forKey: .generatedAt)
+    hostConfigPath = try container.decodeIfPresent(String.self, forKey: .hostConfigPath)
+    hostId = try container.decode(String.self, forKey: .hostId)
+    idle = try container.decodeIfPresent(BrokerIdleSummary.self, forKey: .idle) ?? .unconfigured
+    ok = try container.decode(Bool.self, forKey: .ok)
+    overview = try container.decode(BrokerOverview.self, forKey: .overview)
+    pins = try container.decode([BrokerPin].self, forKey: .pins)
+    projects = try container.decode([BrokerProjectSummary].self, forKey: .projects)
+    recentEvents = try container.decode([BrokerEvent].self, forKey: .recentEvents)
+    simulators = try container.decode([BrokerSimulator].self, forKey: .simulators)
+    stateRoot = try container.decode(String.self, forKey: .stateRoot)
+  }
 }
 
 struct BrokerIdleSummary: Decodable, Sendable {
@@ -21,6 +52,14 @@ struct BrokerIdleSummary: Decodable, Sendable {
   let graceSeconds: Int?
   let lastCleanupResult: BrokerIdleCleanupResult?
   let nextScheduledCleanupAt: String?
+
+  static let unconfigured = BrokerIdleSummary(
+    configured: false,
+    eligibleCount: 0,
+    graceSeconds: nil,
+    lastCleanupResult: nil,
+    nextScheduledCleanupAt: nil
+  )
 }
 
 struct BrokerIdleCleanupResult: Decodable, Sendable {

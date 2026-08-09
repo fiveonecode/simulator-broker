@@ -4112,7 +4112,7 @@ export function cleanupIdleBroker(paths, options = {}) {
   const timestamp = nowIso(options.now);
   if (options.apply !== true) {
     return withLeaseMutationLock(paths, () => {
-      const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+      const state = readBrokerStateSnapshot(paths, stateLoadOptions(options, timestamp));
       return idleCleanupPlan(state).publicPlan;
     }, {
       now: timestamp,

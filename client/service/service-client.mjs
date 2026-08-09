@@ -23,6 +23,7 @@ const PROCESS_SAMPLER_INVOCATIONS_PER_STATE_LOAD = 1;
 const SERVICE_STARTUP_LAUNCHER_OVERHEAD_MS = 5_000;
 const SERVICE_STARTUP_LOCK_PROCESS_SAMPLER_INVOCATIONS = 2;
 const SERVICE_STARTUP_STATE_LOADS = 2;
+const SERVICE_STARTUP_LEASE_LOCK_WAITS = 2;
 const LEASE_ACQUIRE_SIMCTL_COMMANDS = 3;
 const CAPACITY_APPLY_PLAN_EVALUATIONS = 2;
 const CAPACITY_APPLY_FINALIZATION_STATE_LOADS = 1;
@@ -490,7 +491,14 @@ export function serviceCommandTimeoutMs(request, options = {}) {
 }
 
 export function serviceStartupTimeoutMs(options = {}) {
+  const startupIdleReconcileRequest = {
+    command: "reconcile",
+    group: "idle",
+    options: {},
+  };
   return stateLoadBudgetMs(SERVICE_STARTUP_STATE_LOADS)
+    + staleContainmentBudgetMs(startupIdleReconcileRequest, options, 1)
+    + (SERVICE_STARTUP_LEASE_LOCK_WAITS * DEFAULT_LOCK_TIMEOUT_MS)
     + (hostAliasCountFromPaths(options.paths) * SIMCTL_COMMAND_TIMEOUT_MS)
     + (SERVICE_STARTUP_LOCK_PROCESS_SAMPLER_INVOCATIONS * PROCESS_SAMPLER_TIMEOUT_MS)
     + SERVICE_STARTUP_LAUNCHER_OVERHEAD_MS;

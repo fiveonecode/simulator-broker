@@ -1089,14 +1089,14 @@ export function executeBrokerCommand(paths, request) {
       writeAppSnapshotArtifactUnderMutationLock(paths, snapshotOptions);
     } catch (error) {
       if (request.group === "idle") {
-        payload = {
-          ...payload,
-          snapshotRefresh: {
-            ok: false,
-            reasonCode: error?.payload?.reasonCode ?? error?.reasonCode ?? "snapshot-refresh-failed",
-          },
-        };
-        return payload;
+        const contractError = contractSnapshotRefreshError(error);
+        if (contractError) {
+          throw contractError;
+        }
+        throw new BrokerError("Failed to refresh the app snapshot after the idle command committed.", {
+          cause: error?.message ?? String(error),
+          reasonCode: "snapshot-refresh-failed",
+        });
       }
       const contractError = contractSnapshotRefreshError(error);
       if (contractError) {
