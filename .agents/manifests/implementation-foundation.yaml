@@ -1,0 +1,46 @@
+id: implementation-foundation
+globs:
+  - app/**
+  - script/**
+  - scripts/generate_app_project.sh
+  - scripts/install_distribution.sh
+  - scripts/install_local.sh
+  - scripts/install_smoke.sh
+  - scripts/package_distribution.sh
+  - scripts/package_local.sh
+  - scripts/package_smoke.sh
+  - scripts/test_app.sh
+owner: ios-dev
+required_skills:
+  - apple-doc-research
+  - swift-concurrency-pro
+  - swiftui-pro
+  - xcode-build
+primary_specs:
+  - spec/README.md
+  - spec/architecture.md
+  - spec/build-and-test.md
+  - spec/global-simulator-broker.md
+verification_profile: implementation
+commit_required: true
+allowed_paths:
+  - app/**
+  - script/**
+  - scripts/generate_app_project.sh
+  - scripts/install_distribution.sh
+  - scripts/install_local.sh
+  - scripts/install_smoke.sh
+  - scripts/package_distribution.sh
+  - scripts/package_local.sh
+  - scripts/package_smoke.sh
+  - scripts/test_app.sh
+  - spec/**
+  - .agents/**
+forbidden_paths: []
+required_evidence:
+  - structured-git-commit
+  - clean-worktree-closeout
+  - verify:implementation
+default_commands:
+  - npm run agent:context -- --paths <files> --session-dir <session-dir>
+  - npm run agent:verify -- --profile implementation --paths <files> --session-dir <session-dir>

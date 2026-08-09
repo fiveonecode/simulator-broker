@@ -1,0 +1,19 @@
+id: spec-only
+proof_kind: contract
+covers_scenarios: []
+covers_boundaries: []
+commands:
+  - id: spec-diff-check
+    run: git diff --check -- WORKFLOW.md AGENTS.md CLAUDE.md README.md LICENSE SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md spec .agents agent-harness package.json package-lock.json .gitignore .codex script scripts references app broker-core client && git diff --cached --check -- WORKFLOW.md AGENTS.md CLAUDE.md README.md LICENSE SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md spec .agents agent-harness package.json package-lock.json .gitignore .codex script scripts references app broker-core client
+  - id: instruction-parity-check
+    run: cmp -s AGENTS.md CLAUDE.md || { echo "AGENTS.md and CLAUDE.md must stay identical." >&2; exit 1; }
+required_artifacts:
+  - paths.txt
+required_pass_signals:
+  - spec-diff-check
+  - instruction-parity-check
+failure_patterns:
+  - "error:"
+evidence_extractors:
+  - artifact-manifest
+  - command-stdout

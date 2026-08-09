@@ -1,0 +1,37 @@
+id: broker-runtime
+globs:
+  - broker-core/**
+  - client/**
+  - examples/harness-adoption/sample-consumer-repo/.github/workflows/**
+  - examples/harness-adoption/sample-consumer-repo/ci/**
+  - examples/harness-adoption/sample-consumer-repo/scripts/**
+  - examples/harness-adoption/test/**
+owner: broker-runtime
+required_skills: []
+primary_specs:
+  - spec/README.md
+  - spec/architecture.md
+  - spec/build-and-test.md
+  - spec/global-simulator-broker.md
+  - spec/harness-integration.md
+verification_profile: implementation
+commit_required: true
+allowed_paths:
+  - broker-core/**
+  - client/**
+  - examples/harness-adoption/sample-consumer-repo/.github/workflows/**
+  - examples/harness-adoption/sample-consumer-repo/ci/**
+  - examples/harness-adoption/sample-consumer-repo/scripts/**
+  - examples/harness-adoption/test/**
+  - spec/**
+forbidden_paths:
+  - WORKFLOW.md
+  - .agents/**
+  - scripts/validate.sh
+required_evidence:
+  - structured-git-commit
+  - clean-worktree-closeout
+  - verify:implementation
+default_commands:
+  - npm run agent:context -- --paths <files> --session-dir <session-dir>
+  - npm run agent:verify -- --profile implementation --paths <files> --session-dir <session-dir>

@@ -1,0 +1,30 @@
+id: implementation
+proof_kind: code
+covers_scenarios:
+  - broker-core
+  - direct-cli
+  - service-backed-cli
+  - harness-adoption
+  - macos-app
+covers_boundaries:
+  - broker-authority
+  - public-cli-contract
+  - consumer-harness-contract
+  - app-command-transport
+commands:
+  - id: implementation-tests
+    run: npm test
+  - id: agent-harness-build
+    run: npm --prefix agent-harness run build
+  - id: agent-harness-tests
+    run: npm --prefix agent-harness test
+required_artifacts:
+  - paths.txt
+required_pass_signals:
+  - agent-harness-build
+  - agent-harness-tests
+  - implementation-tests
+failure_patterns: []
+evidence_extractors:
+  - artifact-manifest
+  - command-stdout

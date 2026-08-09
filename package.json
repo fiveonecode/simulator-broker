@@ -1,0 +1,46 @@
+{
+  "name": "simulator-broker-app",
+  "private": true,
+  "scripts": {
+    "agent:catalog": "bash ./scripts/bootstrap_agent_harness.sh && npm --prefix agent-harness run catalog --",
+    "agent:complete": "bash ./scripts/bootstrap_agent_harness.sh && npm --prefix agent-harness run complete --",
+    "agent:context": "bash ./scripts/bootstrap_agent_harness.sh && npm --prefix agent-harness run context --",
+    "agent:detached-start": "bash ./scripts/bootstrap_agent_harness.sh && npm --prefix agent-harness run detached-start --",
+    "agent:detached-status": "node ./scripts/agent_detached_status.cjs",
+    "agent:doctor": "bash ./scripts/bootstrap_agent_harness.sh && npm --prefix agent-harness run doctor --",
+    "agent:evaluate": "bash ./scripts/bootstrap_agent_harness.sh && npm --prefix agent-harness run evaluate --",
+    "agent:eval": "bash ./scripts/bootstrap_agent_harness.sh && npm --prefix agent-harness run eval --",
+    "agent:handoff": "bash ./scripts/bootstrap_agent_harness.sh && npm --prefix agent-harness run handoff --",
+    "agent:plan": "bash ./scripts/bootstrap_agent_harness.sh && npm --prefix agent-harness run plan --",
+    "agent:scorecard": "bash ./scripts/bootstrap_agent_harness.sh && npm --prefix agent-harness run scorecard --",
+    "agent:soak": "bash ./scripts/bootstrap_agent_harness.sh && npm --prefix agent-harness run soak --",
+    "agent:verify": "bash ./scripts/bootstrap_agent_harness.sh && npm --prefix agent-harness run verify --",
+    "build:app": "bash ./scripts/generate_app_project.sh && xcodebuild -project ./app/SimulatorBrokerApp.xcodeproj -scheme SimulatorBrokerApp -derivedDataPath ./DerivedData/SimulatorBrokerApp -destination 'platform=macOS' build",
+    "install:local": "bash ./scripts/install_local.sh",
+    "package:distribution": "bash ./scripts/package_distribution.sh",
+    "package:local": "bash ./scripts/package_local.sh",
+    "test": "npm run test:broker-core && npm run test:client && npm run test:harness-adoption && npm run test:app",
+    "test:app": "bash ./scripts/test_app.sh",
+    "test:app:build": "bash ./scripts/test_app.sh --build-only",
+    "test:app:focus": "bash ./scripts/test_app.sh --only-testing",
+    "test:broker-core": "node --test broker-core/test/*.test.mjs",
+    "test:client": "node --test client/test/*.test.mjs",
+    "test:harness-adoption": "node --test examples/harness-adoption/test/*.test.mjs",
+    "test:install-smoke": "bash ./scripts/install_smoke.sh",
+    "test:package-smoke": "bash ./scripts/package_smoke.sh"
+  },
+  "version": "0.1.0",
+  "description": "Local simulator broker and macOS operator app for coordinated iOS Simulator workflows",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fiveonecode/simulator-broker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fiveonecode/simulator-broker/issues"
+  },
+  "homepage": "https://github.com/fiveonecode/simulator-broker#readme",
+  "engines": {
+    "node": ">=20"
+  }
+}

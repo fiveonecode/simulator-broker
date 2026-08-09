@@ -1,0 +1,43 @@
+id: specs
+globs:
+  - .gitignore
+  - CODE_OF_CONDUCT.md
+  - CONTRIBUTING.md
+  - LICENSE
+  - README.md
+  - SECURITY.md
+  - examples/**/*.md
+  - examples/**/.simulator-broker/*.json
+  - spec/**
+  - references/**
+owner: spec-steward
+required_skills:
+  - harness-engineering
+  - spec-creation-updating
+primary_specs:
+  - spec/README.md
+  - spec/agents.md
+  - spec/build-and-test.md
+  - spec/project-structure.md
+  - spec/global-simulator-broker.md
+verification_profile: spec-only
+commit_required: true
+allowed_paths:
+  - .gitignore
+  - CODE_OF_CONDUCT.md
+  - CONTRIBUTING.md
+  - LICENSE
+  - README.md
+  - SECURITY.md
+  - examples/**/*.md
+  - examples/**/.simulator-broker/*.json
+  - spec/**
+  - references/**
+forbidden_paths: []
+required_evidence:
+  - structured-git-commit
+  - clean-worktree-closeout
+  - verify:spec-only
+default_commands:
+  - npm run agent:context -- --paths <files> --session-dir <session-dir>
+  - npm run agent:verify -- --profile spec-only --paths <files> --session-dir <session-dir>

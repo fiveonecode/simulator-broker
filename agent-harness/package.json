@@ -1,0 +1,41 @@
+{
+  "name": "agent-harness",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "catalog": "tsx src/cli.ts catalog",
+    "config-contract": "tsx src/cli.ts config-contract",
+    "complete": "tsx src/cli.ts complete",
+    "context": "tsx src/cli.ts context",
+    "detached-start": "tsx src/cli.ts detached-start",
+    "detached-status": "tsx src/cli.ts detached-status",
+    "doctor": "tsx src/cli.ts doctor",
+    "evaluate": "tsx src/cli.ts evaluate",
+    "eval": "tsx src/cli.ts eval",
+    "handoff": "tsx src/cli.ts handoff",
+    "plan": "tsx src/cli.ts plan",
+    "preflight": "tsx src/cli.ts preflight",
+    "scorecard": "tsx src/cli.ts scorecard",
+    "soak": "tsx src/cli.ts soak",
+    "test": "vitest run",
+    "verify": "tsx src/cli.ts verify"
+  },
+  "dependencies": {
+    "dayjs": "^1.11.13",
+    "picomatch": "^4.0.4",
+    "yaml": "^2.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.16.5",
+    "@types/picomatch": "^4.0.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.10"
+  },
+  "license": "MIT",
+  "overrides": {
+    "esbuild": "^0.28.1"
+  }
+}

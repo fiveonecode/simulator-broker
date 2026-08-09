@@ -1,0 +1,1081 @@
+import Foundation
+import Observation
+
+enum BrokerNavigationPane: String, CaseIterable, Identifiable {
+  case overview
+  case simulators
+  case projects
+  case events
+
+  var id: String { rawValue }
+
+  var symbolName: String {
+    switch self {
+    case .overview:
+      return "gauge.open.with.lines.needle.33percent"
+    case .simulators:
+      return "rectangle.3.group"
+    case .projects:
+      return "shippingbox"
+    case .events:
+      return "clock.arrow.trianglehead.counterclockwise.rotate.90"
+    }
+  }
+
+  var title: String {
+    rawValue.capitalized
+  }
+}
+
+enum BrokerStartupState: Equatable {
+  case missingCLI
+  case needsHostBootstrap
+  case needsServiceStart
+  case needsSnapshotRefresh
+  case readOnlySnapshot
+  case ready
+}
+
+private enum BrokerRefreshOutcome {
+  case failed(any Error)
+  case succeeded
+  case superseded(by: Int)
+}
+
+private struct BrokerRefreshSupersededError: LocalizedError {
+  let message: String
+
+  var errorDescription: String? {
+    message
+  }
+}
+
+@MainActor
+@Observable
+final class BrokerDashboardStore {
+  private static let appHumanActorId = "simulator-broker-app"
+
+  private let commandClient: any BrokerCommandSending
+  private var feedbackClearTask: Task<Void, Never>?
+  private let initialSelection: BrokerInitialSelection
+  private let localCommandRunner: any BrokerLocalCommandRunning
+  private let loader: any BrokerSnapshotLoading
+  private var completedRefreshOutcomes: [Int: BrokerRefreshOutcome] = [:]
+  private var refreshGeneration = 0
+  private var refreshOutcomeWaiters: [Int: [CheckedContinuation<BrokerRefreshOutcome, Never>]] = [:]
+  private let refreshInterval: Duration
+  private var refreshTask: Task<Void, Never>?
+  private let runtimePaths: BrokerRuntimePaths
+  private var visibleRefreshCount = 0
+
+  var inspectedEventId: String?
+  var inspectedProjectId: String?
+  var inspectedSimulatorAlias: String?
+  var isApplyingAction = false
+  var isRefreshing = false
+  var lastActionMessage: String?
+  var lastErrorMessage: String?
+  var loadedState: BrokerLoadedState?
+  var pendingClearPinRequest: BrokerPendingClearPinRequest?
+  var pendingCreatePinRequest: BrokerPendingCreatePinRequest?
+  var pendingLifecycleRequest: BrokerPendingLifecycleRequest?
+  var pendingOverrideRequest: BrokerLifecycleOverrideRequest?
+  var pendingReleaseLeaseRequest: BrokerPendingLeaseReleaseRequest?
+  var selectedPane: BrokerNavigationPane = .overview {
+    didSet {
+      guard selectedPane != .simulators else {
+        return
+      }
+
+      clearPendingSimulatorPrompts()
+    }
+  }
+  var simulatorActorFilter = BrokerDashboardReadModel.allSelection
+  var simulatorHealthFilter: BrokerHealthFilter = .all
+  var simulatorProjectFilter = BrokerDashboardReadModel.allSelection
+  var simulatorPurposeFilter = BrokerDashboardReadModel.allSelection
+  var simulatorSearchText = ""
+
+  init(
+    loader: any BrokerSnapshotLoading,
+    commandClient: any BrokerCommandSending,
+    localCommandRunner: any BrokerLocalCommandRunning = ProcessBrokerLocalCommandRunner(),
+    runtimePaths: BrokerRuntimePaths,
+    initialSelection: BrokerInitialSelection = .defaultSelection,
+    refreshInterval: Duration = .seconds(2)
+  ) {
+    self.commandClient = commandClient
+    self.initialSelection = initialSelection
+    self.loader = loader
+    self.localCommandRunner = localCommandRunner
+    self.refreshInterval = refreshInterval
+    self.runtimePaths = runtimePaths
+    applyInitialSelection(initialSelection)
+  }
+
+  convenience init(
+    launchContext: BrokerLaunchContext,
+    localCommandRunner: any BrokerLocalCommandRunning = ProcessBrokerLocalCommandRunner(),
+    refreshInterval: Duration = .seconds(2)
+  ) {
+    let runtimePaths = launchContext.runtimePaths
+    self.init(
+      loader: FileBrokerSnapshotLoader(paths: runtimePaths),
+      commandClient: BrokerServiceCommandClient(paths: runtimePaths),
+      localCommandRunner: localCommandRunner,
+      runtimePaths: runtimePaths,
+      initialSelection: launchContext.initialSelection,
+      refreshInterval: refreshInterval
+    )
+  }
+
+  var generatedAtText: String {
+    timestampDisplay(snapshot?.generatedAt) ?? "No snapshot loaded"
+  }
+
+  var commandAvailability: BrokerDashboardCommandAvailability {
+    let canMutate = canSendCommands && isApplyingAction == false
+    let canRefreshSnapshot = isApplyingAction == false
+
+    guard let selectedSimulator else {
+      return BrokerDashboardCommandAvailability(
+        canRefreshSnapshot: canRefreshSnapshot,
+        canBootSimulator: false,
+        canShutdownSimulator: false,
+        canEraseSimulator: false,
+        canRepairSimulator: false,
+        canReleaseLease: false,
+        canCreatePin: false,
+        canClearPin: false
+      )
+    }
+
+    let hasEligiblePinProjects = readModel?.eligiblePinProjects(for: selectedSimulator).isEmpty == false
+
+    return BrokerDashboardCommandAvailability(
+      canRefreshSnapshot: canRefreshSnapshot,
+      canBootSimulator: canMutate && selectedSimulatorAllowsLifecycleMutation && selectedSimulator.powerState != "booted",
+      canShutdownSimulator: canMutate && selectedSimulatorAllowsLifecycleMutation && selectedSimulator.powerState == "booted",
+      canEraseSimulator: canMutate && selectedSimulatorAllowsLifecycleMutation,
+      canRepairSimulator: canMutate,
+      canReleaseLease: canMutate && selectedLease != nil,
+      canCreatePin: canMutate && selectedPin == nil && hasEligiblePinProjects,
+      canClearPin: canMutate && selectedPin != nil
+    )
+  }
+
+  var hasActiveSimulatorFilters: Bool {
+    simulatorHealthFilter != .all
+      || simulatorProjectFilter != BrokerDashboardReadModel.allSelection
+      || simulatorPurposeFilter != BrokerDashboardReadModel.allSelection
+      || simulatorActorFilter != BrokerDashboardReadModel.allSelection
+      || simulatorSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+  }
+
+  var readModel: BrokerDashboardReadModel? {
+    snapshot.map(BrokerDashboardReadModel.init(snapshot:))
+  }
+
+  var commandStatusText: String {
+    switch startupState {
+    case .ready:
+      return "Commands enabled"
+    case .readOnlySnapshot:
+      return "Read-only snapshot"
+    case .needsSnapshotRefresh:
+      return "Refreshing state"
+    case .needsServiceStart:
+      return "Broker stopped"
+    case .missingCLI, .needsHostBootstrap:
+      return "Setup required"
+    }
+  }
+
+  var serviceStatusText: String {
+    switch startupState {
+    case .ready:
+      return "brokerd running"
+    case .readOnlySnapshot:
+      return "snapshot only"
+    case .needsSnapshotRefresh:
+      return "brokerd starting"
+    case .needsServiceStart:
+      return "brokerd stopped"
+    case .missingCLI, .needsHostBootstrap:
+      return "setup required"
+    }
+  }
+
+  var simulatorFilters: BrokerSimulatorFilters {
+    BrokerSimulatorFilters(
+      actorType: simulatorActorFilter,
+      health: simulatorHealthFilter,
+      projectId: simulatorProjectFilter,
+      purposeId: simulatorPurposeFilter,
+      searchText: simulatorSearchText
+    )
+  }
+
+  var snapshot: BrokerAppSnapshot? {
+    loadedState?.snapshot
+  }
+
+  var sceneRestorationState: BrokerSceneRestorationState {
+    BrokerSceneRestorationState(
+      selectedPane: selectedPane,
+      inspectedSimulatorAlias: inspectedSimulatorAlias,
+      inspectedProjectId: inspectedProjectId,
+      inspectedEventId: inspectedEventId,
+      simulatorSearchText: simulatorSearchText,
+      simulatorActorFilter: simulatorActorFilter,
+      simulatorHealthFilter: simulatorHealthFilter,
+      simulatorProjectFilter: simulatorProjectFilter,
+      simulatorPurposeFilter: simulatorPurposeFilter
+    )
+  }
+
+  var selectedLease: BrokerLease? {
+    readModel?.lease(for: inspectedSimulatorAlias)
+  }
+
+  var selectedPin: BrokerPin? {
+    readModel?.pin(for: inspectedSimulatorAlias)
+  }
+
+  var selectedSimulator: BrokerSimulator? {
+    readModel?.simulator(alias: inspectedSimulatorAlias)
+  }
+
+  var selectedSimulatorAllowsLifecycleMutation: Bool {
+    guard let selectedSimulator else {
+      return false
+    }
+    return selectedSimulator.health == "healthy" || selectedSimulator.health == "state-drift"
+  }
+
+  var canSendCommands: Bool {
+    loadedState?.service != nil
+  }
+
+  var canRunLocalBrokerCommands: Bool {
+    resolvedCLIURL != nil
+  }
+
+  var canStartBrokerService: Bool {
+    canRunLocalBrokerCommands && hostConfigExists && loadedState?.service == nil
+  }
+
+  var canRefreshSnapshotArtifact: Bool {
+    canRunLocalBrokerCommands && hostConfigExists
+  }
+
+  var cliHintPath: String {
+    if let cliPath = loadedState?.tooling.installMetadata?.cliPath, cliPath.isEmpty == false {
+      return cliPath
+    }
+    if let configuredCLIURL = runtimePaths.configuredCLIURL {
+      return configuredCLIURL.path
+    }
+    return BrokerRuntimePaths.defaultCLIURL().path
+  }
+
+  var cliPath: String? {
+    resolvedCLIURL?.path
+  }
+
+  var onboardingCLIPath: String? {
+    resolvedCLIURL?.path
+  }
+
+  var hostConfigExists: Bool {
+    loadedState?.tooling.hostConfigExists ?? FileManager.default.fileExists(atPath: runtimePaths.hostConfigURL.path)
+  }
+
+  var hostConfigPath: String {
+    loadedState?.paths.hostConfigURL.path ?? runtimePaths.hostConfigURL.path
+  }
+
+  var installRootPath: String? {
+    loadedState?.tooling.installMetadata?.prefix
+  }
+
+  var envHelperPath: String? {
+    guard
+      let installMetadata = loadedState?.tooling.installMetadata,
+      let installRootPath = installMetadata.prefix,
+      installRootPath.isEmpty == false,
+      let installCLIPath = installMetadata.cliPath,
+      installCLIPath.isEmpty == false
+    else {
+      return nil
+    }
+
+    let expandedCLIPath = (installCLIPath as NSString).expandingTildeInPath
+    guard expandedCLIPath == onboardingCLIPath else {
+      return nil
+    }
+
+    let envHelperPath = URL(fileURLWithPath: (installRootPath as NSString).expandingTildeInPath)
+      .appending(path: "env.sh")
+      .path
+
+    guard FileManager.default.fileExists(atPath: envHelperPath) else {
+      return nil
+    }
+
+    return envHelperPath
+  }
+
+  var startupState: BrokerStartupState {
+    if hostConfigExists == false {
+      return canRunLocalBrokerCommands ? .needsHostBootstrap : .missingCLI
+    }
+    if loadedState?.service != nil {
+      return snapshot == nil ? .needsSnapshotRefresh : .ready
+    }
+    if snapshot != nil {
+      return .readOnlySnapshot
+    }
+    if canRunLocalBrokerCommands == false {
+      return .missingCLI
+    }
+    return .needsServiceStart
+  }
+
+  var stateRootPath: String {
+    loadedState?.paths.stateRoot.path ?? runtimePaths.stateRoot.path
+  }
+
+  func start() {
+    guard refreshTask == nil else {
+      return
+    }
+
+    BrokerLogger.appLifecycle.info(
+      "Dashboard store starting stateRoot=\(self.stateRootPath, privacy: .public) refreshIntervalSeconds=\(self.refreshInterval.components.seconds, privacy: .public)"
+    )
+    BrokerLogger.appLifecycle.info("Refresh loop started")
+
+    refreshTask = Task {
+      await refresh()
+      while Task.isCancelled == false {
+        do {
+          try await Task.sleep(for: refreshInterval)
+        } catch {
+          break
+        }
+        guard Task.isCancelled == false else {
+          break
+        }
+        if isApplyingAction {
+          continue
+        }
+        await refresh(silent: true)
+      }
+    }
+  }
+
+  func stop() {
+    if refreshTask != nil {
+      BrokerLogger.appLifecycle.info("Refresh loop stopping")
+    }
+    feedbackClearTask?.cancel()
+    refreshTask?.cancel()
+    feedbackClearTask = nil
+    isRefreshing = false
+    visibleRefreshCount = 0
+    refreshTask = nil
+  }
+
+  func clearFeedback() {
+    feedbackClearTask?.cancel()
+    feedbackClearTask = nil
+    lastActionMessage = nil
+    lastErrorMessage = nil
+  }
+
+  func clearSimulatorFilters() {
+    simulatorActorFilter = BrokerDashboardReadModel.allSelection
+    simulatorHealthFilter = .all
+    simulatorProjectFilter = BrokerDashboardReadModel.allSelection
+    simulatorPurposeFilter = BrokerDashboardReadModel.allSelection
+    simulatorSearchText = ""
+    synchronizeSelections()
+  }
+
+  func applySceneRestorationState(_ restorationState: BrokerSceneRestorationState) {
+    let resolvedState = restorationState.applying(initialSelection: initialSelection)
+    selectedPane = resolvedState.selectedPane
+    inspectedSimulatorAlias = resolvedState.inspectedSimulatorAlias
+    inspectedProjectId = resolvedState.inspectedProjectId
+    inspectedEventId = resolvedState.inspectedEventId
+    simulatorSearchText = resolvedState.simulatorSearchText
+    simulatorActorFilter = resolvedState.simulatorActorFilter
+    simulatorHealthFilter = resolvedState.simulatorHealthFilter
+    simulatorProjectFilter = resolvedState.simulatorProjectFilter
+    simulatorPurposeFilter = resolvedState.simulatorPurposeFilter
+
+    if loadedState != nil {
+      synchronizeSelections()
+    }
+  }
+
+  func refreshNow() {
+    Task {
+      await refresh()
+    }
+  }
+
+  func requestClearPin() {
+    guard commandAvailability.canClearPin, let alias = inspectedSimulatorAlias else {
+      return
+    }
+    pendingClearPinRequest = BrokerPendingClearPinRequest(alias: alias)
+  }
+
+  func requestCreatePin() {
+    guard commandAvailability.canCreatePin, let alias = inspectedSimulatorAlias else {
+      return
+    }
+    pendingCreatePinRequest = BrokerPendingCreatePinRequest(alias: alias)
+  }
+
+  func requestLifecycleAction(_ action: BrokerLifecycleAction) {
+    guard lifecycleActionIsEnabled(action), let alias = inspectedSimulatorAlias else {
+      return
+    }
+
+    let request = BrokerPendingLifecycleRequest(action: action, alias: alias)
+    if action.requiresDestructiveConfirmation {
+      pendingLifecycleRequest = request
+      return
+    }
+
+    runLifecycleAction(request)
+  }
+
+  func requestReleaseLease() {
+    guard commandAvailability.canReleaseLease, let selectedLease else {
+      return
+    }
+    pendingReleaseLeaseRequest = BrokerPendingLeaseReleaseRequest(lease: selectedLease)
+  }
+
+  func confirmClearPin() {
+    guard let request = pendingClearPinRequest else {
+      return
+    }
+    pendingClearPinRequest = nil
+    Task {
+      do {
+        try await clearPin(alias: request.alias)
+      } catch {
+        lastErrorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  func confirmOverrideRequest(reason: String) {
+    let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let pendingOverrideRequest, trimmedReason.isEmpty == false else {
+      return
+    }
+
+    self.pendingOverrideRequest = nil
+    runLifecycleAction(
+      BrokerPendingLifecycleRequest(action: pendingOverrideRequest.action, alias: pendingOverrideRequest.alias),
+      overrideReason: trimmedReason,
+      expectedLeaseId: pendingOverrideRequest.currentHolder.leaseId
+    )
+  }
+
+  func confirmPendingLifecycleAction() {
+    guard let pendingLifecycleRequest else {
+      return
+    }
+    self.pendingLifecycleRequest = nil
+    runLifecycleAction(pendingLifecycleRequest)
+  }
+
+  func confirmReleaseLease() {
+    guard let pendingReleaseLeaseRequest else {
+      return
+    }
+    self.pendingReleaseLeaseRequest = nil
+    Task {
+      do {
+        try await releaseLease(pendingReleaseLeaseRequest.lease)
+      } catch {
+        lastErrorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  func completeFirstTimeSetup() async throws {
+    let cliURL = try requireCLIURL()
+    try await performLocalAction {
+      _ = try await self.runSetupStep(name: "first-time-host-bootstrap") {
+        try await self.localCommandRunner.run(
+          cliPath: cliURL,
+          arguments: [
+            "host",
+            "init",
+            "--bootstrap-config",
+            "--host-config",
+            self.hostConfigPath,
+            "--state-root",
+            self.stateRootPath,
+          ]
+        )
+      }
+      let serviceResponse = try await self.runSetupStep(
+        name: "brokerd-start",
+        successDetail: { response in
+          response.unchanged == true ? "already-running" : "started"
+        }
+      ) {
+        try await self.localCommandRunner.run(
+          cliPath: cliURL,
+          arguments: [
+            "service",
+            "start",
+            "--host-config",
+            self.hostConfigPath,
+            "--state-root",
+            self.stateRootPath,
+          ]
+        )
+      }
+      return serviceResponse.unchanged == true
+        ? "Broker setup is already complete."
+        : "Broker setup completed and brokerd started."
+    }
+  }
+
+  func refreshSnapshotArtifact() async throws {
+    let cliURL = try requireCLIURL()
+    try await performLocalAction {
+      _ = try await self.runSetupStep(name: "snapshot-refresh") {
+        try await self.localCommandRunner.run(
+          cliPath: cliURL,
+          arguments: [
+            "app",
+            "snapshot",
+            "--host-config",
+            self.hostConfigPath,
+            "--state-root",
+            self.stateRootPath,
+          ]
+        )
+      }
+      return "Broker snapshot refreshed."
+    }
+  }
+
+  func startBrokerService() async throws {
+    let cliURL = try requireCLIURL()
+    try await performLocalAction {
+      let response = try await self.runSetupStep(
+        name: "brokerd-start",
+        successDetail: { response in
+          response.unchanged == true ? "already-running" : "started"
+        }
+      ) {
+        try await self.localCommandRunner.run(
+          cliPath: cliURL,
+          arguments: [
+            "service",
+            "start",
+            "--host-config",
+            self.hostConfigPath,
+            "--state-root",
+            self.stateRootPath,
+          ]
+        )
+      }
+      return response.unchanged == true ? "brokerd is already running." : "brokerd started."
+    }
+  }
+
+  func releaseLease(_ lease: BrokerLease) async throws {
+    let request = BrokerCommandRequest(
+      command: "release",
+      group: "lease",
+      options: [
+        "actorId": .string(Self.appHumanActorId),
+        "actorType": .string("human"),
+        "leaseId": .string(lease.leaseId),
+      ]
+    )
+    try await executeMutation(
+      actionName: "release-lease",
+      alias: lease.alias,
+      successMessage: "Released lease for \(lease.alias)."
+    ) { [self, request] in
+      _ = try await self.commandClient.send(request)
+    }
+  }
+
+  func clearPin(alias: String) async throws {
+    let request = BrokerCommandRequest(
+      command: "clear",
+      group: "pin",
+      options: [
+        "actorId": .string(Self.appHumanActorId),
+        "actorType": .string("human"),
+        "alias": .string(alias),
+      ]
+    )
+    try await executeMutation(
+      actionName: "clear-pin",
+      alias: alias,
+      successMessage: "Cleared pin for \(alias)."
+    ) { [self, request] in
+      _ = try await self.commandClient.send(request)
+    }
+  }
+
+  func createPin(alias: String, project: BrokerProjectSummary, purpose: BrokerProjectPurposeSummary, note: String) async throws {
+    guard let projectFilePath = project.projectFilePath else {
+      throw BrokerServiceCommandClientError.transportFailure("The selected project is missing a project file path.")
+    }
+
+    var requestOptions: [String: BrokerJSONValue] = [
+      "actorId": .string(Self.appHumanActorId),
+      "actorType": .string("human"),
+      "alias": .string(alias),
+      "projectFilePath": .string(projectFilePath),
+      "purposeId": .string(purpose.purposeId),
+    ]
+    let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmedNote.isEmpty == false {
+      requestOptions["note"] = .string(trimmedNote)
+    }
+
+    let request = BrokerCommandRequest(
+      command: "create",
+      group: "pin",
+      options: requestOptions
+    )
+    try await executeMutation(
+      actionName: "create-pin",
+      alias: alias,
+      successMessage: "Pinned \(alias) to \(project.projectName) · \(purpose.displayName)."
+    ) { [self, request] in
+      _ = try await self.commandClient.send(request)
+    }
+  }
+
+  func performLifecycleAction(
+    _ action: BrokerLifecycleAction,
+    simulator: BrokerSimulator,
+    overrideReason: String? = nil,
+    expectedLeaseId: String? = nil
+  ) async throws {
+    try await performLifecycleAction(
+      action,
+      alias: simulator.alias,
+      overrideReason: overrideReason,
+      expectedLeaseId: expectedLeaseId
+    )
+  }
+
+  func performLifecycleAction(
+    _ action: BrokerLifecycleAction,
+    alias: String,
+    overrideReason: String? = nil,
+    expectedLeaseId: String? = nil
+  ) async throws {
+    var requestOptions: [String: BrokerJSONValue] = [
+      "actorId": .string(Self.appHumanActorId),
+      "actorType": .string("human"),
+      "alias": .string(alias),
+    ]
+
+    if let overrideReason {
+      requestOptions["expectedAlias"] = .string(alias)
+      requestOptions["expectedLeaseId"] = expectedLeaseId.map(BrokerJSONValue.string) ?? .null
+      requestOptions["forceOverride"] = .bool(true)
+      requestOptions["overrideReason"] = .string(overrideReason)
+    }
+
+    let request = BrokerCommandRequest(
+      command: action.commandName,
+      group: "simulators",
+      options: requestOptions
+    )
+    try await executeMutation(
+      actionName: action.commandName,
+      alias: alias,
+      successMessage: action.successMessage
+    ) { [self, request] in
+      _ = try await self.commandClient.send(request)
+    }
+  }
+
+  private func executeMutation(
+    actionName: String,
+    alias: String? = nil,
+    successMessage: String,
+    operation: @escaping @Sendable () async throws -> Void
+  ) async throws {
+    logCommandStart(actionName: actionName, alias: alias)
+    isApplyingAction = true
+    defer {
+      isApplyingAction = false
+    }
+
+    do {
+      try await operation()
+      try await requireRefreshAfterMutation()
+      logCommandSuccess(actionName: actionName, alias: alias)
+      setActionMessage(successMessage)
+      lastErrorMessage = nil
+    } catch let error as BrokerServiceCommandError where error.needsOverrideConfirmation {
+      logCommandOverrideRequired(actionName: actionName, alias: alias, error: error)
+      throw error
+    } catch {
+      logCommandFailure(actionName: actionName, alias: alias, error: error)
+      lastActionMessage = nil
+      lastErrorMessage = error.localizedDescription
+      throw error
+    }
+  }
+
+  private func performLocalAction(messageFactory: @escaping @Sendable () async throws -> String) async throws {
+    isApplyingAction = true
+    defer {
+      isApplyingAction = false
+    }
+
+    do {
+      let successMessage = try await messageFactory()
+      try await requireRefreshAfterMutation()
+      setActionMessage(successMessage)
+      lastErrorMessage = nil
+    } catch {
+      lastActionMessage = nil
+      lastErrorMessage = error.localizedDescription
+      throw error
+    }
+  }
+
+  @discardableResult
+  private func refresh(silent: Bool = false) async -> BrokerRefreshOutcome {
+    let refreshMode = silent ? "silent" : "manual"
+    refreshGeneration += 1
+    let generation = refreshGeneration
+    if silent == false {
+      visibleRefreshCount += 1
+      isRefreshing = true
+    }
+    defer {
+      if silent == false {
+        visibleRefreshCount = max(0, visibleRefreshCount - 1)
+        isRefreshing = visibleRefreshCount > 0
+      }
+    }
+
+    logRefreshStart(mode: refreshMode)
+    do {
+      let refreshedState = try await loader.load()
+      guard generation == refreshGeneration else {
+        let outcome = BrokerRefreshOutcome.superseded(by: refreshGeneration)
+        completeRefresh(generation: generation, with: outcome)
+        return outcome
+      }
+      loadedState = refreshedState
+      lastErrorMessage = nil
+      synchronizeSelections()
+      logRefreshSuccess(mode: refreshMode, snapshot: loadedState?.snapshot)
+      completeRefresh(generation: generation, with: .succeeded)
+      return .succeeded
+    } catch {
+      guard generation == refreshGeneration else {
+        let outcome = BrokerRefreshOutcome.superseded(by: refreshGeneration)
+        completeRefresh(generation: generation, with: outcome)
+        return outcome
+      }
+      logRefreshFailure(mode: refreshMode, error: error)
+      lastErrorMessage = error.localizedDescription
+      completeRefresh(generation: generation, with: .failed(error))
+      return .failed(error)
+    }
+  }
+
+  private func requireRefreshAfterMutation() async throws {
+    var outcome = await refresh()
+    var followedGenerations: Set<Int> = []
+
+    while true {
+      switch outcome {
+      case .succeeded:
+        return
+      case .superseded(by: let generation):
+        guard followedGenerations.insert(generation).inserted else {
+          throw BrokerRefreshSupersededError(message: "Snapshot refresh was superseded repeatedly.")
+        }
+        outcome = await refreshOutcome(for: generation)
+      case .failed(let error):
+        throw error
+      }
+    }
+  }
+
+  private func completeRefresh(generation: Int, with outcome: BrokerRefreshOutcome) {
+    completedRefreshOutcomes[generation] = outcome
+    let waiters = refreshOutcomeWaiters.removeValue(forKey: generation) ?? []
+    for waiter in waiters {
+      waiter.resume(returning: outcome)
+    }
+    let retainedGenerations = completedRefreshOutcomes.keys.filter { $0 >= refreshGeneration - 20 }
+    completedRefreshOutcomes = Dictionary(uniqueKeysWithValues: retainedGenerations.compactMap { generation in
+      guard let outcome = completedRefreshOutcomes[generation] else {
+        return nil
+      }
+      return (generation, outcome)
+    })
+  }
+
+  private func refreshOutcome(for generation: Int) async -> BrokerRefreshOutcome {
+    if let outcome = completedRefreshOutcomes[generation] {
+      return outcome
+    }
+
+    return await withCheckedContinuation { continuation in
+      refreshOutcomeWaiters[generation, default: []].append(continuation)
+    }
+  }
+
+  private func synchronizeSelections() {
+    guard let readModel else {
+      // Preserve restored inspection identifiers until a snapshot is available so a
+      // later refresh can validate and reselect them instead of discarding scene context.
+      return
+    }
+
+    normalizeSimulatorFilters(using: readModel)
+
+    let filteredSimulators = readModel.filteredSimulators(using: simulatorFilters)
+    if filteredSimulators.isEmpty {
+      inspectedSimulatorAlias = nil
+    } else if filteredSimulators.contains(where: { $0.alias == inspectedSimulatorAlias }) == false {
+      inspectedSimulatorAlias = filteredSimulators.first?.alias
+    }
+
+    if readModel.snapshot.projects.isEmpty {
+      inspectedProjectId = nil
+    } else if readModel.project(projectId: inspectedProjectId) == nil {
+      inspectedProjectId = readModel.snapshot.projects.first?.projectId
+    }
+
+    if readModel.snapshot.recentEvents.isEmpty {
+      inspectedEventId = nil
+    } else if readModel.event(eventId: inspectedEventId) == nil {
+      inspectedEventId = readModel.snapshot.recentEvents.first?.eventId
+    }
+  }
+
+  private func normalizeSimulatorFilters(using readModel: BrokerDashboardReadModel) {
+    if simulatorActorFilter != BrokerDashboardReadModel.allSelection,
+      readModel.actorTypes.contains(simulatorActorFilter) == false
+    {
+      simulatorActorFilter = BrokerDashboardReadModel.allSelection
+    }
+
+    if simulatorProjectFilter != BrokerDashboardReadModel.allSelection,
+      readModel.snapshot.projects.contains(where: { $0.projectId == simulatorProjectFilter }) == false
+    {
+      simulatorProjectFilter = BrokerDashboardReadModel.allSelection
+    }
+
+    if simulatorPurposeFilter != BrokerDashboardReadModel.allSelection,
+      readModel.purposeIds.contains(simulatorPurposeFilter) == false
+    {
+      simulatorPurposeFilter = BrokerDashboardReadModel.allSelection
+    }
+  }
+
+  private var resolvedCLIURL: URL? {
+    loadedState?.tooling.cliPath ?? runtimePaths.configuredCLIURL
+  }
+
+  private func requireCLIURL() throws -> URL {
+    guard let resolvedCLIURL else {
+      throw BrokerCLICommandError.missingCLI(URL(fileURLWithPath: cliHintPath))
+    }
+    return resolvedCLIURL
+  }
+
+  private func setActionMessage(_ message: String) {
+    feedbackClearTask?.cancel()
+    lastActionMessage = message
+    feedbackClearTask = Task {
+      try? await Task.sleep(for: .seconds(4))
+      guard Task.isCancelled == false else {
+        return
+      }
+      lastActionMessage = nil
+    }
+  }
+
+  private func clearPendingSimulatorPrompts() {
+    pendingClearPinRequest = nil
+    pendingCreatePinRequest = nil
+    pendingLifecycleRequest = nil
+    pendingOverrideRequest = nil
+    pendingReleaseLeaseRequest = nil
+  }
+
+  private func canPresentSimulatorPrompt(for alias: String) -> Bool {
+    selectedPane == .simulators && inspectedSimulatorAlias == alias
+  }
+
+  private func applyInitialSelection(_ initialSelection: BrokerInitialSelection) {
+    selectedPane = initialSelection.pane
+    inspectedSimulatorAlias = initialSelection.simulatorAlias
+    inspectedProjectId = initialSelection.projectId
+    inspectedEventId = initialSelection.eventId
+  }
+
+  private func lifecycleActionIsEnabled(_ action: BrokerLifecycleAction) -> Bool {
+    switch action {
+    case .boot:
+      return commandAvailability.canBootSimulator
+    case .shutdown:
+      return commandAvailability.canShutdownSimulator
+    case .erase:
+      return commandAvailability.canEraseSimulator
+    case .repair:
+      return commandAvailability.canRepairSimulator
+    }
+  }
+
+  private func runLifecycleAction(
+    _ request: BrokerPendingLifecycleRequest,
+    overrideReason: String? = nil,
+    expectedLeaseId: String? = nil
+  ) {
+    Task {
+      do {
+        try await performLifecycleAction(
+          request.action,
+          alias: request.alias,
+          overrideReason: overrideReason,
+          expectedLeaseId: expectedLeaseId
+        )
+      } catch let error as BrokerServiceCommandError {
+        if let overrideRequest = error.overrideRequest(for: request.action, alias: request.alias),
+          canPresentSimulatorPrompt(for: request.alias)
+        {
+          pendingOverrideRequest = overrideRequest
+        } else {
+          lastErrorMessage = error.localizedDescription
+        }
+      } catch {
+        lastErrorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  private func runSetupStep<Result>(
+    name: String,
+    successDetail: (Result) -> String = { _ in "ok" },
+    operation: @escaping @Sendable () async throws -> Result
+  ) async throws -> Result {
+    BrokerLogger.setup.info("Setup step started name=\(name, privacy: .public)")
+    do {
+      let result = try await operation()
+      let detail = successDetail(result)
+      BrokerLogger.setup.info(
+        "Setup step succeeded name=\(name, privacy: .public) result=\(detail, privacy: .public)"
+      )
+      return result
+    } catch {
+      let summary = BrokerLogger.summary(for: error)
+      BrokerLogger.setup.error(
+        "Setup step failed name=\(name, privacy: .public) summary=\(summary, privacy: .public)"
+      )
+      throw error
+    }
+  }
+
+  private func logCommandStart(actionName: String, alias: String?) {
+    if let alias {
+      BrokerLogger.commands.info(
+        "Command started action=\(actionName, privacy: .public) alias=\(alias, privacy: .public)"
+      )
+      return
+    }
+
+    BrokerLogger.commands.info("Command started action=\(actionName, privacy: .public)")
+  }
+
+  private func logCommandSuccess(actionName: String, alias: String?) {
+    if let alias {
+      BrokerLogger.commands.info(
+        "Command succeeded action=\(actionName, privacy: .public) alias=\(alias, privacy: .public)"
+      )
+      return
+    }
+
+    BrokerLogger.commands.info("Command succeeded action=\(actionName, privacy: .public)")
+  }
+
+  private func logCommandFailure(actionName: String, alias: String?, error: any Error) {
+    let summary = BrokerLogger.summary(for: error)
+    if let alias {
+      BrokerLogger.commands.error(
+        "Command failed action=\(actionName, privacy: .public) alias=\(alias, privacy: .public) summary=\(summary, privacy: .public)"
+      )
+      return
+    }
+
+    BrokerLogger.commands.error(
+      "Command failed action=\(actionName, privacy: .public) summary=\(summary, privacy: .public)"
+    )
+  }
+
+  private func logCommandOverrideRequired(actionName: String, alias: String?, error: BrokerServiceCommandError) {
+    let reasonCode = error.reasonCode ?? "override-required"
+    if let alias {
+      BrokerLogger.commands.warning(
+        "Command override required action=\(actionName, privacy: .public) alias=\(alias, privacy: .public) reasonCode=\(reasonCode, privacy: .public)"
+      )
+      return
+    }
+
+    BrokerLogger.commands.warning(
+      "Command override required action=\(actionName, privacy: .public) reasonCode=\(reasonCode, privacy: .public)"
+    )
+  }
+
+  private func logRefreshStart(mode: String) {
+    let logger = mode == "silent" ? BrokerLogger.refresh : BrokerLogger.refresh
+    if mode == "silent" {
+      logger.debug("Refresh started mode=\(mode, privacy: .public)")
+    } else {
+      logger.info("Refresh started mode=\(mode, privacy: .public)")
+    }
+  }
+
+  private func logRefreshSuccess(mode: String, snapshot: BrokerAppSnapshot?) {
+    let generatedAt = snapshot?.generatedAt ?? "none"
+    if mode == "silent" {
+      BrokerLogger.refresh.debug(
+        "Refresh succeeded mode=\(mode, privacy: .public) snapshotGeneratedAt=\(generatedAt, privacy: .public)"
+      )
+    } else {
+      BrokerLogger.refresh.info(
+        "Refresh succeeded mode=\(mode, privacy: .public) snapshotGeneratedAt=\(generatedAt, privacy: .public)"
+      )
+    }
+  }
+
+  private func logRefreshFailure(mode: String, error: any Error) {
+    let summary = BrokerLogger.summary(for: error)
+    BrokerLogger.refresh.error(
+      "Refresh failed mode=\(mode, privacy: .public) summary=\(summary, privacy: .public)"
+    )
+  }
+}

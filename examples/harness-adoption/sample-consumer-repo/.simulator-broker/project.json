@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "projectId": "sample-consumer-repo",
+  "projectName": "Sample Consumer Repo",
+  "purposes": [
+    {
+      "id": "agent-ui-session",
+      "displayName": "Agent UI Session",
+      "capability": "interactive-resettable",
+      "defaultActorType": "agent",
+      "requires": {
+        "deviceFamily": "iPhone",
+        "iosVersion": "18"
+      }
+    },
+    {
+      "id": "agent-build-test",
+      "displayName": "Agent Build and Test",
+      "capability": "build-fast",
+      "defaultActorType": "agent"
+    },
+    {
+      "id": "ci-ui-test",
+      "displayName": "CI UI Test",
+      "capability": "automation-resettable",
+      "defaultActorType": "ci",
+      "requires": {
+        "deviceFamily": "iPhone",
+        "iosVersion": "18"
+      }
+    },
+    {
+      "id": "manual-testing",
+      "displayName": "Manual Testing",
+      "capability": "manual-persistent",
+      "defaultActorType": "human"
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+id: harness-contract
+globs:
+  - .agents/**
+  - .codex/environments/**
+  - AGENTS.md
+  - CLAUDE.md
+  - WORKFLOW.md
+  - package-lock.json
+  - package.json
+  - scripts/agent_detached_status.cjs
+  - scripts/bootstrap_agent_harness.sh
+  - scripts/validate.sh
+owner: harness-maintainer
+required_skills:
+  - harness-engineering
+  - spec-creation-updating
+primary_specs:
+  - spec/README.md
+  - spec/agents.md
+  - spec/build-and-test.md
+  - spec/project-structure.md
+verification_profile: spec-only
+commit_required: true
+allowed_paths:
+  - .agents/**
+  - .codex/environments/**
+  - AGENTS.md
+  - CLAUDE.md
+  - WORKFLOW.md
+  - package-lock.json
+  - package.json
+  - scripts/agent_detached_status.cjs
+  - scripts/bootstrap_agent_harness.sh
+  - scripts/validate.sh
+  - spec/**
+forbidden_paths:
+  - app/**
+  - broker-core/**
+  - client/**
+required_evidence:
+  - structured-git-commit
+  - clean-worktree-closeout
+  - verify:spec-only
+default_commands:
+  - npm run agent:context -- --paths <files> --session-dir <session-dir>
+  - npm run agent:verify -- --profile spec-only --paths <files> --session-dir <session-dir>

@@ -1,0 +1,36 @@
+id: agent-harness-runtime
+globs:
+  - agent-harness/**
+owner: harness-maintainer
+required_skills:
+  - harness-engineering
+  - spec-creation-updating
+primary_specs:
+  - spec/README.md
+  - spec/agents.md
+  - spec/build-and-test.md
+  - spec/project-structure.md
+verification_profile: implementation
+commit_required: true
+allowed_paths:
+  - agent-harness/**
+  - spec/**
+forbidden_paths:
+  - .agents/**
+  - .codex/environments/**
+  - AGENTS.md
+  - CLAUDE.md
+  - WORKFLOW.md
+  - app/**
+  - broker-core/**
+  - client/**
+  - package-lock.json
+  - package.json
+  - scripts/**
+required_evidence:
+  - structured-git-commit
+  - clean-worktree-closeout
+  - verify:implementation
+default_commands:
+  - npm run agent:context -- --paths <files> --session-dir <session-dir>
+  - npm run agent:verify -- --profile implementation --paths <files> --session-dir <session-dir>

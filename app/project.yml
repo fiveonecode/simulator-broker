@@ -1,0 +1,46 @@
+name: SimulatorBrokerApp
+options:
+  minimumXcodeGenVersion: 2.45.0
+settings:
+  base:
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    SWIFT_VERSION: "6.0"
+targets:
+  SimulatorBrokerApp:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - Sources
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
+    settings:
+      base:
+        DEVELOPMENT_TEAM: ""
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Simulator Broker
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        PRODUCT_BUNDLE_IDENTIFIER: dev.codex.simulator-broker-app
+        PRODUCT_NAME: SimulatorBrokerApp
+  SimulatorBrokerAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests
+        excludes:
+          - Fixtures/**
+    dependencies:
+      - target: SimulatorBrokerApp
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: dev.codex.simulator-broker-app.tests
+schemes:
+  SimulatorBrokerApp:
+    build:
+      targets:
+        SimulatorBrokerApp: all
+    test:
+      targets:
+        - name: SimulatorBrokerAppTests

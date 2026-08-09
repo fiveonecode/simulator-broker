@@ -1,0 +1,216 @@
+{
+  "ok": true,
+  "generatedAt": "2026-04-09T10:15:00Z",
+  "hostConfigPath": "/tmp/simbroker-fixture/host-config.json",
+  "hostId": "fixture-host",
+  "stateRoot": "/tmp/simbroker-fixture/state",
+  "overview": {
+    "leaseSaturation": 0.67,
+    "leasedAliases": 2,
+    "pinnedAliases": 1,
+    "totalAliases": 3,
+    "unhealthyAliases": 1
+  },
+  "simulators": [
+    {
+      "activeLeaseId": "lease-ui-1",
+      "activeLeaseSummary": {
+        "actorId": "agent-local",
+        "actorType": "agent",
+        "jobId": "job-100",
+        "leaseId": "lease-ui-1",
+        "projectId": "sample-project",
+        "purposeId": "agent-ui-session"
+      },
+      "alias": "ui-1",
+      "capabilities": ["interactive-resettable"],
+      "deviceFamily": "iPhone",
+      "displayName": "UI One",
+      "driftReason": null,
+      "health": "healthy",
+      "iosVersion": "18.2",
+      "lastBootedAt": "2026-04-09T10:00:00Z",
+      "lastErasedAt": null,
+      "lastLeaseReleasedAt": null,
+      "lastLeaseStartedAt": "2026-04-09T10:01:00Z",
+      "lastRepairedAt": null,
+      "lastShutdownAt": null,
+      "pin": null,
+      "powerState": "booted",
+      "resetPolicy": "erase-on-acquire",
+      "simulatorId": "SIM-UI-1"
+    },
+    {
+      "activeLeaseId": "lease-ui-2",
+      "activeLeaseSummary": {
+        "actorId": "agent-review",
+        "actorType": "agent",
+        "jobId": "job-101",
+        "leaseId": "lease-ui-2",
+        "projectId": "sample-project",
+        "purposeId": "agent-ui-session"
+      },
+      "alias": "ui-2",
+      "capabilities": ["interactive-resettable"],
+      "deviceFamily": "iPhone",
+      "displayName": "UI Two",
+      "driftReason": "runtime mismatch",
+      "health": "repair-needed",
+      "iosVersion": "18.2",
+      "lastBootedAt": "2026-04-09T09:30:00Z",
+      "lastErasedAt": "2026-04-09T09:25:00Z",
+      "lastLeaseReleasedAt": null,
+      "lastLeaseStartedAt": "2026-04-09T09:40:00Z",
+      "lastRepairedAt": null,
+      "lastShutdownAt": "2026-04-09T09:45:00Z",
+      "pin": null,
+      "powerState": "shutdown",
+      "resetPolicy": "erase-on-acquire",
+      "simulatorId": "SIM-UI-2"
+    },
+    {
+      "activeLeaseId": null,
+      "activeLeaseSummary": null,
+      "alias": "manual-1",
+      "capabilities": ["manual-persistent"],
+      "deviceFamily": "iPhone",
+      "displayName": "Manual One",
+      "driftReason": null,
+      "health": "healthy",
+      "iosVersion": "18.2",
+      "lastBootedAt": null,
+      "lastErasedAt": null,
+      "lastLeaseReleasedAt": "2026-04-09T08:00:00Z",
+      "lastLeaseStartedAt": null,
+      "lastRepairedAt": null,
+      "lastShutdownAt": null,
+      "pin": {
+        "pinId": "pin-manual-1",
+        "projectId": "sample-project",
+        "purposeId": "manual-testing"
+      },
+      "powerState": "shutdown",
+      "resetPolicy": "none",
+      "simulatorId": "SIM-MANUAL-1"
+    }
+  ],
+  "activeLeases": [
+    {
+      "actorId": "agent-local",
+      "actorType": "agent",
+      "alias": "ui-1",
+      "artifactPath": "/tmp/lease-ui-1.json",
+      "displayName": "UI One",
+      "expiresAt": null,
+      "jobId": "job-100",
+      "jobKind": "agent-run",
+      "leaseId": "lease-ui-1",
+      "leaseKind": "ephemeral",
+      "ownerPid": 1001,
+      "pinId": null,
+      "projectId": "sample-project",
+      "projectName": "Sample Project",
+      "purposeId": "agent-ui-session",
+      "repoRoot": "/tmp/sample-project",
+      "resetPolicy": "erase-on-acquire",
+      "sessionDir": "/tmp/sample-project/.codex/session-a",
+      "simulatorId": "SIM-UI-1",
+      "startedAt": "2026-04-09T10:01:00Z"
+    },
+    {
+      "actorId": "agent-review",
+      "actorType": "agent",
+      "alias": "ui-2",
+      "artifactPath": "/tmp/lease-ui-2.json",
+      "displayName": "UI Two",
+      "expiresAt": null,
+      "jobId": "job-101",
+      "jobKind": "agent-run",
+      "leaseId": "lease-ui-2",
+      "leaseKind": "ephemeral",
+      "ownerPid": 1002,
+      "pinId": null,
+      "projectId": "sample-project",
+      "projectName": "Sample Project",
+      "purposeId": "agent-ui-session",
+      "repoRoot": "/tmp/sample-project",
+      "resetPolicy": "erase-on-acquire",
+      "sessionDir": "/tmp/sample-project/.codex/session-b",
+      "simulatorId": "SIM-UI-2",
+      "startedAt": "2026-04-09T09:40:00Z"
+    }
+  ],
+  "pins": [
+    {
+      "actorId": "human:local-cli",
+      "actorType": "human",
+      "alias": "manual-1",
+      "createdAt": "2026-04-09T08:15:00Z",
+      "note": "Reserved for walkthroughs",
+      "pinId": "pin-manual-1",
+      "projectId": "sample-project",
+      "projectName": "Sample Project",
+      "purposeId": "manual-testing",
+      "repoRoot": "/tmp/sample-project"
+    }
+  ],
+  "projects": [
+    {
+      "activeAliases": ["manual-1", "ui-1", "ui-2"],
+      "activeLeaseCount": 2,
+      "lastEventAt": "2026-04-09T10:01:00Z",
+      "pinnedAliasCount": 1,
+      "projectFilePath": "/tmp/sample-project/.simulator-broker/project.json",
+      "projectId": "sample-project",
+      "projectName": "Sample Project",
+      "repoRoot": "/tmp/sample-project",
+      "purposes": [
+        {
+          "activeLeaseCount": 2,
+          "capability": "interactive-resettable",
+          "defaultActorType": "agent",
+          "displayName": "Agent UI Session",
+          "pinnedAliasCount": 0,
+          "purposeId": "agent-ui-session",
+          "requires": {
+            "deviceFamily": "iPhone",
+            "iosVersion": "18"
+          }
+        },
+        {
+          "activeLeaseCount": 0,
+          "capability": "manual-persistent",
+          "defaultActorType": "human",
+          "displayName": "Manual Testing",
+          "pinnedAliasCount": 1,
+          "purposeId": "manual-testing",
+          "requires": null
+        }
+      ]
+    }
+  ],
+  "recentEvents": [
+    {
+      "actorType": "agent",
+      "alias": "ui-1",
+      "eventId": "event-2",
+      "jobId": "job-100",
+      "leaseId": "lease-ui-1",
+      "projectId": "sample-project",
+      "purposeId": "agent-ui-session",
+      "timestamp": "2026-04-09T10:01:00Z",
+      "type": "lease.acquired"
+    },
+    {
+      "actorType": "human",
+      "alias": "manual-1",
+      "eventId": "event-1",
+      "jobId": null,
+      "leaseId": null,
+      "projectId": "sample-project",
+      "purposeId": "manual-testing",
+      "timestamp": "2026-04-09T08:15:00Z",
+      "type": "pin.created"
+    }
+  ]
+}

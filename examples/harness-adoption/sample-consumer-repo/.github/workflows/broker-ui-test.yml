@@ -1,0 +1,22 @@
+name: Broker UI Test
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  ui-test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install broker client
+        run: |
+          echo "Install or expose simbroker here."
+      - name: Run broker-aware UI test
+        env:
+          SIMBROKER_HOST_CONFIG: ${{ secrets.SIMBROKER_HOST_CONFIG }}
+          SIMBROKER_STATE_ROOT: ${{ secrets.SIMBROKER_STATE_ROOT }}
+          CI_JOB_ID: ${{ github.run_id }}
+          CI_JOB_KIND: ui-test
+        run: |
+          bash ci/run-ui-test.sh

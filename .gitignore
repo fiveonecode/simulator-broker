@@ -1,0 +1,11 @@
+.DS_Store
+node_modules/
+agent-harness/node_modules/
+agent-harness/artifacts/
+artifacts/
+.symphony/
+.tmp/
+npm-debug.log*
+DerivedData/
+.codex/agent-harness/
+app/SimulatorBrokerApp.xcodeproj/

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Broker Harness Adoption"
+  short_description: "Make repos and agent harnesses broker-aware"
+  default_prompt: "Audit a consumer repo and make its project policy, wrappers, agent instructions, and CI broker-aware for Simulator Broker."

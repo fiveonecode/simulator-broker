@@ -1,0 +1,34 @@
+version = 1
+name = "simulator-broker-app"
+
+[setup]
+script = '''
+#!/usr/bin/env bash
+set -euo pipefail
+bash ./scripts/bootstrap_agent_harness.sh
+'''
+
+[[actions]]
+name = "Run"
+icon = "run"
+command = "./script/build_and_run.sh"
+
+[[actions]]
+name = "agent-catalog"
+icon = "tool"
+command = '''
+#!/usr/bin/env bash
+set -euo pipefail
+npm run agent:catalog -- --format md
+'''
+platform = "darwin"
+
+[[actions]]
+name = "verify-specs"
+icon = "test"
+command = '''
+#!/usr/bin/env bash
+set -euo pipefail
+npm run agent:verify -- --profile spec-only --paths spec/README.md --session-dir "$HOME/.codex/agent-harness/simulator-broker-app/manual-verify"
+'''
+platform = "darwin"
