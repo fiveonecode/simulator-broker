@@ -76,11 +76,24 @@ simbroker lease explain --purpose agent-ui-session
 
 The app is the preferred first-run host setup surface. Use `simbroker host init --bootstrap-config` as the CLI fallback if you are not using the app UI.
 
+## Reinstalling An Existing Local Install
+
+Use this sequence when replacing an existing local install. Do not take the broker offline while it has an active lease.
+
+1. Check that there are no active leases with `simbroker host status --json`.
+2. Stop the running service with `simbroker service stop`.
+3. Quit `Simulator Broker.app` before replacing its bundle.
+4. Run `npm run install:local`, then reload the installed environment helper.
+5. Start the replacement service with `simbroker service start` and relaunch `Simulator Broker.app`.
+
+The installer preserves the host config and broker state. It can stop and restart a service when the existing wrapper is intact, but stopping the service and quitting the app first avoids leaving an old daemon or app process attached to a replaced runtime.
+
 Troubleshooting a broken local install:
 
 - if `command -v simbroker` resolves to a repo checkout such as `.../Projects/simulator-broker/client/bin/simbroker.mjs`, the machine is still using a dev wrapper rather than the installed runtime
 - if `"$HOME/Library/Application Support/SimulatorBroker/install/env.sh"` is missing after a prior setup attempt, treat the machine as partially installed
-- remove `"$HOME/.local/bin/simbroker"`, `"$HOME/Applications/Simulator Broker.app"`, and `"$HOME/Library/Application Support/SimulatorBroker/install"`, then rerun `npm run install:local`
+- if `simbroker` is still available, run `simbroker service stop` and quit `Simulator Broker.app` before manually removing the install paths
+- remove `"$HOME/.local/bin/simbroker"`, `"$HOME/Applications/Simulator Broker.app"`, and `"$HOME/Library/Application Support/SimulatorBroker/install"`, then rerun `npm run install:local`, reload `env.sh`, and run `simbroker service start`
 - preserve `"$HOME/Library/Application Support/SimulatorBroker/state"` unless you intentionally want to reset the live broker host state
 
 ## Local-Debug Portable Bundle

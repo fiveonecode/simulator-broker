@@ -96,7 +96,8 @@ Contributor install troubleshooting:
 
 - if `command -v simbroker` resolves to a repo checkout path instead of `"$HOME/.local/bin/simbroker"`, the machine is still using a dev wrapper rather than the installed runtime
 - if `"$HOME/Library/Application Support/SimulatorBroker/install/env.sh"` is missing after a prior install attempt, treat the machine as partially installed
-- repair the machine by removing `"$HOME/.local/bin/simbroker"`, `"$HOME/Applications/Simulator Broker.app"`, and `"$HOME/Library/Application Support/SimulatorBroker/install"`, then rerunning `npm run install:local`
+- if `simbroker` is still available, stop `brokerd` and quit `Simulator Broker.app` before manually replacing the install paths; do not take the service offline while it has an active lease
+- repair the machine by removing `"$HOME/.local/bin/simbroker"`, `"$HOME/Applications/Simulator Broker.app"`, and `"$HOME/Library/Application Support/SimulatorBroker/install"`, then rerunning `npm run install:local`, reloading `env.sh`, and running `simbroker service start`
 - do not delete `"$HOME/Library/Application Support/SimulatorBroker/state"` as part of normal reinstall/repair unless you explicitly intend to reset live broker host state
 
 ## Required commands
