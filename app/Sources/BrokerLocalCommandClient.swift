@@ -461,10 +461,6 @@ private enum BrokerLocalCommandTimeouts {
   private static let serviceStartLeaseLockWaits = 2
   private static let serviceStartLockProcessSamplerInvocations = 2
   private static let serviceStartStateLoads = 2
-  private static let serviceStartTimeoutSeconds = (serviceStartStateLoads * stateLoadBudgetSeconds)
-    + (serviceStartLeaseLockWaits * defaultLockTimeoutSeconds)
-    + (serviceStartHostAliasCount * simctlCommandTimeoutSeconds)
-    + (serviceStartLockProcessSamplerInvocations * processSamplerTimeoutSeconds)
   private static let simctlCommandTimeoutSeconds = 120
   private static let simctlInventoryCommandsPerStateLoad = 3
   private static let stateLoadBudgetSeconds = (simctlInventoryCommandsPerStateLoad * simctlCommandTimeoutSeconds)
@@ -486,11 +482,12 @@ private enum BrokerLocalCommandTimeouts {
   }
 
   static func timeoutNanoseconds(for arguments: [String]) -> UInt64 {
+    let flags = flagMap(from: arguments)
     if let commandGroup = localCommandGroup(in: arguments),
        commandGroup == ("service", "start") {
-      return secondsToNanoseconds(serviceStartTimeoutSeconds + commandLauncherOverheadSeconds)
+      let hostAliasCount = serviceStartHostAliasCount(from: runtimePaths(from: flags))
+      return secondsToNanoseconds(serviceStartTimeoutSeconds(hostAliasCount: hostAliasCount) + commandLauncherOverheadSeconds)
     }
-    let flags = flagMap(from: arguments)
     guard let request = brokerCommandRequest(from: arguments, flags: flags) else {
       return defaultCommandTimeoutNanoseconds
     }
@@ -500,6 +497,23 @@ private enum BrokerLocalCommandTimeouts {
 
   private static func secondsToNanoseconds(_ seconds: Int) -> UInt64 {
     UInt64(max(1, seconds)) * 1_000_000_000
+  }
+
+  private static func serviceStartTimeoutSeconds(hostAliasCount: Int) -> Int {
+    (serviceStartStateLoads * stateLoadBudgetSeconds)
+      + (serviceStartLeaseLockWaits * defaultLockTimeoutSeconds)
+      + (max(0, hostAliasCount) * simctlCommandTimeoutSeconds)
+      + (serviceStartLockProcessSamplerInvocations * processSamplerTimeoutSeconds)
+  }
+
+  private static func serviceStartHostAliasCount(from paths: BrokerRuntimePaths?) -> Int {
+    guard let paths,
+          let data = try? Data(contentsOf: paths.hostConfigURL),
+          let hostConfig = try? JSONDecoder().decode(BrokerServiceStartHostConfigTimeoutSummary.self, from: data),
+          let aliases = hostConfig.aliases else {
+      return serviceStartHostAliasCount
+    }
+    return aliases.count
   }
 
   private static func brokerCommandRequest(from arguments: [String], flags: [String: ParsedFlagValue]) -> BrokerCommandRequest? {
@@ -612,3 +626,9 @@ private enum BrokerLocalCommandTimeouts {
     }
   }
 }
+
+private struct BrokerServiceStartHostConfigTimeoutSummary: Decodable {
+  let aliases: [BrokerServiceStartHostConfigTimeoutAlias]?
+}
+
+private struct BrokerServiceStartHostConfigTimeoutAlias: Decodable {}

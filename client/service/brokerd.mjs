@@ -886,7 +886,7 @@ export async function startBrokerService(paths, options = {}) {
   let shuttingDown = false;
   let server = null;
   let idleReconcileTimer = null;
-  let idleReconcileRunning = false;
+  let activeIdleReconciliation = null;
   const activeConnections = new Set();
   const activeRequests = new Set();
   const activeEventStreams = new Set();
@@ -928,6 +928,9 @@ export async function startBrokerService(paths, options = {}) {
     if (idleReconcileTimer !== null) {
       (options.clearIntervalFn ?? clearInterval)(idleReconcileTimer);
       idleReconcileTimer = null;
+    }
+    if (activeIdleReconciliation !== null) {
+      await activeIdleReconciliation;
     }
     removeIfExists(paths.serviceMetadataPath);
     for (const stream of activeEventStreams) {
@@ -1184,18 +1187,22 @@ export async function startBrokerService(paths, options = {}) {
       fs.chmodSync(paths.serviceSocketPath, 0o600);
       writeJsonAtomic(paths.serviceMetadataPath, metadata);
       idleReconcileTimer = (options.setIntervalFn ?? setInterval)(() => {
-        if (idleReconcileRunning || shuttingDown) {
+        if (activeIdleReconciliation !== null || shuttingDown) {
           return;
         }
-        idleReconcileRunning = true;
-        runScheduledIdleReconciliation("service-timer", { waitForLeaseMutationLock: false }).catch((error) => {
+        const scheduledIdleReconciliation = runScheduledIdleReconciliation("service-timer", {
+          waitForLeaseMutationLock: false,
+        }).catch((error) => {
           if (error instanceof BrokerError && error.payload?.reasonCode === LEASE_MUTATION_LOCK_BUSY_REASON_CODE) {
             return;
           }
           (options.onIdleReconcileError ?? console.error)(error);
         }).finally(() => {
-          idleReconcileRunning = false;
+          if (activeIdleReconciliation === scheduledIdleReconciliation) {
+            activeIdleReconciliation = null;
+          }
         });
+        activeIdleReconciliation = scheduledIdleReconciliation;
       }, IDLE_RECONCILE_INTERVAL_MS);
       idleReconcileTimer?.unref?.();
       releaseStartupLock();

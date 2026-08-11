@@ -1009,6 +1009,45 @@ test("brokerd dispatches scheduled idle reconciliation asynchronously without ov
   await service.shutdown({ exitProcess: false });
 });
 
+test("brokerd waits for active scheduled idle reconciliation during shutdown", async () => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    serviceSocketPath: path.join(fixture.root, "sw.sock"),
+    stateRoot: fixture.stateRoot,
+  });
+  let timerCallback = null;
+  const timer = { unref() {} };
+  const scheduledResolvers = [];
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runScheduledIdleReconciliation() {
+      return new Promise((resolve) => {
+        scheduledResolvers.push(resolve);
+      });
+    },
+    setIntervalFn(callback) {
+      timerCallback = callback;
+      return timer;
+    },
+    writeAppSnapshotArtifact() {},
+  });
+
+  timerCallback();
+  let shutdownResolved = false;
+  const shutdownPromise = service.shutdown({ exitProcess: false }).then(() => {
+    shutdownResolved = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(shutdownResolved, false);
+
+  scheduledResolvers.shift()({ ok: true });
+  await shutdownPromise;
+  assert.equal(shutdownResolved, true);
+});
+
 test("service startup lock waits while another stale-lock reclaimer is active", () => {
   const root = makeTempDir();
   const paths = resolveBrokerPaths({
