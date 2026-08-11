@@ -812,7 +812,7 @@ async function runIdleReconciliationWorkerTask(data) {
   });
   writeAppSnapshotArtifactUnderMutationLock(data.paths, {
     ...(data.idleSnapshotOptions ?? {}),
-    ...lockOptions,
+    leaseMutationLockWait: true,
   });
   return result;
 }
@@ -869,7 +869,7 @@ export async function startBrokerService(paths, options = {}) {
     });
     writeSnapshot(paths, {
       ...(options.idleSnapshotOptions ?? {}),
-      ...lockOptions,
+      leaseMutationLockWait: true,
     });
     return result;
   };

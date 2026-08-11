@@ -955,13 +955,13 @@ test("brokerd reconciles immediately, every thirty seconds, refreshes snapshots,
 
   assert.deepEqual(sources, ["service-startup"]);
   assert.deepEqual(reconcileLockWaits, [undefined]);
-  assert.deepEqual(snapshotLockWaits, [undefined]);
+  assert.deepEqual(snapshotLockWaits, [true]);
   assert.equal(snapshotCount, 1);
   assert.equal(intervalMilliseconds, 30_000);
   timerCallback();
   assert.deepEqual(sources, ["service-startup", "service-timer"]);
   assert.deepEqual(reconcileLockWaits, [undefined, false]);
-  assert.deepEqual(snapshotLockWaits, [undefined, false]);
+  assert.deepEqual(snapshotLockWaits, [true, true]);
   assert.equal(snapshotCount, 2);
 
   await service.shutdown({ exitProcess: false });
