@@ -974,7 +974,6 @@ function isIdlePolicyConfigError(error) {
 
 function commandNeedsIdlePolicyMetadata(request) {
   return request.group === "idle"
-    || (request.group === "lease" && request.command === "acquire")
     || (request.group === "app" && request.command === "snapshot");
 }
 

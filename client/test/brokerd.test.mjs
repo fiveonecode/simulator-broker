@@ -1048,6 +1048,104 @@ test("brokerd waits for active scheduled idle reconciliation during shutdown", a
   assert.equal(shutdownResolved, true);
 });
 
+test("brokerd serializes command workers", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  const resolvers = [];
+  const startedCommands = [];
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker(request) {
+      startedCommands.push(request.command);
+      return new Promise((resolve) => {
+        resolvers.push(() => resolve({
+          command: request.command,
+          group: request.group,
+        }));
+      });
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => service.shutdown({ exitProcess: false }));
+
+  const firstRequest = requestService(fixture, {
+    body: { command: "global", group: "help", type: "command" },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await waitFor(() => startedCommands.length === 1);
+  const secondRequest = requestService(fixture, {
+    body: { command: "host", group: "help", type: "command" },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(startedCommands, ["global"]);
+
+  resolvers.shift()();
+  await waitFor(() => startedCommands.length === 2);
+  resolvers.shift()();
+
+  const [firstResponse, secondResponse] = await Promise.all([
+    firstRequest,
+    secondRequest,
+  ]);
+  assert.equal(firstResponse.statusCode, 200);
+  assert.equal(secondResponse.statusCode, 200);
+  assert.deepEqual(startedCommands, ["global", "host"]);
+});
+
+test("brokerd waits for active command workers during shutdown", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  let resolveCommand = null;
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker(request) {
+      return new Promise((resolve) => {
+        resolveCommand = () => resolve({
+          command: request.command,
+          group: request.group,
+        });
+      });
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => service.shutdown({ exitProcess: false }));
+
+  const request = requestService(fixture, {
+    body: { command: "global", group: "help", type: "command" },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await waitFor(() => resolveCommand !== null);
+
+  let shutdownResolved = false;
+  const shutdownPromise = service.shutdown({ exitProcess: false }).then(() => {
+    shutdownResolved = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(shutdownResolved, false);
+
+  resolveCommand();
+  const response = await request;
+  await shutdownPromise;
+  assert.equal(response.statusCode, 200);
+  assert.equal(shutdownResolved, true);
+});
+
 test("service startup lock waits while another stale-lock reclaimer is active", () => {
   const root = makeTempDir();
   const paths = resolveBrokerPaths({
@@ -1949,4 +2047,39 @@ test("service-backed mutations surface malformed idle policy snapshot failures",
   assert.equal(release.json.reasonCode, "invalid-config");
   assert.equal(release.json.exitCode, 2);
   assert.equal(fs.existsSync(path.join(fixture.stateRoot, "leases", `${acquired.json.lease.leaseId}.json`)), false);
+});
+
+test("service-backed lease acquire preserves committed leases when idle policy metadata is malformed", async (t) => {
+  const fixture = makeFixture();
+  t.after(async () => stopServiceIfRunning(fixture));
+
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  assert.equal(runCli(fixture, "service", "start").status, 0);
+  fs.writeFileSync(path.join(fixture.stateRoot, "idle-policy.json"), "{not-json\n");
+
+  const acquired = runCli(
+    fixture,
+    "lease",
+    "acquire",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--actor-id",
+    "agent-app-service",
+    "--actor-type",
+    "agent",
+    "--owner-pid",
+    String(process.pid),
+  );
+
+  assert.equal(acquired.status, 0, acquired.stderr);
+  assert.equal(acquired.json.transport, "service");
+  assert.equal(acquired.json.snapshotRefresh.ok, false);
+  assert.equal(acquired.json.snapshotRefresh.reasonCode, "invalid-config");
+  assert.deepEqual(acquired.json.scheduler, {
+    active: false,
+    limitation: "invalid-config",
+  });
+  assert.equal(fs.existsSync(path.join(fixture.stateRoot, "leases", `${acquired.json.lease.leaseId}.json`)), true);
 });

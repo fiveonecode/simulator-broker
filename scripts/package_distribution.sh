@@ -53,6 +53,42 @@ require_strict_child_path() {
   esac
 }
 
+scan_distribution_public_surface() {
+  local bundle_root="$1"
+  local files_path="$tmp_root/distribution-public-surface-files.txt"
+
+  (
+    cd "$bundle_root"
+    find . -type f -print | sed 's#^\./##' | LC_ALL=C sort > "$files_path"
+  )
+
+  node --input-type=module - "$repo_root" "$bundle_root" "$files_path" "$repo_root/.public-safety.local" <<'EOF'
+import fs from "node:fs";
+import path from "node:path";
+import process from "node:process";
+import { pathToFileURL } from "node:url";
+
+const [repoRoot, bundleRoot, filesPath, denylistPath] = process.argv.slice(2);
+const { scanPublicSurface } = await import(pathToFileURL(path.join(repoRoot, "client/public-surface.mjs")).href);
+const files = fs.readFileSync(filesPath, "utf8").split(/\r?\n/u).filter(Boolean);
+const report = scanPublicSurface({
+  denylistPath,
+  files,
+  root: bundleRoot,
+});
+
+if (report.ok) {
+  process.stdout.write(`Distribution public surface verified (${report.filesScanned} files scanned).\n`);
+} else {
+  process.stderr.write(`Distribution public surface verification failed with ${report.issues.length} issue(s).\n`);
+  for (const issue of report.issues) {
+    process.stderr.write(`${issue.path}:${issue.line} [${issue.rule}]\n`);
+  }
+  process.exitCode = 1;
+}
+EOF
+}
+
 usage() {
   cat <<'EOF'
 Usage: bash scripts/package_distribution.sh [options]
@@ -230,6 +266,8 @@ Optional install flags:
 - --bin-dir <path>
 - --applications-dir <path>
 EOF
+
+scan_distribution_public_surface "$bundle_root"
 
 codesign_sign_exit_code=0
 if run_with_output_capture \

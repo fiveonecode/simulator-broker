@@ -85,6 +85,45 @@ function requestMayReportScheduler(request) {
     || (request.group === "lease" && request.command === "acquire");
 }
 
+function isInvalidConfigBrokerError(error) {
+  return error instanceof BrokerError && error.payload?.reasonCode === "invalid-config";
+}
+
+function canReportCommittedAcquireMetadataWarning(request, payload, error) {
+  return request.group === "lease"
+    && request.command === "acquire"
+    && payload?.snapshotRefresh?.ok === false
+    && isInvalidConfigBrokerError(error);
+}
+
+function schedulerMetadataForRequest(paths, request, payload, activeWhenConfigured) {
+  try {
+    const configured = typeof payload.configured === "boolean"
+      ? payload.configured
+      : idlePolicyConfiguredBroker(paths);
+    return {
+      configured,
+      scheduler: request.group === "idle" || configured
+        ? {
+          active: activeWhenConfigured(configured),
+          limitation: activeWhenConfigured(configured) || !configured ? null : "service-not-running",
+        }
+        : null,
+    };
+  } catch (error) {
+    if (canReportCommittedAcquireMetadataWarning(request, payload, error)) {
+      return {
+        configured: false,
+        scheduler: {
+          active: false,
+          limitation: "invalid-config",
+        },
+      };
+    }
+    throw error;
+  }
+}
+
 function rejectValuelessPathFlags(flags) {
   for (const key of BROKER_PATH_FLAGS) {
     if (!flags.has(key)) {
@@ -411,12 +450,25 @@ async function runServiceAwareRequest(paths, request) {
   let service = canUseService
     ? await probeService(paths, { timeoutMs: serviceCommandTimeoutMs(request) })
     : null;
+  let policyConfiguredForStartup = false;
+  if (!service
+    && canUseService
+    && request.group === "lease"
+    && request.command === "acquire") {
+    try {
+      policyConfiguredForStartup = idlePolicyConfiguredBroker(paths);
+    } catch (error) {
+      if (!isInvalidConfigBrokerError(error)) {
+        throw error;
+      }
+    }
+  }
 
   if (!service
     && canUseService
     && request.group === "lease"
     && request.command === "acquire"
-    && idlePolicyConfiguredBroker(paths)) {
+    && policyConfiguredForStartup) {
     await startService(paths);
     service = await probeService(paths, { timeoutMs: serviceCommandTimeoutMs(request) });
     if (!service) {
@@ -447,13 +499,23 @@ async function runServiceAwareRequest(paths, request) {
     });
     const result = appendTransport(payload, "service");
     if (requestMayReportScheduler(request)) {
-      const configured = typeof payload.configured === "boolean"
-        ? payload.configured
-        : idlePolicyConfiguredBroker(paths);
-      if (request.group === "idle" || configured) {
+      try {
+        const configured = typeof payload.configured === "boolean"
+          ? payload.configured
+          : idlePolicyConfiguredBroker(paths);
+        if (request.group === "idle" || configured) {
+          result.scheduler = {
+            active: configured,
+            limitation: null,
+          };
+        }
+      } catch (error) {
+        if (!canReportCommittedAcquireMetadataWarning(request, payload, error)) {
+          throw error;
+        }
         result.scheduler = {
-          active: configured,
-          limitation: null,
+          active: false,
+          limitation: "invalid-config",
         };
       }
     }
@@ -462,10 +524,21 @@ async function runServiceAwareRequest(paths, request) {
 
   const payload = appendTransport(executeBrokerCommand(paths, request), "direct");
   let schedulerRunning = false;
+  let configuredForScheduler = false;
+  if (canUseService
+    && request.group === "lease"
+    && request.command === "acquire") {
+    const schedulerMetadata = schedulerMetadataForRequest(paths, request, payload, () => false);
+    configuredForScheduler = schedulerMetadata.configured;
+    if (schedulerMetadata.scheduler?.limitation === "invalid-config") {
+      payload.scheduler = schedulerMetadata.scheduler;
+      return payload;
+    }
+  }
   if (canUseService
     && request.group === "lease"
     && request.command === "acquire"
-    && idlePolicyConfiguredBroker(paths)) {
+    && configuredForScheduler) {
     try {
       await startService(paths);
       schedulerRunning = true;
@@ -474,15 +547,13 @@ async function runServiceAwareRequest(paths, request) {
     }
   }
   if (requestMayReportScheduler(request)) {
-    const configured = request.group === "idle" && typeof payload.configured === "boolean"
-      ? payload.configured
-      : idlePolicyConfiguredBroker(paths);
-    if (request.group === "idle" || configured) {
+    const { configured, scheduler } = schedulerMetadataForRequest(paths, request, payload, () => schedulerRunning);
+    if (scheduler) {
       payload.scheduler = {
-        active: schedulerRunning,
-        limitation: localOnlyMode(process.env)
+        active: scheduler.active,
+        limitation: scheduler.limitation ?? (localOnlyMode(process.env)
           ? "local-only-mode"
-          : (configured && !schedulerRunning ? "service-not-running" : null),
+          : (configured && !schedulerRunning ? "service-not-running" : null)),
       };
     }
   }

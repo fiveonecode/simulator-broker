@@ -837,6 +837,62 @@ test("lease acquire preserves the committed lease when snapshot refresh fails", 
   assert.equal(fs.existsSync(path.join(paths.leasesDir, `${acquired.lease.leaseId}.json`)), true);
 });
 
+test("lease acquire preserves the committed lease when idle policy metadata is malformed", () => {
+  const fixture = makeFixture();
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  fs.writeFileSync(path.join(fixture.stateRoot, "idle-policy.json"), "{not-json\n");
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+
+  const acquired = executeBrokerCommand(paths, {
+    command: "acquire",
+    group: "lease",
+    options: {
+      actorId: "agent-idle-policy-warning",
+      actorType: "agent",
+      ownerPid: process.pid,
+      processExists: (pid) => pid === process.pid,
+      projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+      purposeId: "agent-ui-session",
+      simctlAdapter: fixture.simctl.adapter,
+    },
+  });
+
+  assert.equal(acquired.ok, true);
+  assert.equal(acquired.snapshotRefresh.ok, false);
+  assert.equal(acquired.snapshotRefresh.reasonCode, "invalid-config");
+  assert.equal(fs.existsSync(path.join(paths.leasesDir, `${acquired.lease.leaseId}.json`)), true);
+});
+
+test("lease acquire CLI preserves committed leases when idle policy metadata is malformed", () => {
+  const fixture = makeFixture();
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  fs.writeFileSync(path.join(fixture.stateRoot, "idle-policy.json"), "{not-json\n");
+
+  const acquired = runCli(
+    fixture,
+    "lease",
+    "acquire",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--json",
+  );
+
+  assert.equal(acquired.status, 0, acquired.stderr);
+  assert.equal(acquired.json.snapshotRefresh.ok, false);
+  assert.equal(acquired.json.snapshotRefresh.reasonCode, "invalid-config");
+  assert.deepEqual(acquired.json.scheduler, {
+    active: false,
+    limitation: "invalid-config",
+  });
+  assert.equal(fs.existsSync(path.join(fixture.stateRoot, "leases", `${acquired.json.lease.leaseId}.json`)), true);
+});
+
 test("idle mutations surface final snapshot refresh failures", () => {
   const fixture = makeFixture();
   assert.equal(runCli(fixture, "host", "init").status, 0);

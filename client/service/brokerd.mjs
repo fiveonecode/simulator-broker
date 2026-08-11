@@ -817,6 +817,10 @@ function serviceSnapshotRefreshError(snapshotRefresh) {
   });
 }
 
+function shouldSurfaceServiceSnapshotRefreshError(request) {
+  return !(request.group === "lease" && request.command === "acquire");
+}
+
 function runIdleReconciliationWorker(paths, options, source, { waitForLeaseMutationLock = true } = {}) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./brokerd.mjs", import.meta.url), {
@@ -944,9 +948,13 @@ export async function startBrokerService(paths, options = {}) {
   let server = null;
   let idleReconcileTimer = null;
   let activeIdleReconciliation = null;
+  let commandWorkerQueue = Promise.resolve();
+  const activeCommandWorkers = new Set();
   const activeConnections = new Set();
   const activeRequests = new Set();
   const activeEventStreams = new Set();
+  const runCommandWorker = options.runBrokerCommandWorker
+    ?? ((request) => runBrokerCommandWorker(paths, request));
 
   function trackActiveRequest(request, response) {
     const controller = new AbortController();
@@ -977,6 +985,18 @@ export async function startBrokerService(paths, options = {}) {
     };
   }
 
+  function runSerializedCommandWorker(request) {
+    const priorCommandWorkers = commandWorkerQueue.catch(() => {});
+    const commandWorker = priorCommandWorkers.then(() => runCommandWorker(request));
+    activeCommandWorkers.add(commandWorker);
+    commandWorkerQueue = commandWorker.catch(() => {});
+    const forgetCommandWorker = () => {
+      activeCommandWorkers.delete(commandWorker);
+    };
+    commandWorker.then(forgetCommandWorker, forgetCommandWorker);
+    return commandWorker;
+  }
+
   async function shutdown({ exitProcess = true } = {}) {
     if (shuttingDown) {
       return;
@@ -988,6 +1008,10 @@ export async function startBrokerService(paths, options = {}) {
     }
     if (activeIdleReconciliation !== null) {
       await activeIdleReconciliation;
+    }
+    if (activeCommandWorkers.size > 0) {
+      await Promise.allSettled([...activeCommandWorkers]);
+      await new Promise((resolve) => setImmediate(resolve));
     }
     removeIfExists(paths.serviceMetadataPath);
     for (const stream of activeEventStreams) {
@@ -1069,8 +1093,8 @@ export async function startBrokerService(paths, options = {}) {
         }
         assertExpectedServiceIdentity(metadata, body.expectedServiceIdentity);
         assertCommandFreshForDispatch(paths, body);
-        const payload = await runBrokerCommandWorker(paths, body);
-        if (payload?.snapshotRefresh?.ok === false) {
+        const payload = await runSerializedCommandWorker(body);
+        if (payload?.snapshotRefresh?.ok === false && shouldSurfaceServiceSnapshotRefreshError(body)) {
           throw serviceSnapshotRefreshError(payload.snapshotRefresh);
         }
         const serviceMetadata = body.group === "capacity" || body.group === "idle" ? {} : { servedBy: metadata };

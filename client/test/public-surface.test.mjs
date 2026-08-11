@@ -56,6 +56,26 @@ test("public surface scan matches complete home paths instead of raw prefixes", 
   }]);
 });
 
+test("public surface scan detects JSON slash-escaped home paths", () => {
+  const root = makeTempDir();
+  const localHome = path.posix.join(path.posix.sep, "Users", "alice");
+  const escapedHome = localHome.replaceAll(path.posix.sep, String.raw`\/`);
+  fs.writeFileSync(path.join(root, "snapshot.json"), `{"projectPath":"${escapedHome}${String.raw`\/`}project"}\n`);
+
+  const report = scanPublicSurface({
+    files: ["snapshot.json"],
+    homePath: localHome,
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 1,
+    path: "snapshot.json",
+    rule: "local-home-path",
+  }]);
+});
+
 test("public surface scan detects home paths inside file URLs", () => {
   const root = makeTempDir();
   const localHome = path.join(root, "private-home");
