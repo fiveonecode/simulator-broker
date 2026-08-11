@@ -986,8 +986,16 @@ export async function startBrokerService(paths, options = {}) {
   }
 
   function runSerializedCommandWorker(request) {
+    if (shuttingDown) {
+      throw new BrokerError("Broker service is shutting down.", {
+        reasonCode: "service-unavailable",
+      });
+    }
     const priorCommandWorkers = commandWorkerQueue.catch(() => {});
-    const commandWorker = priorCommandWorkers.then(() => runCommandWorker(request));
+    const commandWorker = priorCommandWorkers.then(() => {
+      assertCommandFreshForDispatch(paths, request);
+      return runCommandWorker(request);
+    });
     activeCommandWorkers.add(commandWorker);
     commandWorkerQueue = commandWorker.catch(() => {});
     const forgetCommandWorker = () => {

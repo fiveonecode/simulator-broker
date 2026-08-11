@@ -1101,6 +1101,73 @@ test("brokerd serializes command workers", async (t) => {
   assert.deepEqual(startedCommands, ["global", "host"]);
 });
 
+test("brokerd revalidates queued command expiry before worker dispatch", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  const originalDateNow = Date.now;
+  let nowMilliseconds = 1_000_000;
+  const resolvers = [];
+  const startedCommands = [];
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker(request) {
+      startedCommands.push(request.command);
+      return new Promise((resolve) => {
+        resolvers.push(() => resolve({
+          command: request.command,
+          group: request.group,
+        }));
+      });
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  Date.now = () => nowMilliseconds;
+  t.after(async () => {
+    Date.now = originalDateNow;
+    await service.shutdown({ exitProcess: false });
+  });
+
+  const firstRequest = requestService(fixture, {
+    body: { command: "global", group: "help", type: "command" },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await waitFor(() => startedCommands.length === 1);
+  const secondRequest = requestService(fixture, {
+    body: {
+      clientCommandExecutionTimeoutMilliseconds: 25_000,
+      clientCommandQueueTimeoutMilliseconds: 1_000,
+      clientRequestStartedAtMilliseconds: nowMilliseconds,
+      command: "host",
+      group: "help",
+      options: {},
+      type: "command",
+    },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(startedCommands, ["global"]);
+
+  nowMilliseconds += 1_001;
+  resolvers.shift()();
+  const [firstResponse, secondResponse] = await Promise.all([
+    firstRequest,
+    secondRequest,
+  ]);
+
+  assert.equal(firstResponse.statusCode, 200);
+  assert.equal(secondResponse.statusCode, 409);
+  assert.equal(secondResponse.json.reasonCode, "service-command-expired");
+  assert.deepEqual(startedCommands, ["global"]);
+});
+
 test("brokerd waits for active command workers during shutdown", async (t) => {
   const fixture = makeFixture();
   const paths = resolveBrokerPaths({
@@ -1144,6 +1211,87 @@ test("brokerd waits for active command workers during shutdown", async (t) => {
   await shutdownPromise;
   assert.equal(response.statusCode, 200);
   assert.equal(shutdownResolved, true);
+});
+
+test("brokerd rejects late command worker admission during shutdown", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  let timerCallback = null;
+  const timer = { unref() {} };
+  const scheduledResolvers = [];
+  let workerStarts = 0;
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker() {
+      workerStarts += 1;
+      return { ok: true };
+    },
+    runScheduledIdleReconciliation() {
+      return new Promise((resolve) => {
+        scheduledResolvers.push(resolve);
+      });
+    },
+    setIntervalFn(callback) {
+      timerCallback = callback;
+      return timer;
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => service.shutdown({ exitProcess: false }));
+
+  timerCallback();
+  assert.equal(scheduledResolvers.length, 1);
+
+  const metadata = readJson(paths.serviceMetadataPath);
+  const body = JSON.stringify({
+    command: "host",
+    group: "help",
+    options: {},
+    type: "command",
+  });
+  let request = null;
+  const responsePromise = new Promise((resolve, reject) => {
+    request = http.request({
+      headers: {
+        "content-length": Buffer.byteLength(body),
+        "content-type": "application/json",
+      },
+      method: "POST",
+      path: "/v1/command",
+      socketPath: metadata.socketPath,
+    }, (response) => {
+      let responseBody = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        responseBody += chunk;
+      });
+      response.on("end", () => {
+        resolve({
+          json: JSON.parse(responseBody),
+          statusCode: response.statusCode ?? 0,
+        });
+      });
+    });
+    request.on("error", reject);
+    request.write(body.slice(0, 8));
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  const shutdownPromise = service.shutdown({ exitProcess: false });
+  request.end(body.slice(8));
+  const response = await responsePromise;
+  scheduledResolvers.shift()({ ok: true });
+  await shutdownPromise;
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.json.reasonCode, "service-unavailable");
+  assert.equal(workerStarts, 0);
 });
 
 test("service startup lock waits while another stale-lock reclaimer is active", () => {
