@@ -22,9 +22,11 @@ const PROHIBITED_TRACKED_BASENAMES = new Set([
 ]);
 
 const PROHIBITED_TRACKED_STATE_DIRS = new Set([
+  "audit-append-failures",
   "capacity-transactions",
   "evidence",
   "leases",
+  "locks",
   "pins",
 ]);
 

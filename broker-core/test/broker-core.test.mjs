@@ -4324,6 +4324,62 @@ test("idle cleanup audit append failures do not mark shut down aliases for repai
   assert.notEqual(registry.aliases["ui-1"].driftReason, "idle-shutdown-failed");
 });
 
+test("idle cleanup registry persistence failures stay public-safe after shutdowns", (t) => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const fixture = readJson(paths.simctl.statePath);
+  for (const device of fixture.devices) {
+    device.state = "Booted";
+  }
+  writeJson(paths.simctl.statePath, fixture);
+  const resolvedPaths = brokerPaths(paths);
+  const originalRenameSync = fs.renameSync;
+
+  t.after(() => {
+    fs.renameSync = originalRenameSync;
+  });
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const preview = cleanupIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  let registryWriteCount = 0;
+  fs.renameSync = (oldPath, newPath) => {
+    if (path.resolve(newPath) === resolvedPaths.registryPath) {
+      registryWriteCount += 1;
+      if (registryWriteCount === 2) {
+        throw new Error(`EACCES: permission denied, rename '${oldPath}' -> '${newPath}'`);
+      }
+    }
+    return originalRenameSync(oldPath, newPath);
+  };
+
+  assert.throws(() => {
+    cleanupIdleBroker(resolvedPaths, {
+      actorId: "operator",
+      actorType: "human",
+      apply: true,
+      confirmPlanId: preview.planId,
+      processExists: () => true,
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => {
+    const serialized = JSON.stringify(error.payload);
+    return error.payload?.reasonCode === "internal-error"
+      && error.payload?.error === "Idle registry state could not be persisted."
+      && error.payload?.command === "idle.cleanup"
+      && error.payload?.eligibleCount === 3
+      && error.payload?.shutdownCount === 3
+      && error.payload?.failureCount === 0
+      && error.payload?.status === "success"
+      && serialized.includes(paths.root) === false
+      && "stack" in error.payload === false
+      && error.cause?.message.includes(resolvedPaths.registryPath);
+  });
+
+  const postFailureFixture = readJson(paths.simctl.statePath);
+  assert.equal(postFailureFixture.devices.find((device) => device.udid === "SIM-UI-1").state, "Shutdown");
+});
+
 test("idle cleanup preview does not reclaim stale containment-aware leases", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);

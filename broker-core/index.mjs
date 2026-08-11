@@ -2001,6 +2001,27 @@ function writeRegistry(paths, registry) {
   writeJsonAtomicRestricted(paths.registryPath, registry);
 }
 
+function throwIdleRegistryPersistenceError(error, details) {
+  const persistenceError = new BrokerError("Idle registry state could not be persisted.", {
+    reasonCode: "internal-error",
+    ...details,
+  });
+  Object.defineProperty(persistenceError, "cause", {
+    configurable: true,
+    value: error,
+    writable: true,
+  });
+  throw persistenceError;
+}
+
+function writeIdleRegistry(paths, registry, details) {
+  try {
+    writeRegistry(paths, registry);
+  } catch (error) {
+    throwIdleRegistryPersistenceError(error, details);
+  }
+}
+
 function findHostAliasOrThrow(state, alias) {
   const hostAlias = state.hostConfig.aliases.find((candidate) => candidate.alias === alias);
   if (!hostAlias) {
@@ -3188,7 +3209,7 @@ function containLeaseRecord(paths, state, lease, options = {}) {
   };
 }
 
-function loadBrokerState(paths, { processExists = defaultProcessExists, skipLeaseIds, timestamp = nowIso(), ...simctlOptions } = {}) {
+function loadBrokerState(paths, { processExists = defaultProcessExists, registryPersistenceDetails, skipLeaseIds, timestamp = nowIso(), ...simctlOptions } = {}) {
   ensureStatePaths(paths);
   const hostConfig = readHostConfigOrThrow(paths);
   const knownProjects = normalizeKnownProjects(readJsonIfExists(paths.knownProjectsPath), timestamp);
@@ -3264,7 +3285,11 @@ function loadBrokerState(paths, { processExists = defaultProcessExists, skipLeas
   }
   syncRegistryWithSimctl(hostConfig, registry, simctlOptions);
   registry.updatedAt = timestamp;
-  writeRegistry(paths, registry);
+  if (registryPersistenceDetails) {
+    writeIdleRegistry(paths, registry, registryPersistenceDetails);
+  } else {
+    writeRegistry(paths, registry);
+  }
   writeKnownProjects(paths, knownProjects);
 
   return {
@@ -4014,7 +4039,12 @@ export function disableIdlePolicyBroker(paths, options = {}) {
 export function idleStatusBroker(paths, options = {}) {
   return withLeaseMutationLock(paths, () => {
     const timestamp = nowIso(options.now);
-    const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+    const state = loadBrokerState(paths, {
+      ...stateLoadOptions(options, timestamp),
+      registryPersistenceDetails: {
+        command: "idle.status",
+      },
+    });
     return {
       command: "idle.status",
       ok: true,
@@ -4062,7 +4092,13 @@ function performIdleShutdowns(paths, state, candidates, options, timestamp, { co
       registryEntry.updatedAt = timestamp;
       state.registry.updatedAt = timestamp;
       failureCount += 1;
-      writeRegistry(paths, state.registry);
+      writeIdleRegistry(paths, state.registry, {
+        command,
+        eligibleCount: candidates.length,
+        failureCount,
+        shutdownCount,
+        status: idleCleanupStatus(shutdownCount, failureCount),
+      });
       appendEventRecord(paths, "idle.simulator.shutdown_failed", {
         alias: hostAlias.alias,
         actorType: options.actorType ?? "system",
@@ -4100,7 +4136,13 @@ function performIdleShutdowns(paths, state, candidates, options, timestamp, { co
   if (candidates.length > 0 || options.persistNoChanges !== false) {
     state.registry.idle.lastCleanupResult = lastCleanupResult;
     state.registry.updatedAt = timestamp;
-    writeRegistry(paths, state.registry);
+    writeIdleRegistry(paths, state.registry, {
+      command,
+      eligibleCount: candidates.length,
+      failureCount,
+      shutdownCount,
+      status: lastCleanupResult.status,
+    });
     appendEventRecord(paths, eventType, {
       alias: null,
       actorType: options.actorType ?? "system",
@@ -4146,7 +4188,12 @@ export function reconcileIdleBroker(paths, options = {}) {
         status: "not_configured",
       };
     }
-    const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+    const state = loadBrokerState(paths, {
+      ...stateLoadOptions(options, timestamp),
+      registryPersistenceDetails: {
+        command: "idle.reconcile",
+      },
+    });
     const candidates = idleEligibleCandidates(state, policy, timestamp);
     return {
       configured: true,
@@ -4188,7 +4235,12 @@ export function cleanupIdleBroker(paths, options = {}) {
   }
   return withLeaseMutationLock(paths, () => {
     const timestamp = nowIso(options.now);
-    const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+    const state = loadBrokerState(paths, {
+      ...stateLoadOptions(options, timestamp),
+      registryPersistenceDetails: {
+        command: "idle.cleanup",
+      },
+    });
     const plan = idleCleanupPlan(state);
     if (options.confirmPlanId !== plan.publicPlan.planId) {
       throw new BrokerError("Idle cleanup confirmation is stale; rerun preview and confirm the current plan.", {

@@ -127,24 +127,30 @@ test("public surface scan rejects tracked broker state artifacts and ignores bin
   fs.mkdirSync(path.join(root, "state", "capacity-transactions"), { recursive: true });
   fs.mkdirSync(path.join(root, "state", "evidence", "lease-1"), { recursive: true });
   fs.mkdirSync(path.join(root, "state", "leases"), { recursive: true });
+  fs.mkdirSync(path.join(root, "state", "locks", "lease-mutation.lock"), { recursive: true });
   fs.mkdirSync(path.join(root, "state", "pins"), { recursive: true });
+  fs.mkdirSync(path.join(root, "state", "audit-append-failures"), { recursive: true });
   fs.writeFileSync(path.join(root, "fixtures", "idle-policy.json"), "{}\n");
+  fs.writeFileSync(path.join(root, "state", "audit-append-failures", "event.json"), "{}\n");
   fs.writeFileSync(path.join(root, "state", "capacity-transactions", "txn.json"), "{}\n");
   fs.writeFileSync(path.join(root, "state", "events.ndjson"), "{}\n");
   fs.writeFileSync(path.join(root, "state", "evidence", "lease-1", "broker-status-after.json"), "{}\n");
   fs.writeFileSync(path.join(root, "state", "known-projects.json"), "{}\n");
   fs.writeFileSync(path.join(root, "state", "leases", "lease-1.json"), "{}\n");
+  fs.writeFileSync(path.join(root, "state", "locks", "lease-mutation.lock", "owner.json"), "{}\n");
   fs.writeFileSync(path.join(root, "state", "pins", "pin-1.json"), "{}\n");
   fs.writeFileSync(path.join(root, "image.bin"), Buffer.from([0, 1, 2, 3]));
 
   const report = scanPublicSurface({
     files: [
       "fixtures/idle-policy.json",
+      "state/audit-append-failures/event.json",
       "state/capacity-transactions/txn.json",
       "state/events.ndjson",
       "state/evidence/lease-1/broker-status-after.json",
       "state/known-projects.json",
       "state/leases/lease-1.json",
+      "state/locks/lease-mutation.lock/owner.json",
       "state/pins/pin-1.json",
       "image.bin",
     ],
@@ -157,6 +163,11 @@ test("public surface scan rejects tracked broker state artifacts and ignores bin
     {
       line: 1,
       path: "fixtures/idle-policy.json",
+      rule: "prohibited-local-artifact",
+    },
+    {
+      line: 1,
+      path: "state/audit-append-failures/event.json",
       rule: "prohibited-local-artifact",
     },
     {
@@ -182,6 +193,11 @@ test("public surface scan rejects tracked broker state artifacts and ignores bin
     {
       line: 1,
       path: "state/leases/lease-1.json",
+      rule: "prohibited-local-artifact",
+    },
+    {
+      line: 1,
+      path: "state/locks/lease-mutation.lock/owner.json",
       rule: "prohibited-local-artifact",
     },
     {
