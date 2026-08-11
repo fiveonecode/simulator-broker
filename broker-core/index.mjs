@@ -3948,12 +3948,15 @@ export function writeAppSnapshotArtifact(paths, options = {}) {
 }
 
 export function writeAppSnapshotArtifactUnderMutationLock(paths, options = {}) {
-  const timestamp = nowIso(options.now);
-  return withLeaseMutationLock(paths, () => writeAppSnapshotArtifact(paths, {
-    ...options,
-    now: timestamp,
-  }), {
-    now: timestamp,
+  const lockTimestamp = nowIso(options.now);
+  return withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
+    return writeAppSnapshotArtifact(paths, {
+      ...options,
+      now: timestamp,
+    });
+  }, {
+    now: lockTimestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,

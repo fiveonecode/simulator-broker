@@ -56,6 +56,40 @@ test("public surface scan matches complete home paths instead of raw prefixes", 
   }]);
 });
 
+test("public surface scan treats sentence-ending periods as home path boundaries", () => {
+  const root = makeTempDir();
+  const localHome = path.posix.join(path.posix.sep, "Users", "alice");
+  fs.writeFileSync(path.join(root, "README.md"), `Home: ${localHome}.\n`);
+
+  const report = scanPublicSurface({
+    files: ["README.md"],
+    homePath: localHome,
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 1,
+    path: "README.md",
+    rule: "local-home-path",
+  }]);
+});
+
+test("public surface scan ignores home path prefixes in dot-suffixed path fragments", () => {
+  const root = makeTempDir();
+  const localHome = path.posix.join(path.posix.sep, "Users", "alice");
+  fs.writeFileSync(path.join(root, "README.md"), `Config: ${localHome}.config\n`);
+
+  const report = scanPublicSurface({
+    files: ["README.md"],
+    homePath: localHome,
+    root,
+  });
+
+  assert.equal(report.ok, true);
+  assert.deepEqual(report.issues, []);
+});
+
 test("public surface scan detects JSON slash-escaped home paths", () => {
   const root = makeTempDir();
   const localHome = path.posix.join(path.posix.sep, "Users", "alice");

@@ -148,8 +148,10 @@ function isHomePathBoundary(text, offset, value) {
   const pathFragment = /[A-Za-z0-9._~\\/-]/u;
   const uriPrefixBoundary = /(?:^|[^A-Za-z0-9._~\\/-])[A-Za-z][A-Za-z0-9+.-]*:\/\/$/u;
   const hasUriPrefixBoundary = before === "/" && uriPrefixBoundary.test(text.slice(0, offset));
+  const afterSentencePeriod = after === "."
+    && !pathFragment.test(text[offset + value.length + 1] ?? "");
   return (!pathFragment.test(before) || hasUriPrefixBoundary)
-    && (after === "" || after === path.posix.sep || !pathFragment.test(after));
+    && (after === "" || after === path.posix.sep || !pathFragment.test(after) || afterSentencePeriod);
 }
 
 function indexOfHomePath(text, value) {

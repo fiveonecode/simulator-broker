@@ -3499,6 +3499,52 @@ test("locked app snapshot writer waits on the lease mutation lock", () => {
   assert.equal(fs.existsSync(resolvedPaths.appSnapshotPath), false);
 });
 
+test("locked app snapshot writer samples snapshot time after acquiring the mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator-idle",
+    actorType: "human",
+    graceSeconds: 60,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-snapshot-idle",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: lease.leaseId,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const timestamps = [
+    "2026-01-01T00:00:59.999Z",
+    "2026-01-01T00:01:05.000Z",
+  ];
+  const snapshot = writeAppSnapshotArtifactUnderMutationLock(resolvedPaths, {
+    now: () => timestamps.shift(),
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(snapshot.generatedAt, "2026-01-01T00:01:05.000Z");
+  assert.equal(snapshot.idle.eligibleCount, 1);
+  assert.equal(snapshot.idle.nextScheduledCleanupAt, "2026-01-01T00:01:05.000Z");
+});
+
 test("app snapshot preserves explicitly skipped leases with dead owners", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
