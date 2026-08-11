@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   acquireLeaseBroker,
   appSnapshotBroker,
+  appSnapshotBrokerUnderMutationLock,
   BrokerError,
   bootSimulatorBroker,
   checkCapacityBroker,
@@ -3759,6 +3760,59 @@ test("idle policy is absent by default, strictly bounded, and stored outside pro
     actorType: "human",
   });
   assert.equal(fs.existsSync(resolvedPaths.idlePolicyPath), false);
+});
+
+test("idle policy mutations timestamp audit events after acquiring the mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const enableTimestamps = [
+    "2026-01-01T00:00:00.000Z",
+    "2026-01-01T00:00:30.000Z",
+  ];
+
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+    now: () => enableTimestamps.shift(),
+  });
+
+  const disableTimestamps = [
+    "2026-01-01T00:01:00.000Z",
+    "2026-01-01T00:01:45.000Z",
+  ];
+  disableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    now: () => disableTimestamps.shift(),
+  });
+
+  const events = readEventsBroker(resolvedPaths, { limit: 10 }).events;
+  assert.equal(events.find((event) => event.type === "idle.policy.enabled")?.timestamp, "2026-01-01T00:00:30.000Z");
+  assert.equal(events.find((event) => event.type === "idle.policy.disabled")?.timestamp, "2026-01-01T00:01:45.000Z");
+});
+
+test("app snapshot reads honor the lease mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  fs.mkdirSync(resolvedPaths.leaseLockDir, { recursive: true });
+  writeJson(resolvedPaths.leaseLockOwnerPath, {
+    pid: process.pid,
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  assert.throws(() => {
+    appSnapshotBrokerUnderMutationLock(resolvedPaths, runtimeOptions(paths, {
+      leaseMutationLockWait: false,
+      processExists: () => true,
+    }));
+  }, (error) => error.payload?.reasonCode === "alias-busy");
 });
 
 test("malformed idle policy JSON maps to public-safe invalid config", () => {

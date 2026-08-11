@@ -3917,6 +3917,23 @@ export function appSnapshotBroker(paths, options = {}) {
   });
 }
 
+export function appSnapshotBrokerUnderMutationLock(paths, options = {}) {
+  const lockTimestamp = nowIso(options.now);
+  return withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
+    return appSnapshotBroker(paths, {
+      ...options,
+      now: timestamp,
+    });
+  }, {
+    now: lockTimestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+    wait: options.leaseMutationLockWait !== false,
+  });
+}
+
 export function writeAppSnapshotArtifact(paths, options = {}) {
   try {
     const snapshot = appSnapshotBroker(paths, options);
@@ -3949,7 +3966,7 @@ export function idlePolicyConfiguredBroker(paths) {
 }
 
 export function enableIdlePolicyBroker(paths, options = {}) {
-  const timestamp = nowIso(options.now);
+  const lockTimestamp = nowIso(options.now);
   const actorId = requireHumanIdleActor(options, "Idle policy enable");
   const graceSeconds = requireBoundedInteger(
     options.graceSeconds,
@@ -3958,6 +3975,7 @@ export function enableIdlePolicyBroker(paths, options = {}) {
     MAX_IDLE_GRACE_SECONDS,
   );
   return withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
     try {
       ensureStatePaths(paths);
       writeJsonAtomicRestricted(paths.idlePolicyPath, {
@@ -3995,7 +4013,7 @@ export function enableIdlePolicyBroker(paths, options = {}) {
       schemaVersion: IDLE_SCHEMA_VERSION,
     };
   }, {
-    now: timestamp,
+    now: lockTimestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
@@ -4003,9 +4021,10 @@ export function enableIdlePolicyBroker(paths, options = {}) {
 }
 
 export function disableIdlePolicyBroker(paths, options = {}) {
-  const timestamp = nowIso(options.now);
+  const lockTimestamp = nowIso(options.now);
   const actorId = requireHumanIdleActor(options, "Idle policy disable");
   return withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
     const unchanged = !fs.existsSync(paths.idlePolicyPath);
     removeIdlePolicy(paths);
     appendEventRecord(paths, "idle.policy.disabled", {
@@ -4029,7 +4048,7 @@ export function disableIdlePolicyBroker(paths, options = {}) {
       unchanged,
     };
   }, {
-    now: timestamp,
+    now: lockTimestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,

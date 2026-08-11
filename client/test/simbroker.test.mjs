@@ -895,11 +895,15 @@ test("malformed idle policy does not break non-scheduler direct commands", () =>
   const hostStatus = runCli(fixture, "host", "status", "--json");
   assert.equal(hostStatus.status, 0);
   assert.equal(hostStatus.json.snapshotRefresh.ok, false);
+  assert.equal(hostStatus.json.snapshotRefresh.reasonCode, "invalid-config");
+  assert.equal(hostStatus.json.snapshotRefresh.exitCode, 2);
   assert.equal(JSON.stringify(hostStatus.json.snapshotRefresh).includes(fixture.root), false);
 
   const release = runCli(fixture, "lease", "release", "--lease-id", acquired.json.lease.leaseId, "--json");
   assert.equal(release.status, 0);
   assert.equal(release.json.snapshotRefresh.ok, false);
+  assert.equal(release.json.snapshotRefresh.reasonCode, "invalid-config");
+  assert.equal(release.json.snapshotRefresh.exitCode, 2);
   assert.equal(JSON.stringify(release.json.snapshotRefresh).includes(fixture.root), false);
 });
 

@@ -15,7 +15,7 @@ import {
 import { defaultProcessSampler } from "../../broker-core/containment.mjs";
 import {
   BrokerError,
-  appSnapshotBroker,
+  appSnapshotBrokerUnderMutationLock,
   readEventsBroker,
   reconcileIdleBroker,
   writeAppSnapshotArtifactUnderMutationLock,
@@ -760,6 +760,63 @@ function deserializeIdleReconciliationError(serialized) {
   return error;
 }
 
+function runServiceWorker(workerPayload) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./brokerd.mjs", import.meta.url), {
+      workerData: workerPayload,
+    });
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      callback(value);
+    };
+    worker.once("message", (message) => {
+      if (message?.ok) {
+        finish(resolve, message.result ?? null);
+        return;
+      }
+      finish(reject, deserializeIdleReconciliationError(message?.error));
+    });
+    worker.once("error", (error) => {
+      finish(reject, error);
+    });
+    worker.once("exit", (code) => {
+      if (code !== 0) {
+        finish(reject, new BrokerError("Broker service worker exited before completion.", {
+          exitCode: code,
+          reasonCode: "internal-error",
+        }));
+      }
+    });
+    worker.unref();
+  });
+}
+
+function runBrokerCommandWorker(paths, request) {
+  return runServiceWorker({
+    paths,
+    request,
+    type: "command",
+  });
+}
+
+function runAppSnapshotWorker(paths, options) {
+  return runServiceWorker({
+    options,
+    paths,
+    type: "app-snapshot",
+  });
+}
+
+function serviceSnapshotRefreshError(snapshotRefresh) {
+  return new BrokerError(snapshotRefresh?.error ?? "Failed to refresh the app snapshot after the command committed.", {
+    reasonCode: snapshotRefresh?.reasonCode ?? "internal-error",
+  });
+}
+
 function runIdleReconciliationWorker(paths, options, source, { waitForLeaseMutationLock = true } = {}) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./brokerd.mjs", import.meta.url), {
@@ -990,7 +1047,7 @@ export async function startBrokerService(paths, options = {}) {
       }
 
       if (request.method === "GET" && requestUrl.pathname === "/v1/app/snapshot") {
-        const payload = appSnapshotBroker(paths, {
+        const payload = await runAppSnapshotWorker(paths, {
           eventLimit: parseNonNegativeIntegerQuery(requestUrl.searchParams.get("eventLimit"), "eventLimit") ?? 50,
         });
         sendJson(response, 200, {
@@ -1012,7 +1069,10 @@ export async function startBrokerService(paths, options = {}) {
         }
         assertExpectedServiceIdentity(metadata, body.expectedServiceIdentity);
         assertCommandFreshForDispatch(paths, body);
-        const payload = executeBrokerCommand(paths, body);
+        const payload = await runBrokerCommandWorker(paths, body);
+        if (payload?.snapshotRefresh?.ok === false) {
+          throw serviceSnapshotRefreshError(payload.snapshotRefresh);
+        }
         const serviceMetadata = body.group === "capacity" || body.group === "idle" ? {} : { servedBy: metadata };
         sendJson(response, 200, {
           ok: true,
@@ -1216,6 +1276,34 @@ export async function startBrokerService(paths, options = {}) {
 
 if (!isMainThread && workerData?.type === "idle-reconciliation") {
   runIdleReconciliationWorkerTask(workerData)
+    .then((result) => {
+      parentPort?.postMessage({ ok: true, result });
+    })
+    .catch((error) => {
+      parentPort?.postMessage({
+        error: serializeIdleReconciliationError(error),
+        ok: false,
+      });
+    });
+}
+
+if (!isMainThread && workerData?.type === "command") {
+  Promise.resolve()
+    .then(() => executeBrokerCommand(workerData.paths, workerData.request))
+    .then((result) => {
+      parentPort?.postMessage({ ok: true, result });
+    })
+    .catch((error) => {
+      parentPort?.postMessage({
+        error: serializeIdleReconciliationError(error),
+        ok: false,
+      });
+    });
+}
+
+if (!isMainThread && workerData?.type === "app-snapshot") {
+  Promise.resolve()
+    .then(() => appSnapshotBrokerUnderMutationLock(workerData.paths, workerData.options ?? {}))
     .then((result) => {
       parentPort?.postMessage({ ok: true, result });
     })

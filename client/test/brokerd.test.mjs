@@ -1191,6 +1191,49 @@ test("service rejects expired queued commands before command dispatch", async (t
   assert.equal(rejected.json.ok, false);
 });
 
+test("service command lock waits stay off the brokerd event loop", async (t) => {
+  const fixture = makeFixture();
+  t.after(async () => stopServiceIfRunning(fixture));
+
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  assert.equal(runCli(fixture, "service", "start").status, 0);
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  fs.mkdirSync(paths.leaseLockDir, { recursive: true });
+  writeJson(paths.leaseLockOwnerPath, {
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+  });
+
+  const blockedCommand = requestService(fixture, {
+    body: {
+      command: "release",
+      group: "lease",
+      options: {
+        leaseId: "missing-lease",
+        leaseLockTimeoutMilliseconds: 1000,
+      },
+      type: "command",
+    },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const status = await Promise.race([
+    requestServiceJson(fixture, "/v1/service/status"),
+    new Promise((resolve) => setTimeout(() => resolve(null), 250)),
+  ]);
+
+  assert.equal(status?.statusCode, 200);
+  assert.equal(status?.json?.ok, true);
+  const blockedResult = await blockedCommand;
+  assert.equal(blockedResult.statusCode, 409);
+  assert.equal(blockedResult.json.reasonCode, "alias-busy");
+});
+
 test("service validates expected identity before stop dispatch", async (t) => {
   const fixture = makeFixture();
   t.after(async () => stopServiceIfRunning(fixture));
@@ -1861,4 +1904,49 @@ test("service-backed project validation maps malformed project JSON to invalid c
   assert.equal(result.status, 2);
   assert.equal(result.json.reasonCode, "invalid-config");
   assert.equal(result.json.exitCode, 2);
+});
+
+test("service-backed mutations surface malformed idle policy snapshot failures", async (t) => {
+  const fixture = makeFixture();
+  t.after(async () => stopServiceIfRunning(fixture));
+
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  const acquired = runCli(
+    fixture,
+    "lease",
+    "acquire",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--actor-id",
+    "agent-app-service",
+    "--actor-type",
+    "agent",
+    "--owner-pid",
+    String(process.pid),
+  );
+  assert.equal(acquired.status, 0);
+  assert.equal(runCli(fixture, "service", "start").status, 0);
+  fs.writeFileSync(path.join(fixture.stateRoot, "idle-policy.json"), "{not-json\n");
+
+  const release = await requestService(fixture, {
+    body: {
+      command: "release",
+      group: "lease",
+      options: {
+        actorId: "simulator-broker-app",
+        actorType: "human",
+        leaseId: acquired.json.lease.leaseId,
+      },
+      type: "command",
+    },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+
+  assert.equal(release.statusCode, 400);
+  assert.equal(release.json.reasonCode, "invalid-config");
+  assert.equal(release.json.exitCode, 2);
+  assert.equal(fs.existsSync(path.join(fixture.stateRoot, "leases", `${acquired.json.lease.leaseId}.json`)), false);
 });

@@ -1122,12 +1122,17 @@ export function executeBrokerCommand(paths, request) {
       if (contractError && (commandNeedsIdlePolicyMetadata(request) || !isIdlePolicyConfigError(contractError))) {
         throw contractError;
       }
+      const snapshotRefresh = {
+        error: error?.message ?? String(error),
+        ok: false,
+      };
+      if (contractError?.payload?.reasonCode || typeof contractError?.reasonCode === "string") {
+        snapshotRefresh.reasonCode = contractError.payload?.reasonCode ?? contractError.reasonCode;
+        snapshotRefresh.exitCode = contractError.payload?.exitCode ?? contractError.exitCode;
+      }
       payload = {
         ...payload,
-        snapshotRefresh: {
-          error: error?.message ?? String(error),
-          ok: false,
-        },
+        snapshotRefresh,
       };
     }
   }
