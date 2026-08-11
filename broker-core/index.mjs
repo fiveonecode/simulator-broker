@@ -5695,7 +5695,6 @@ function acquireSelection(paths, options = {}) {
 }
 
 function rollbackAcquireLease(paths, state, leaseRecord, timestamp, reasonCode) {
-  removeLeaseRecordFiles(paths, leaseRecord);
   const registryEntry = state.registry.aliases[leaseRecord.alias];
   registryEntry.activeLeaseId = null;
   registryEntry.health = "repair-needed";
@@ -5703,6 +5702,16 @@ function rollbackAcquireLease(paths, state, leaseRecord, timestamp, reasonCode) 
   registryEntry.updatedAt = timestamp;
   state.registry.updatedAt = timestamp;
   writeRegistry(paths, state.registry);
+  removeLeaseRecordFiles(paths, leaseRecord);
+}
+
+function rollbackAcquireLeaseFailureSafe(paths, state, leaseRecord, timestamp, reasonCode) {
+  try {
+    rollbackAcquireLease(paths, state, leaseRecord, timestamp, reasonCode);
+    return null;
+  } catch (error) {
+    return error;
+  }
 }
 
 function maybeResetLeaseOnAcquire(paths, state, leaseRecord, options = {}) {
@@ -5778,8 +5787,9 @@ function maybeBootLeaseOnAcquire(paths, state, leaseRecord, options = {}) {
 }
 
 export function acquireLeaseBroker(paths, options = {}) {
-  const timestamp = nowIso(options.now);
+  const lockStartedAt = nowIso(options.now);
   return withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
     const selection = acquireSelection(paths, {
       ...options,
       now: timestamp,
@@ -5858,12 +5868,22 @@ export function acquireLeaseBroker(paths, options = {}) {
     try {
       maybeResetLeaseOnAcquire(paths, selection.state, leaseRecord, options);
     } catch (error) {
-      rollbackAcquireLease(paths, selection.state, leaseRecord, selection.timestamp, "reset-on-acquire-failed");
+      const rollbackError = rollbackAcquireLeaseFailureSafe(
+        paths,
+        selection.state,
+        leaseRecord,
+        selection.timestamp,
+        "reset-on-acquire-failed",
+      );
       throw new BrokerError(`Failed to reset alias ${leaseRecord.alias} before handing out the lease.`, {
         alias: leaseRecord.alias,
         cause: error?.message ?? String(error),
         leaseId: leaseRecord.leaseId,
         reasonCode: "reset-on-acquire-failed",
+        ...(rollbackError ? {
+          rollbackCause: rollbackError?.message ?? String(rollbackError),
+          rollbackFailed: true,
+        } : {}),
         resetPolicy: leaseRecord.resetPolicy,
         simulatorId: leaseRecord.simulatorId,
       });
@@ -5871,12 +5891,22 @@ export function acquireLeaseBroker(paths, options = {}) {
     try {
       maybeBootLeaseOnAcquire(paths, selection.state, leaseRecord, options);
     } catch (error) {
-      rollbackAcquireLease(paths, selection.state, leaseRecord, selection.timestamp, "boot-on-acquire-failed");
+      const rollbackError = rollbackAcquireLeaseFailureSafe(
+        paths,
+        selection.state,
+        leaseRecord,
+        selection.timestamp,
+        "boot-on-acquire-failed",
+      );
       throw new BrokerError(`Failed to boot alias ${leaseRecord.alias} before handing out the lease.`, {
         alias: leaseRecord.alias,
         cause: error?.message ?? String(error),
         leaseId: leaseRecord.leaseId,
         reasonCode: "boot-on-acquire-failed",
+        ...(rollbackError ? {
+          rollbackCause: rollbackError?.message ?? String(rollbackError),
+          rollbackFailed: true,
+        } : {}),
         simulatorId: leaseRecord.simulatorId,
       });
     }
@@ -5898,7 +5928,7 @@ export function acquireLeaseBroker(paths, options = {}) {
       ok: true,
     };
   }, {
-    now: timestamp,
+    now: lockStartedAt,
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,

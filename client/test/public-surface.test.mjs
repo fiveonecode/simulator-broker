@@ -141,6 +141,29 @@ test("public surface scan applies an ignored operator denylist without echoing i
   assert.equal(JSON.stringify(report).includes(privateMarker), false);
 });
 
+test("public surface scan applies local denylist values to relative filenames without echoing them", () => {
+  const root = makeTempDir();
+  const privateMarker = "operator-private-alias";
+  const privateFilename = `${privateMarker}-notes.md`;
+  fs.writeFileSync(path.join(root, ".public-safety.local"), `# local only\n${privateMarker}\n`);
+  fs.writeFileSync(path.join(root, privateFilename), "public notes\n");
+
+  const report = scanPublicSurface({
+    denylistPath: path.join(root, ".public-safety.local"),
+    files: [privateFilename],
+    homePath: "",
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 1,
+    path: "[redacted]-notes.md",
+    rule: "local-denylist-rule-2",
+  }]);
+  assert.equal(JSON.stringify(report).includes(privateMarker), false);
+});
+
 test("public surface scan rejects tracked broker state artifacts and ignores binary content", () => {
   const root = makeTempDir();
   fs.mkdirSync(path.join(root, "fixtures"));
@@ -235,6 +258,26 @@ test("public surface scan rejects symlinks without reading link targets", () => 
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   fs.writeFileSync(targetPath, "private target\n");
   fs.symlinkSync(targetPath, path.join(root, "runtime-link"));
+
+  const report = scanPublicSurface({
+    files: ["runtime-link"],
+    homePath: localHome,
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 1,
+    path: "runtime-link",
+    rule: "prohibited-symlink",
+  }]);
+  assert.equal(JSON.stringify(report).includes(localHome), false);
+});
+
+test("public surface scan rejects broken symlinks without checking target existence", () => {
+  const root = makeTempDir();
+  const localHome = path.join(root, "private-home");
+  fs.symlinkSync(path.join(localHome, "missing-target.txt"), path.join(root, "runtime-link"));
 
   const report = scanPublicSurface({
     files: ["runtime-link"],

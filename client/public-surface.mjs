@@ -219,10 +219,19 @@ export function scanPublicSurface({
     issues.push(issue);
   };
 
+  const diagnosticPathFor = (normalizedRelativeFile) => {
+    let diagnosticPath = normalizedRelativeFile;
+    for (const rule of denylistRules) {
+      diagnosticPath = diagnosticPath.split(rule.value).join("[redacted]");
+    }
+    return diagnosticPath;
+  };
+
   const scanText = (normalizedRelativeFile, text) => {
     if (text === null) {
       return;
     }
+    const diagnosticPath = diagnosticPathFor(normalizedRelativeFile);
     for (const rule of builtInRules) {
       let offset = indexOfHomePath(text, rule.value);
       if (offset === -1) {
@@ -231,7 +240,7 @@ export function scanPublicSurface({
       if (offset !== -1) {
         addIssue({
           line: lineNumberForOffset(text, offset),
-          path: normalizedRelativeFile,
+          path: diagnosticPath,
           rule: rule.label,
         });
       }
@@ -241,7 +250,20 @@ export function scanPublicSurface({
       if (offset !== -1) {
         addIssue({
           line: lineNumberForOffset(text, offset),
-          path: normalizedRelativeFile,
+          path: diagnosticPath,
+          rule: `local-denylist-rule-${rule.index}`,
+        });
+      }
+    }
+  };
+
+  const scanRelativePath = (normalizedRelativeFile) => {
+    const diagnosticPath = diagnosticPathFor(normalizedRelativeFile);
+    for (const rule of denylistRules) {
+      if (normalizedRelativeFile.includes(rule.value)) {
+        addIssue({
+          line: 1,
+          path: diagnosticPath,
           rule: `local-denylist-rule-${rule.index}`,
         });
       }
@@ -250,10 +272,12 @@ export function scanPublicSurface({
 
   for (const relativeFile of candidateFiles) {
     const normalizedRelativeFile = relativeFile.split(path.sep).join("/");
+    const diagnosticPath = diagnosticPathFor(normalizedRelativeFile);
+    scanRelativePath(normalizedRelativeFile);
     if (isProhibitedTrackedArtifact(normalizedRelativeFile)) {
       addIssue({
         line: 1,
-        path: normalizedRelativeFile,
+        path: diagnosticPath,
         rule: "prohibited-local-artifact",
       });
       continue;
@@ -261,7 +285,7 @@ export function scanPublicSurface({
     if (indexModes.get(relativeFile) === "120000") {
       addIssue({
         line: 1,
-        path: normalizedRelativeFile,
+        path: diagnosticPath,
         rule: "prohibited-symlink",
       });
       continue;
@@ -270,18 +294,22 @@ export function scanPublicSurface({
     if (!absoluteFile.startsWith(`${resolvedRoot}${path.sep}`)) {
       continue;
     }
-    if (fs.existsSync(absoluteFile)) {
+    try {
       const fileStats = fs.lstatSync(absoluteFile);
       if (fileStats.isSymbolicLink()) {
         addIssue({
           line: 1,
-          path: normalizedRelativeFile,
+          path: diagnosticPath,
           rule: "prohibited-symlink",
         });
         continue;
       }
       if (fileStats.isFile()) {
         scanText(normalizedRelativeFile, textFileContent(absoluteFile));
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
       }
     }
     if (scanIndexBlobs) {

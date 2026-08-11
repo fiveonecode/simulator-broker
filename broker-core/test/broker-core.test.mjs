@@ -3668,6 +3668,66 @@ test("acquire marks an alias repair-needed and rolls back when boot fails", () =
   assert.equal(registry.aliases["ui-1"].driftReason, "boot-on-acquire-failed");
 });
 
+test("acquire reports boot failure when rollback registry persistence also fails", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const sabotagingAdapter = {
+    ...paths.simctl.adapter,
+    bootDevice(simulatorId) {
+      paths.simctl.adapter.bootDevice(simulatorId);
+      fs.rmSync(resolvedPaths.registryPath);
+      fs.mkdirSync(resolvedPaths.registryPath);
+    },
+  };
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  assert.throws(() => {
+    acquireLeaseBroker(resolvedPaths, {
+      actorId: "agent-boot",
+      actorType: "agent",
+      ownerPid: process.pid,
+      processExists: (pid) => pid === process.pid,
+      purposeId: "agent-ui-session",
+      simctlAdapter: sabotagingAdapter,
+    });
+  }, (error) =>
+    error instanceof BrokerError
+      && error.payload?.reasonCode === "boot-on-acquire-failed"
+      && error.payload?.rollbackFailed === true);
+
+  assert.equal(fs.readdirSync(resolvedPaths.leasesDir).length, 1);
+  fs.rmSync(resolvedPaths.registryPath, { force: true, recursive: true });
+});
+
+test("acquire samples boot-on-acquire timestamps inside the mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const lockStartedAt = "2026-04-10T00:00:00.000Z";
+  const acquiredAt = "2026-04-10T00:00:30.000Z";
+  const timestamps = [lockStartedAt, acquiredAt];
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-boot",
+    actorType: "agent",
+    now: () => timestamps.shift() ?? acquiredAt,
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+
+  assert.equal(lease.startedAt, acquiredAt);
+  const registry = readJson(resolvedPaths.registryPath);
+  assert.equal(registry.aliases["ui-1"].lastBootedAt, acquiredAt);
+  const bootEvent = readEventsBroker(resolvedPaths).events.find((event) => event.type === "simulator.booted");
+  assert.equal(bootEvent.timestamp, acquiredAt);
+});
+
 test("shutdown candidates prefer the most recently released compatible alias", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
