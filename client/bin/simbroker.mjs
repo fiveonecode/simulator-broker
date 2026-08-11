@@ -469,10 +469,8 @@ async function runServiceAwareRequest(paths, request) {
     try {
       await startService(paths);
       schedulerRunning = true;
-    } catch (error) {
-      if (!(error instanceof BrokerError)) {
-        throw error;
-      }
+    } catch {
+      // The direct lease acquire has already committed; return it with the scheduler limitation.
     }
   }
   if (requestMayReportScheduler(request)) {

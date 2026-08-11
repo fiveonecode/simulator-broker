@@ -528,7 +528,7 @@ struct BrokerCommandRequest: Sendable {
   }
 }
 
-private struct BrokerLeaseRuntimeTimeoutSummary: Decodable {
+struct BrokerLeaseRuntimeTimeoutSummary: Decodable {
   let commandPgid: Int?
   let commandPid: Int?
   let memoryCeilingBytes: Int?
@@ -536,7 +536,7 @@ private struct BrokerLeaseRuntimeTimeoutSummary: Decodable {
   let simulatorProcessNames: [String]?
 }
 
-private struct BrokerLeaseTimeoutSummary: Decodable {
+struct BrokerLeaseTimeoutSummary: Decodable {
   let runtime: BrokerLeaseRuntimeTimeoutSummary?
 
   var hasContainmentProcessMetadata: Bool {

@@ -5978,8 +5978,9 @@ export function containLeaseBroker(paths, options = {}) {
 }
 
 export function releaseLeaseBroker(paths, options = {}) {
-  const timestamp = nowIso(options.now);
+  const lockStartedAt = nowIso(options.now);
   return withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
     const lease = loadLeaseByIdOrFile(paths, options);
     const skipLeaseIds = new Set(options.skipLeaseIds ?? []);
     skipLeaseIds.add(lease.leaseId);
@@ -6031,7 +6032,7 @@ export function releaseLeaseBroker(paths, options = {}) {
       releasedAt: timestamp,
     };
   }, {
-    now: timestamp,
+    now: lockStartedAt,
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,

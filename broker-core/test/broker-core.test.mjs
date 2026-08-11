@@ -3961,6 +3961,36 @@ test("stale lease recovery timestamps release after entering the mutation lock",
   assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
 });
 
+test("lease release timestamps release after entering the mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  const timestamps = [
+    "2026-01-01T01:00:00.000Z",
+    "2026-01-01T01:00:45.000Z",
+  ];
+
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: lease.leaseId,
+    now: () => timestamps.shift(),
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
+});
+
 test("idle status timestamps summary after entering the mutation lock", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);

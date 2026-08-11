@@ -148,6 +148,17 @@ final class BrokerLocalCommandClientTests: XCTestCase {
     """.write(to: leasesURL.appending(path: "stale-containment-1.json"), atomically: true, encoding: .utf8)
     XCTAssertEqual(
       runner.resolvedTimeoutNanoseconds(for: [
+        "service",
+        "start",
+        "--host-config",
+        hostConfigURL.path,
+        "--state-root",
+        stateRoot.path,
+      ]),
+      1926 * 1_000_000_000
+    )
+    XCTAssertEqual(
+      runner.resolvedTimeoutNanoseconds(for: [
         "lease",
         "release",
         "--host-config",
