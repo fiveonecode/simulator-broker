@@ -418,11 +418,14 @@ async function stopService(paths) {
   }
 
   const stopped = await waitForServiceToStop(paths, {
-    timeoutMs: serviceCommandTimeoutMs({
-      command: "reconcile",
-      group: "idle",
-      options: {},
-    }, { paths }),
+    timeoutMs: Math.max(
+      serviceCommandTimeoutMs({
+        command: "reconcile",
+        group: "idle",
+        options: {},
+      }, { paths }),
+      response?.activeCommandDrainTimeoutMilliseconds ?? 0,
+    ),
   });
   if (!stopped && stopError) {
     throw stopError;

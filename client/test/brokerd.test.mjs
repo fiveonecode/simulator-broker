@@ -1275,6 +1275,67 @@ test("brokerd waits for active command workers during shutdown", async (t) => {
   assert.equal(shutdownResolved, true);
 });
 
+test("service stop reports active command drain timeout budget", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  let resolveCommand = null;
+  let service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker(request) {
+      return new Promise((resolve) => {
+        resolveCommand = () => resolve({
+          command: request.command,
+          group: request.group,
+        });
+      });
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => {
+    resolveCommand?.();
+    if (service !== null) {
+      await service.shutdown({ exitProcess: false });
+    }
+  });
+
+  const commandRequest = requestService(fixture, {
+    body: {
+      clientCommandExecutionTimeoutMilliseconds: 123_456,
+      clientCommandQueueTimeoutMilliseconds: 60_000,
+      clientRequestStartedAtMilliseconds: Date.now(),
+      command: "global",
+      group: "help",
+      options: {},
+      type: "command",
+    },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await waitFor(() => resolveCommand !== null);
+
+  const stop = await requestService(fixture, {
+    body: {},
+    method: "POST",
+    requestPath: "/v1/service/stop",
+  });
+  assert.equal(stop.statusCode, 200);
+  assert.equal(stop.json.ok, true);
+  assert.ok(stop.json.activeCommandDrainTimeoutMilliseconds > 100_000);
+  assert.ok(stop.json.activeCommandDrainTimeoutMilliseconds <= 123_456);
+
+  resolveCommand();
+  const commandResponse = await commandRequest;
+  assert.equal(commandResponse.statusCode, 200);
+  await waitFor(() => !fs.existsSync(paths.serviceMetadataPath));
+  service = null;
+});
+
 test("brokerd rejects late command worker admission during shutdown", async (t) => {
   const fixture = makeFixture();
   const paths = resolveBrokerPaths({

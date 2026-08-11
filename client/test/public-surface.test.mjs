@@ -251,6 +251,58 @@ test("public surface scan rejects symlinks without reading link targets", () => 
   assert.equal(JSON.stringify(report).includes(localHome), false);
 });
 
+test("default public surface scan rejects symlinks staged only in the Git index", () => {
+  const root = makeTempDir();
+  const localHome = path.join(root, "private-home");
+  const targetPath = path.join(localHome, "target.txt");
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.writeFileSync(targetPath, "private target\n");
+  fs.symlinkSync(targetPath, path.join(root, "runtime-link"));
+  execFileSync("git", ["add", "runtime-link"], { cwd: root, stdio: "ignore" });
+  fs.rmSync(path.join(root, "runtime-link"));
+  fs.writeFileSync(path.join(root, "runtime-link"), "public docs\n");
+
+  const report = scanPublicSurface({
+    homePath: localHome,
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 1,
+    path: "runtime-link",
+    rule: "prohibited-symlink",
+  }]);
+  assert.equal(JSON.stringify(report).includes(localHome), false);
+});
+
+test("default public surface scan decodes staged BOM-marked UTF-16 text", () => {
+  const root = makeTempDir();
+  const localHome = path.join(root, "private-home");
+  const utf16Content = Buffer.concat([
+    Buffer.from([0xff, 0xfe]),
+    Buffer.from(`intro\nmachine path: ${localHome}/state\n`, "utf16le"),
+  ]);
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  fs.writeFileSync(path.join(root, "Localizable.strings"), utf16Content);
+  execFileSync("git", ["add", "Localizable.strings"], { cwd: root, stdio: "ignore" });
+  fs.writeFileSync(path.join(root, "Localizable.strings"), "public docs\n");
+
+  const report = scanPublicSurface({
+    homePath: localHome,
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 2,
+    path: "Localizable.strings",
+    rule: "local-home-path",
+  }]);
+  assert.equal(JSON.stringify(report).includes(localHome), false);
+});
+
 test("default public surface candidates ignore untracked scratch files", () => {
   const root = makeTempDir();
   const localHome = path.join(root, "private-home");

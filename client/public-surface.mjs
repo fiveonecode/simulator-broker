@@ -71,7 +71,53 @@ function defaultCandidateFiles(root) {
   return output.split("\0").filter(Boolean);
 }
 
+function defaultCandidateIndexModes(root) {
+  const output = execFileSync("git", [
+    "ls-files",
+    "-sz",
+    "--cached",
+    "--exclude-standard",
+  ], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  const modes = new Map();
+  for (const entry of output.split("\0")) {
+    if (!entry) {
+      continue;
+    }
+    const separatorIndex = entry.indexOf("\t");
+    if (separatorIndex === -1) {
+      continue;
+    }
+    const metadata = entry.slice(0, separatorIndex).split(/\s+/u);
+    const relativeFile = entry.slice(separatorIndex + 1);
+    if (metadata[0] && relativeFile) {
+      modes.set(relativeFile, metadata[0]);
+    }
+  }
+  return modes;
+}
+
+function decodeUtf16BigEndian(content) {
+  const littleEndian = Buffer.allocUnsafe(content.length);
+  for (let index = 0; index + 1 < content.length; index += 2) {
+    littleEndian[index] = content[index + 1];
+    littleEndian[index + 1] = content[index];
+  }
+  if (content.length % 2 === 1) {
+    littleEndian[content.length - 1] = content[content.length - 1];
+  }
+  return littleEndian.toString("utf16le");
+}
+
 function textContentFromBuffer(content) {
+  if (content.length >= 2 && content[0] === 0xff && content[1] === 0xfe) {
+    return content.subarray(2).toString("utf16le");
+  }
+  if (content.length >= 2 && content[0] === 0xfe && content[1] === 0xff) {
+    return decodeUtf16BigEndian(content.subarray(2));
+  }
   if (content.includes(0)) {
     return null;
   }
@@ -153,6 +199,7 @@ export function scanPublicSurface({
   }).trim());
   const candidateFiles = files ?? defaultCandidateFiles(resolvedRoot);
   const scanIndexBlobs = files === undefined;
+  const indexModes = scanIndexBlobs ? defaultCandidateIndexModes(resolvedRoot) : new Map();
   const resolvedDenylistPath = denylistPath ?? path.join(resolvedRoot, LOCAL_DENYLIST_NAME);
   const denylistRules = localDenylistRules(resolvedDenylistPath);
   const builtInRules = [
@@ -208,6 +255,14 @@ export function scanPublicSurface({
         line: 1,
         path: normalizedRelativeFile,
         rule: "prohibited-local-artifact",
+      });
+      continue;
+    }
+    if (indexModes.get(relativeFile) === "120000") {
+      addIssue({
+        line: 1,
+        path: normalizedRelativeFile,
+        rule: "prohibited-symlink",
       });
       continue;
     }

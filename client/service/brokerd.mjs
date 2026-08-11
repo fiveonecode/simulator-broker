@@ -522,9 +522,7 @@ function assertCommandFreshForDispatch(paths, body, nowMilliseconds = Date.now()
   if (executionTimeoutMs === null) {
     return;
   }
-  const recomputedExecutionTimeoutMs = serviceCommandExecutionTimeoutMs(body, {
-    paths: dispatchBudgetPaths(paths, body),
-  });
+  const recomputedExecutionTimeoutMs = commandExecutionTimeoutMsForDispatch(paths, body);
   if (recomputedExecutionTimeoutMs <= executionTimeoutMs) {
     return;
   }
@@ -534,6 +532,12 @@ function assertCommandFreshForDispatch(paths, body, nowMilliseconds = Date.now()
     queueTimeoutMilliseconds: queueTimeoutMs,
     reasonCode: "service-command-expired",
     recomputedExecutionTimeoutMilliseconds: recomputedExecutionTimeoutMs,
+  });
+}
+
+function commandExecutionTimeoutMsForDispatch(paths, body) {
+  return serviceCommandExecutionTimeoutMs(body, {
+    paths: dispatchBudgetPaths(paths, body),
   });
 }
 
@@ -949,7 +953,7 @@ export async function startBrokerService(paths, options = {}) {
   let idleReconcileTimer = null;
   let activeIdleReconciliation = null;
   let commandWorkerQueue = Promise.resolve();
-  const activeCommandWorkers = new Set();
+  const activeCommandWorkers = new Map();
   const activeConnections = new Set();
   const activeRequests = new Set();
   const activeEventStreams = new Set();
@@ -986,17 +990,31 @@ export async function startBrokerService(paths, options = {}) {
   }
 
   function runSerializedCommandWorker(request) {
-    return runSerializedServiceWork(() => {
+    return runSerializedServiceWork(request, () => {
       assertCommandFreshForDispatch(paths, request);
       return runCommandWorker(request);
     });
   }
 
   function runSerializedIdleReconciliation(source, args) {
-    return runSerializedServiceWork(() => runScheduledIdleReconciliation(source, args));
+    return runSerializedServiceWork(null, () => runScheduledIdleReconciliation(source, args));
   }
 
-  function runSerializedServiceWork(work) {
+  function activeCommandDrainTimeoutMilliseconds(nowMilliseconds = Date.now()) {
+    let timeoutMilliseconds = 0;
+    for (const activeWorker of activeCommandWorkers.values()) {
+      timeoutMilliseconds += Math.max(0, activeWorker.drainDeadlineMilliseconds - nowMilliseconds);
+    }
+    return Math.max(0, Math.ceil(timeoutMilliseconds));
+  }
+
+  function commandDrainDeadlineMilliseconds(request) {
+    const executionTimeoutMs = optionalBodyInteger(request, "clientCommandExecutionTimeoutMilliseconds", { positive: true })
+      ?? commandExecutionTimeoutMsForDispatch(paths, request);
+    return Date.now() + executionTimeoutMs;
+  }
+
+  function runSerializedServiceWork(request, work) {
     if (shuttingDown) {
       throw new BrokerError("Broker service is shutting down.", {
         reasonCode: "service-unavailable",
@@ -1004,7 +1022,11 @@ export async function startBrokerService(paths, options = {}) {
     }
     const priorCommandWorkers = commandWorkerQueue.catch(() => {});
     const commandWorker = priorCommandWorkers.then(work);
-    activeCommandWorkers.add(commandWorker);
+    if (request !== null) {
+      activeCommandWorkers.set(commandWorker, {
+        drainDeadlineMilliseconds: commandDrainDeadlineMilliseconds(request),
+      });
+    }
     commandWorkerQueue = commandWorker.catch(() => {});
     const forgetCommandWorker = () => {
       activeCommandWorkers.delete(commandWorker);
@@ -1180,6 +1202,7 @@ export async function startBrokerService(paths, options = {}) {
         });
         assertExpectedServiceIdentity(metadata, body.expectedServiceIdentity);
         sendJson(response, 200, {
+          activeCommandDrainTimeoutMilliseconds: activeCommandDrainTimeoutMilliseconds(),
           ok: true,
           service: metadata,
           stopping: true,
