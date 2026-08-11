@@ -79,7 +79,8 @@ export class BrokerError extends Error {
 }
 
 function nowIso(now = new Date()) {
-  return typeof now === "string" ? now : now.toISOString();
+  const value = typeof now === "function" ? now() : now;
+  return typeof value === "string" ? value : value.toISOString();
 }
 
 function normalizePositiveInteger(value) {
@@ -1476,6 +1477,22 @@ function readIdlePolicy(paths) {
     throw readError;
   }
   return rawPolicy === null ? null : validateIdlePolicy(rawPolicy);
+}
+
+function removeIdlePolicy(paths) {
+  try {
+    removeIfExists(paths.idlePolicyPath);
+  } catch (error) {
+    const removalError = new BrokerError("Idle policy could not be removed.", {
+      reasonCode: "internal-error",
+    });
+    Object.defineProperty(removalError, "cause", {
+      configurable: true,
+      value: error,
+      writable: true,
+    });
+    throw removalError;
+  }
 }
 
 function requireHumanIdleActor(options, action) {
@@ -3965,7 +3982,7 @@ export function disableIdlePolicyBroker(paths, options = {}) {
   const actorId = requireHumanIdleActor(options, "Idle policy disable");
   return withLeaseMutationLock(paths, () => {
     const unchanged = !fs.existsSync(paths.idlePolicyPath);
-    removeIfExists(paths.idlePolicyPath);
+    removeIdlePolicy(paths);
     appendEventRecord(paths, "idle.policy.disabled", {
       alias: null,
       actorType: "human",
@@ -4113,8 +4130,8 @@ function performIdleShutdowns(paths, state, candidates, options, timestamp, { co
 }
 
 export function reconcileIdleBroker(paths, options = {}) {
-  const timestamp = nowIso(options.now);
   return withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
     const policy = readIdlePolicy(paths);
     if (!policy) {
       return {
@@ -4140,7 +4157,7 @@ export function reconcileIdleBroker(paths, options = {}) {
       }),
     };
   }, {
-    now: timestamp,
+    now: nowIso(options.now),
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,

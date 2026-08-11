@@ -3864,6 +3864,29 @@ test("idle policy persistence errors stay public-safe while preserving diagnosti
   });
 });
 
+test("idle policy removal errors stay public-safe while preserving diagnostics", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  fs.mkdirSync(resolvedPaths.idlePolicyPath, { recursive: true });
+
+  assert.throws(() => {
+    disableIdlePolicyBroker(resolvedPaths, {
+      actorId: "operator",
+      actorType: "human",
+    });
+  }, (error) => {
+    const serialized = JSON.stringify(error.payload);
+    return error.payload?.reasonCode === "internal-error"
+      && error.payload?.error === "Idle policy could not be removed."
+      && serialized.includes(paths.root) === false
+      && "stack" in error.payload === false
+      && error.cause?.message.includes(resolvedPaths.idlePolicyPath);
+  });
+});
+
 test("stale lease recovery starts a fresh idle grace period", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
@@ -3901,6 +3924,41 @@ test("stale lease recovery starts a fresh idle grace period", () => {
   });
   assert.equal(atBoundary.shutdownCount, 1);
   assert.equal(readJson(paths.simctl.statePath).devices.find((device) => device.udid === lease.simulatorId).state, "Shutdown");
+});
+
+test("stale lease recovery timestamps release after entering the mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "dead-agent",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: 424242,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  const timestamps = [
+    "2026-01-01T01:00:00.000Z",
+    "2026-01-01T01:00:45.000Z",
+  ];
+
+  const recovered = reconcileIdleBroker(resolvedPaths, {
+    now: () => timestamps.shift(),
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(recovered.eligibleCount, 0);
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
 });
 
 test("idle reconciliation waits for the broker mutation lock", () => {

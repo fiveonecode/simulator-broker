@@ -69,12 +69,29 @@ function defaultCandidateFiles(root) {
   return output.split("\0").filter(Boolean);
 }
 
-function textFileContent(filePath) {
-  const content = fs.readFileSync(filePath);
+function textContentFromBuffer(content) {
   if (content.includes(0)) {
     return null;
   }
   return content.toString("utf8");
+}
+
+function textFileContent(filePath) {
+  return textContentFromBuffer(fs.readFileSync(filePath));
+}
+
+function indexBlobContent(root, relativeFile) {
+  try {
+    return textContentFromBuffer(execFileSync("git", [
+      "cat-file",
+      "blob",
+      `:${relativeFile}`,
+    ], {
+      cwd: root,
+    }));
+  } catch {
+    return null;
+  }
 }
 
 function isHomePathBoundary(text, offset, value) {
@@ -106,6 +123,7 @@ export function scanPublicSurface({
     encoding: "utf8",
   }).trim());
   const candidateFiles = files ?? defaultCandidateFiles(resolvedRoot);
+  const scanIndexBlobs = files === undefined;
   const resolvedDenylistPath = denylistPath ?? path.join(resolvedRoot, LOCAL_DENYLIST_NAME);
   const denylistRules = localDenylistRules(resolvedDenylistPath);
   const builtInRules = [
@@ -114,29 +132,25 @@ export function scanPublicSurface({
       : []),
   ];
   const issues = [];
+  const issueKeys = new Set();
 
-  for (const relativeFile of candidateFiles) {
-    const normalizedRelativeFile = relativeFile.split(path.sep).join("/");
-    if (isProhibitedTrackedArtifact(normalizedRelativeFile)) {
-      issues.push({
-        line: 1,
-        path: normalizedRelativeFile,
-        rule: "prohibited-local-artifact",
-      });
-      continue;
+  const addIssue = (issue) => {
+    const issueKey = `${issue.path}\0${issue.line}\0${issue.rule}`;
+    if (issueKeys.has(issueKey)) {
+      return;
     }
-    const absoluteFile = path.resolve(resolvedRoot, relativeFile);
-    if (!absoluteFile.startsWith(`${resolvedRoot}${path.sep}`) || !fs.existsSync(absoluteFile) || !fs.statSync(absoluteFile).isFile()) {
-      continue;
-    }
-    const text = textFileContent(absoluteFile);
+    issueKeys.add(issueKey);
+    issues.push(issue);
+  };
+
+  const scanText = (normalizedRelativeFile, text) => {
     if (text === null) {
-      continue;
+      return;
     }
     for (const rule of builtInRules) {
       const offset = indexOfHomePath(text, rule.value);
       if (offset !== -1) {
-        issues.push({
+        addIssue({
           line: lineNumberForOffset(text, offset),
           path: normalizedRelativeFile,
           rule: rule.label,
@@ -146,12 +160,34 @@ export function scanPublicSurface({
     for (const rule of denylistRules) {
       const offset = text.indexOf(rule.value);
       if (offset !== -1) {
-        issues.push({
+        addIssue({
           line: lineNumberForOffset(text, offset),
           path: normalizedRelativeFile,
           rule: `local-denylist-rule-${rule.index}`,
         });
       }
+    }
+  };
+
+  for (const relativeFile of candidateFiles) {
+    const normalizedRelativeFile = relativeFile.split(path.sep).join("/");
+    if (isProhibitedTrackedArtifact(normalizedRelativeFile)) {
+      addIssue({
+        line: 1,
+        path: normalizedRelativeFile,
+        rule: "prohibited-local-artifact",
+      });
+      continue;
+    }
+    const absoluteFile = path.resolve(resolvedRoot, relativeFile);
+    if (!absoluteFile.startsWith(`${resolvedRoot}${path.sep}`)) {
+      continue;
+    }
+    if (fs.existsSync(absoluteFile) && fs.statSync(absoluteFile).isFile()) {
+      scanText(normalizedRelativeFile, textFileContent(absoluteFile));
+    }
+    if (scanIndexBlobs) {
+      scanText(normalizedRelativeFile, indexBlobContent(resolvedRoot, relativeFile));
     }
   }
 

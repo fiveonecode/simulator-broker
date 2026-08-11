@@ -455,16 +455,24 @@ async function runServiceAwareRequest(paths, request) {
   }
 
   const payload = appendTransport(executeBrokerCommand(paths, request), "direct");
+  let schedulerRunning = false;
+  if (canUseService
+    && request.group === "lease"
+    && request.command === "acquire"
+    && idlePolicyConfiguredBroker(paths)) {
+    await startService(paths);
+    schedulerRunning = true;
+  }
   if (requestMayReportScheduler(request)) {
     const configured = request.group === "idle" && typeof payload.configured === "boolean"
       ? payload.configured
       : idlePolicyConfiguredBroker(paths);
     if (request.group === "idle" || configured) {
       payload.scheduler = {
-        active: false,
+        active: schedulerRunning,
         limitation: localOnlyMode(process.env)
           ? "local-only-mode"
-          : (configured ? "service-not-running" : null),
+          : (configured && !schedulerRunning ? "service-not-running" : null),
       };
     }
   }

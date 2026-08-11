@@ -167,3 +167,26 @@ test("default public surface candidates ignore untracked scratch files", () => {
     rule: "local-home-path",
   }]);
 });
+
+test("default public surface scan inspects staged blobs even after worktree cleanup", () => {
+  const root = makeTempDir();
+  const localHome = path.join(root, "private-home");
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  fs.writeFileSync(path.join(root, "README.md"), `machine path: ${localHome}/state\n`);
+  execFileSync("git", ["add", "README.md"], { cwd: root, stdio: "ignore" });
+  fs.writeFileSync(path.join(root, "README.md"), "public docs\n");
+
+  const report = scanPublicSurface({
+    homePath: localHome,
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.filesScanned, 1);
+  assert.deepEqual(report.issues, [{
+    line: 1,
+    path: "README.md",
+    rule: "local-home-path",
+  }]);
+  assert.equal(JSON.stringify(report).includes(localHome), false);
+});
