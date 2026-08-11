@@ -4107,6 +4107,7 @@ function performIdleShutdowns(paths, state, candidates, options, timestamp, { co
       jobId: null,
       leaseId: null,
       payload: {
+        actorId: options.actorId ?? null,
         eligibleCount: candidates.length,
         failureCount,
         shutdownCount,
@@ -4166,13 +4167,13 @@ export function reconcileIdleBroker(paths, options = {}) {
 }
 
 export function cleanupIdleBroker(paths, options = {}) {
-  const timestamp = nowIso(options.now);
   if (options.apply !== true) {
     return withLeaseMutationLock(paths, () => {
+      const timestamp = nowIso(options.now);
       const state = readBrokerStateSnapshot(paths, stateLoadOptions(options, timestamp));
       return idleCleanupPlan(state).publicPlan;
     }, {
-      now: timestamp,
+      now: nowIso(options.now),
       processExists: options.processExists,
       processSampler: options.processSampler,
       timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
@@ -4186,6 +4187,7 @@ export function cleanupIdleBroker(paths, options = {}) {
     });
   }
   return withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
     const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
     const plan = idleCleanupPlan(state);
     if (options.confirmPlanId !== plan.publicPlan.planId) {
@@ -4208,7 +4210,7 @@ export function cleanupIdleBroker(paths, options = {}) {
       planId: plan.publicPlan.planId,
     };
   }, {
-    now: timestamp,
+    now: nowIso(options.now),
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,

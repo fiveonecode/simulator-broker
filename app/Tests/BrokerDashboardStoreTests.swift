@@ -114,6 +114,43 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertNil(store.pendingIdleCleanupRequest)
   }
 
+  func testIdleCleanupPreviewResultIsDiscardedAfterLeavingOverview() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let commandClient = DeferredCommandClient(
+      response: BrokerCommandEnvelope(
+        currentHolder: nil,
+        eligibleCount: 2,
+        error: nil,
+        exitCode: nil,
+        ok: true,
+        planId: "cleanup-plan",
+        reasonCode: nil,
+        requiredConfirmationFields: nil,
+        status: "changes_required",
+        unchanged: nil
+      )
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: commandClient,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+    store.selectedPane = .overview
+
+    store.requestIdleCleanup()
+    try await waitUntil { await commandClient.hasPendingSend() }
+
+    store.selectedPane = .events
+    await commandClient.release()
+    try await waitUntil {
+      await commandClient.hasPendingSend() == false && store.isApplyingAction == false
+    }
+
+    XCTAssertNil(store.pendingIdleCleanupRequest)
+  }
+
   func testCreatePinSendsProjectFilePathPurposeAndNote() async throws {
     let snapshot = try loadFixture(named: "busy-snapshot")
     let loadedState = makeLoadedState(snapshot: snapshot)
@@ -1287,6 +1324,31 @@ private actor BlockingCommandClient: BrokerCommandSending {
       self.continuation = continuation
     }
     throw error
+  }
+
+  func hasPendingSend() -> Bool {
+    continuation != nil
+  }
+
+  func release() {
+    continuation?.resume()
+    continuation = nil
+  }
+}
+
+private actor DeferredCommandClient: BrokerCommandSending {
+  private var continuation: CheckedContinuation<Void, Never>?
+  private let response: BrokerCommandEnvelope
+
+  init(response: BrokerCommandEnvelope) {
+    self.response = response
+  }
+
+  func send(_ request: BrokerCommandRequest) async throws -> BrokerCommandEnvelope {
+    await withCheckedContinuation { continuation in
+      self.continuation = continuation
+    }
+    return response
   }
 
   func hasPendingSend() -> Bool {

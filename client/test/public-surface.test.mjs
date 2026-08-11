@@ -79,6 +79,30 @@ test("public surface scan detects home paths inside file URLs", () => {
   }]);
 });
 
+test("public surface scan treats colon-delimited labels as home path boundaries", () => {
+  const root = makeTempDir();
+  const localHome = path.join(root, "private-home");
+  fs.writeFileSync(path.join(root, "diagnostics.log"), [
+    `cwd:${localHome}/project`,
+    `route: composition${localHome}/layout`,
+    "",
+  ].join("\n"));
+
+  const report = scanPublicSurface({
+    files: ["diagnostics.log"],
+    homePath: localHome,
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 1,
+    path: "diagnostics.log",
+    rule: "local-home-path",
+  }]);
+  assert.equal(JSON.stringify(report).includes(localHome), false);
+});
+
 test("public surface scan applies an ignored operator denylist without echoing its values", () => {
   const root = makeTempDir();
   const privateMarker = "operator-private-alias";

@@ -61,6 +61,7 @@ final class BrokerDashboardStore {
   private let localCommandRunner: any BrokerLocalCommandRunning
   private let loader: any BrokerSnapshotLoading
   private var completedRefreshOutcomes: [Int: BrokerRefreshOutcome] = [:]
+  private var idleCleanupPreviewGeneration = 0
   private var refreshGeneration = 0
   private var refreshOutcomeWaiters: [Int: [CheckedContinuation<BrokerRefreshOutcome, Never>]] = [:]
   private let refreshInterval: Duration
@@ -85,6 +86,7 @@ final class BrokerDashboardStore {
   var selectedPane: BrokerNavigationPane = .overview {
     didSet {
       if selectedPane != .overview {
+        idleCleanupPreviewGeneration += 1
         pendingIdleCleanupRequest = nil
       }
       guard selectedPane != .simulators else {
@@ -643,6 +645,8 @@ final class BrokerDashboardStore {
     guard canSendCommands, isApplyingAction == false else {
       return
     }
+    idleCleanupPreviewGeneration += 1
+    let previewGeneration = idleCleanupPreviewGeneration
     Task {
       isApplyingAction = true
       defer { isApplyingAction = false }
@@ -655,6 +659,9 @@ final class BrokerDashboardStore {
               planId.isEmpty == false
         else {
           throw BrokerServiceCommandClientError.invalidJSONResponse
+        }
+        guard selectedPane == .overview && previewGeneration == idleCleanupPreviewGeneration else {
+          return
         }
         pendingIdleCleanupRequest = BrokerPendingIdleCleanupRequest(
           eligibleCount: eligibleCount,

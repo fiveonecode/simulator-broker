@@ -4241,6 +4241,9 @@ test("confirmed idle cleanup is count-only, plan-bound, and records shutdown fai
   assert.equal(serialized.includes("SIM-UI-2"), false);
   assert.equal(serialized.includes("private runtime detail"), false);
   assert.equal(readJson(resolvedPaths.registryPath).aliases["ui-2"].driftReason, "idle-shutdown-failed");
+  const cleanupEvent = readEventsBroker(resolvedPaths, { type: "idle.cleanup.applied" }).events.at(-1);
+  assert.equal(cleanupEvent.payload.actorId, "operator");
+  assert.equal(JSON.stringify(result).includes("operator"), false);
 
   assert.throws(() => {
     cleanupIdleBroker(resolvedPaths, {
@@ -4252,6 +4255,39 @@ test("confirmed idle cleanup is count-only, plan-bound, and records shutdown fai
       simctlAdapter: paths.simctl.adapter,
     });
   }, (error) => error.payload?.reasonCode === "idle-plan-stale" && error.exitCode === 5);
+});
+
+test("confirmed idle cleanup samples operation timestamps after acquiring the lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const fixture = readJson(paths.simctl.statePath);
+  for (const device of fixture.devices) {
+    device.state = "Booted";
+  }
+  writeJson(paths.simctl.statePath, fixture);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const preview = cleanupIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const sampledTimestamps = [
+    "2026-01-01T00:00:00.000Z",
+    "2026-01-01T00:01:00.000Z",
+  ];
+
+  const result = cleanupIdleBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    apply: true,
+    confirmPlanId: preview.planId,
+    now: () => sampledTimestamps.shift() ?? "2026-01-01T00:01:00.000Z",
+    processExists: () => true,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(result.lastCleanupResult.completedAt, "2026-01-01T00:01:00.000Z");
+  assert.equal(readJson(resolvedPaths.registryPath).aliases["ui-1"].lastShutdownAt, "2026-01-01T00:01:00.000Z");
+  const cleanupEvent = readEventsBroker(resolvedPaths, { type: "idle.cleanup.applied" }).events.at(-1);
+  assert.equal(cleanupEvent.timestamp, "2026-01-01T00:01:00.000Z");
 });
 
 test("idle cleanup audit append failures do not mark shut down aliases for repair", () => {
