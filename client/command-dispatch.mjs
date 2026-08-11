@@ -964,6 +964,20 @@ function contractSnapshotRefreshError(error) {
   return null;
 }
 
+function isIdlePolicyConfigError(error) {
+  return error instanceof BrokerError
+    && error.payload?.reasonCode === "invalid-config"
+    && (error.payload?.field === "idle-policy.graceSeconds"
+      || error.message.startsWith("Idle policy")
+      || error.message.startsWith("idle-policy"));
+}
+
+function commandNeedsIdlePolicyMetadata(request) {
+  return request.group === "idle"
+    || (request.group === "lease" && request.command === "acquire")
+    || (request.group === "app" && request.command === "snapshot");
+}
+
 export function executeBrokerCommand(paths, request) {
   const options = request.options ?? {};
   let payload = null;
@@ -1105,7 +1119,7 @@ export function executeBrokerCommand(paths, request) {
         throw snapshotError;
       }
       const contractError = contractSnapshotRefreshError(error);
-      if (contractError) {
+      if (contractError && (commandNeedsIdlePolicyMetadata(request) || !isIdlePolicyConfigError(contractError))) {
         throw contractError;
       }
       payload = {

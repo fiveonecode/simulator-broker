@@ -872,6 +872,37 @@ test("idle mutations surface final snapshot refresh failures", () => {
   assert.equal(readJson(paths.idlePolicyPath).graceSeconds, 60);
 });
 
+test("malformed idle policy does not break non-scheduler direct commands", () => {
+  const fixture = makeFixture();
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  const acquired = runCli(
+    fixture,
+    "lease",
+    "acquire",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--json",
+  );
+  assert.equal(acquired.status, 0);
+  fs.writeFileSync(path.join(fixture.stateRoot, "idle-policy.json"), "{not-json\n");
+
+  const help = runCli(fixture, "help", "--json");
+  assert.equal(help.status, 0);
+  assert.equal("scheduler" in help.json, false);
+
+  const hostStatus = runCli(fixture, "host", "status", "--json");
+  assert.equal(hostStatus.status, 0);
+  assert.equal(hostStatus.json.snapshotRefresh.ok, false);
+  assert.equal(JSON.stringify(hostStatus.json.snapshotRefresh).includes(fixture.root), false);
+
+  const release = runCli(fixture, "lease", "release", "--lease-id", acquired.json.lease.leaseId, "--json");
+  assert.equal(release.status, 0);
+  assert.equal(release.json.snapshotRefresh.ok, false);
+  assert.equal(JSON.stringify(release.json.snapshotRefresh).includes(fixture.root), false);
+});
+
 test("final snapshot refresh propagates process sampler timeouts", () => {
   const fixture = makeFixture();
   const projectFilePath = path.join(fixture.repoRoot, ".simulator-broker/project.json");

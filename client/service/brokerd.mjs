@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import url from "node:url";
+import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 
 import {
   BROKER_EXIT_CODES,
@@ -734,6 +735,88 @@ function sendJson(response, statusCode, payload, onComplete = undefined) {
   response.end(`${JSON.stringify(payload, null, 2)}\n`, onComplete);
 }
 
+function serializeIdleReconciliationError(error) {
+  return {
+    brokerError: error instanceof BrokerError,
+    message: error?.message ?? String(error),
+    payload: error instanceof BrokerError ? error.payload : null,
+    reasonCode: typeof error?.reasonCode === "string" ? error.reasonCode : null,
+    stack: error?.stack ?? null,
+  };
+}
+
+function deserializeIdleReconciliationError(serialized) {
+  if (serialized?.brokerError && serialized.payload) {
+    const { error: _error, ...payload } = serialized.payload;
+    const brokerError = new BrokerError(serialized.message ?? serialized.payload.error, payload);
+    brokerError.stack = serialized.stack ?? brokerError.stack;
+    return brokerError;
+  }
+  const error = new Error(serialized?.message ?? "Scheduled idle reconciliation failed.");
+  error.stack = serialized?.stack ?? error.stack;
+  if (serialized?.reasonCode) {
+    error.reasonCode = serialized.reasonCode;
+  }
+  return error;
+}
+
+function runIdleReconciliationWorker(paths, options, source, { waitForLeaseMutationLock = true } = {}) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./brokerd.mjs", import.meta.url), {
+      workerData: {
+        idleReconcileOptions: options.idleReconcileOptions ?? {},
+        idleSnapshotOptions: options.idleSnapshotOptions ?? {},
+        paths,
+        source,
+        type: "idle-reconciliation",
+        waitForLeaseMutationLock,
+      },
+    });
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      callback(value);
+    };
+    worker.once("message", (message) => {
+      if (message?.ok) {
+        finish(resolve, message.result ?? null);
+        return;
+      }
+      finish(reject, deserializeIdleReconciliationError(message?.error));
+    });
+    worker.once("error", (error) => {
+      finish(reject, error);
+    });
+    worker.once("exit", (code) => {
+      if (code !== 0) {
+        finish(reject, new BrokerError("Scheduled idle reconciliation worker exited before completion.", {
+          exitCode: code,
+          reasonCode: "internal-error",
+        }));
+      }
+    });
+    worker.unref();
+  });
+}
+
+async function runIdleReconciliationWorkerTask(data) {
+  const lockOptions = data.waitForLeaseMutationLock ? {} : { leaseMutationLockWait: false };
+  const result = reconcileIdleBroker(data.paths, {
+    ...(data.idleReconcileOptions ?? {}),
+    ...lockOptions,
+    persistNoChanges: false,
+    source: data.source,
+  });
+  writeAppSnapshotArtifactUnderMutationLock(data.paths, {
+    ...(data.idleSnapshotOptions ?? {}),
+    ...lockOptions,
+  });
+  return result;
+}
+
 export async function startBrokerService(paths, options = {}) {
   ensurePrivateDir(paths.stateRoot);
   const startupLockToken = acquireServiceStartLock(paths);
@@ -772,6 +855,10 @@ export async function startBrokerService(paths, options = {}) {
 
   const writeSnapshot = options.writeAppSnapshotArtifact ?? writeAppSnapshotArtifactUnderMutationLock;
   const reconcileIdle = options.reconcileIdleBroker ?? reconcileIdleBroker;
+  const runScheduledIdleReconciliation = options.runScheduledIdleReconciliation
+    ?? (options.writeAppSnapshotArtifact || options.reconcileIdleBroker
+      ? async (source, args) => runIdleReconciliation(source, args)
+      : (source, args) => runIdleReconciliationWorker(paths, options, source, args));
   const runIdleReconciliation = (source, { waitForLeaseMutationLock = true } = {}) => {
     const lockOptions = waitForLeaseMutationLock ? {} : { leaseMutationLockWait: false };
     const result = reconcileIdle(paths, {
@@ -1101,16 +1188,14 @@ export async function startBrokerService(paths, options = {}) {
           return;
         }
         idleReconcileRunning = true;
-        try {
-          runIdleReconciliation("service-timer", { waitForLeaseMutationLock: false });
-        } catch (error) {
+        runScheduledIdleReconciliation("service-timer", { waitForLeaseMutationLock: false }).catch((error) => {
           if (error instanceof BrokerError && error.payload?.reasonCode === LEASE_MUTATION_LOCK_BUSY_REASON_CODE) {
             return;
           }
           (options.onIdleReconcileError ?? console.error)(error);
-        } finally {
+        }).finally(() => {
           idleReconcileRunning = false;
-        }
+        });
       }, IDLE_RECONCILE_INTERVAL_MS);
       idleReconcileTimer?.unref?.();
       releaseStartupLock();
@@ -1120,4 +1205,17 @@ export async function startBrokerService(paths, options = {}) {
       });
     });
   });
+}
+
+if (!isMainThread && workerData?.type === "idle-reconciliation") {
+  runIdleReconciliationWorkerTask(workerData)
+    .then((result) => {
+      parentPort?.postMessage({ ok: true, result });
+    })
+    .catch((error) => {
+      parentPort?.postMessage({
+        error: serializeIdleReconciliationError(error),
+        ok: false,
+      });
+    });
 }

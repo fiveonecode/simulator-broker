@@ -80,6 +80,11 @@ function appendTransport(payload, transport) {
   };
 }
 
+function requestMayReportScheduler(request) {
+  return request.group === "idle"
+    || (request.group === "lease" && request.command === "acquire");
+}
+
 function rejectValuelessPathFlags(flags) {
   for (const key of BROKER_PATH_FLAGS) {
     if (!flags.has(key)) {
@@ -435,30 +440,33 @@ async function runServiceAwareRequest(paths, request) {
       expectedServiceIdentity: service.service,
     });
     const result = appendTransport(payload, "service");
-    const configured = typeof payload.configured === "boolean"
-      ? payload.configured
-      : idlePolicyConfiguredBroker(paths);
-    if (request.group === "idle"
-      || (request.group === "lease" && request.command === "acquire" && configured)) {
-      result.scheduler = {
-        active: configured,
-        limitation: null,
-      };
+    if (requestMayReportScheduler(request)) {
+      const configured = typeof payload.configured === "boolean"
+        ? payload.configured
+        : idlePolicyConfiguredBroker(paths);
+      if (request.group === "idle" || configured) {
+        result.scheduler = {
+          active: configured,
+          limitation: null,
+        };
+      }
     }
     return result;
   }
 
   const payload = appendTransport(executeBrokerCommand(paths, request), "direct");
-  const configured = request.group === "idle" && typeof payload.configured === "boolean"
-    ? payload.configured
-    : idlePolicyConfiguredBroker(paths);
-  if (request.group === "idle" || (request.group === "lease" && request.command === "acquire" && configured)) {
-    payload.scheduler = {
-      active: false,
-      limitation: localOnlyMode(process.env)
-        ? "local-only-mode"
-        : (configured ? "service-not-running" : null),
-    };
+  if (requestMayReportScheduler(request)) {
+    const configured = request.group === "idle" && typeof payload.configured === "boolean"
+      ? payload.configured
+      : idlePolicyConfiguredBroker(paths);
+    if (request.group === "idle" || configured) {
+      payload.scheduler = {
+        active: false,
+        limitation: localOnlyMode(process.env)
+          ? "local-only-mode"
+          : (configured ? "service-not-running" : null),
+      };
+    }
   }
   return payload;
 }

@@ -1440,17 +1440,17 @@ function validateIdlePolicy(rawPolicy) {
     });
   }
   validateVersion(policy.version, IDLE_POLICY_VERSION, "idle-policy");
-  const graceSeconds = Number(policy.graceSeconds);
-  if (!Number.isInteger(graceSeconds)
-    || graceSeconds < MIN_IDLE_GRACE_SECONDS
-    || graceSeconds > MAX_IDLE_GRACE_SECONDS) {
+  if (typeof policy.graceSeconds !== "number"
+    || !Number.isInteger(policy.graceSeconds)
+    || policy.graceSeconds < MIN_IDLE_GRACE_SECONDS
+    || policy.graceSeconds > MAX_IDLE_GRACE_SECONDS) {
     throw new BrokerError(`idle-policy.graceSeconds must be an integer from ${MIN_IDLE_GRACE_SECONDS} through ${MAX_IDLE_GRACE_SECONDS}.`, {
       field: "idle-policy.graceSeconds",
       reasonCode: "invalid-config",
     });
   }
   return {
-    graceSeconds,
+    graceSeconds: policy.graceSeconds,
     version: IDLE_POLICY_VERSION,
   };
 }
@@ -3908,11 +3908,23 @@ export function enableIdlePolicyBroker(paths, options = {}) {
     MAX_IDLE_GRACE_SECONDS,
   );
   return withLeaseMutationLock(paths, () => {
-    ensureStatePaths(paths);
-    writeJsonAtomicRestricted(paths.idlePolicyPath, {
-      graceSeconds,
-      version: IDLE_POLICY_VERSION,
-    });
+    try {
+      ensureStatePaths(paths);
+      writeJsonAtomicRestricted(paths.idlePolicyPath, {
+        graceSeconds,
+        version: IDLE_POLICY_VERSION,
+      });
+    } catch (error) {
+      const persistenceError = new BrokerError("Idle policy could not be persisted.", {
+        reasonCode: "internal-error",
+      });
+      Object.defineProperty(persistenceError, "cause", {
+        configurable: true,
+        value: error,
+        writable: true,
+      });
+      throw persistenceError;
+    }
     appendEventRecord(paths, "idle.policy.enabled", {
       alias: null,
       actorType: "human",

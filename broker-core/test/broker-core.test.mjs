@@ -3783,6 +3783,49 @@ test("malformed idle policy JSON maps to public-safe invalid config", () => {
   }
 });
 
+test("malformed idle policy shapes reject non-number grace durations", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  writeJson(resolvedPaths.idlePolicyPath, {
+    graceSeconds: "60",
+    version: 1,
+  });
+
+  assert.throws(
+    () => idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+    (error) => error.payload?.reasonCode === "invalid-config"
+      && error.payload?.field === "idle-policy.graceSeconds"
+      && JSON.stringify(error.payload).includes(paths.root) === false,
+  );
+});
+
+test("idle policy persistence errors stay public-safe while preserving diagnostics", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  fs.mkdirSync(resolvedPaths.idlePolicyPath, { recursive: true });
+
+  assert.throws(() => {
+    enableIdlePolicyBroker(resolvedPaths, {
+      actorId: "operator",
+      actorType: "human",
+      graceSeconds: 60,
+    });
+  }, (error) => {
+    const serialized = JSON.stringify(error.payload);
+    return error.payload?.reasonCode === "internal-error"
+      && error.payload?.error === "Idle policy could not be persisted."
+      && serialized.includes(paths.root) === false
+      && "stack" in error.payload === false
+      && error.cause?.message.includes(resolvedPaths.idlePolicyPath);
+  });
+});
+
 test("stale lease recovery starts a fresh idle grace period", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);

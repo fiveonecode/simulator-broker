@@ -110,7 +110,7 @@ struct BrokerCommandRequest: Sendable {
   private static let hostBootstrapReplacementStateLoads = 1
   private static let hostBootstrapRetirementStateLoads = 1
   private static let hostBootstrapSimctlCommandsPerAlias = 5
-  private static let leaseAcquireSimctlCommands = 3
+  private static let leaseAcquireSimctlCommands = 4
   private static let processSamplerInvocationsPerStateLoad = 1
   private static let processSamplerTimeoutSeconds = 10
   private static let simctlInventoryCommandsPerStateLoad = 3

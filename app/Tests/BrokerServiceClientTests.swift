@@ -99,7 +99,7 @@ final class BrokerServiceClientTests: XCTestCase {
       ).executionTimeoutSeconds,
       7100
     )
-    XCTAssertEqual(BrokerCommandRequest(command: "acquire", group: "lease", options: [:]).executionTimeoutSeconds, 1311)
+    XCTAssertEqual(BrokerCommandRequest(command: "acquire", group: "lease", options: [:]).executionTimeoutSeconds, 1431)
     XCTAssertEqual(BrokerCommandRequest(command: "release", group: "lease", options: [:]).executionTimeoutSeconds, 890)
     XCTAssertEqual(BrokerCommandRequest(command: "release", group: "lease", options: [:]).transferTimeoutSeconds, 950)
     XCTAssertEqual(BrokerCommandRequest(command: "create", group: "pin", options: [:]).executionTimeoutSeconds, 890)

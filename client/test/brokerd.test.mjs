@@ -968,6 +968,47 @@ test("brokerd reconciles immediately, every thirty seconds, refreshes snapshots,
   assert.equal(timerCleared, true);
 });
 
+test("brokerd dispatches scheduled idle reconciliation asynchronously without overlap", async () => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    serviceSocketPath: path.join(fixture.root, "async-timer.sock"),
+    stateRoot: fixture.stateRoot,
+  });
+  let timerCallback = null;
+  const timer = { unref() {} };
+  const scheduledSources = [];
+  const scheduledResolvers = [];
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runScheduledIdleReconciliation(source) {
+      scheduledSources.push(source);
+      return new Promise((resolve) => {
+        scheduledResolvers.push(resolve);
+      });
+    },
+    setIntervalFn(callback) {
+      timerCallback = callback;
+      return timer;
+    },
+    writeAppSnapshotArtifact() {},
+  });
+
+  timerCallback();
+  timerCallback();
+  assert.deepEqual(scheduledSources, ["service-timer"]);
+
+  scheduledResolvers.shift()({ ok: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  timerCallback();
+  assert.deepEqual(scheduledSources, ["service-timer", "service-timer"]);
+
+  scheduledResolvers.shift()({ ok: true });
+  await service.shutdown({ exitProcess: false });
+});
+
 test("service startup lock waits while another stale-lock reclaimer is active", () => {
   const root = makeTempDir();
   const paths = resolveBrokerPaths({
