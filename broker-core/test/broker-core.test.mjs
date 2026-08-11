@@ -3783,6 +3783,44 @@ test("malformed idle policy JSON maps to public-safe invalid config", () => {
   }
 });
 
+test("idle policy read errors stay public-safe while preserving diagnostics", (t) => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  writeJson(resolvedPaths.idlePolicyPath, {
+    graceSeconds: 60,
+    version: 1,
+  });
+  const originalReadFileSync = fs.readFileSync;
+  t.after(() => {
+    fs.readFileSync = originalReadFileSync;
+  });
+  fs.readFileSync = (filePath, ...args) => {
+    if (filePath === resolvedPaths.idlePolicyPath) {
+      const error = new Error(`EACCES: permission denied, open '${resolvedPaths.idlePolicyPath}'`);
+      error.code = "EACCES";
+      throw error;
+    }
+    return originalReadFileSync(filePath, ...args);
+  };
+
+  for (const operation of [
+    () => idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+    () => reconcileIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+  ]) {
+    assert.throws(operation, (error) => {
+      const serialized = JSON.stringify(error.payload);
+      return error.payload?.reasonCode === "internal-error"
+        && error.payload?.error === "Idle policy could not be read."
+        && serialized.includes(paths.root) === false
+        && "stack" in error.payload === false
+        && error.cause?.message.includes(resolvedPaths.idlePolicyPath);
+    });
+  }
+});
+
 test("malformed idle policy shapes reject non-number grace durations", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);

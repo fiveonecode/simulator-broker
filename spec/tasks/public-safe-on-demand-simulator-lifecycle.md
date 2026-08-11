@@ -2,8 +2,8 @@
 Related: `spec/tasks/README.md`, `spec/global-simulator-broker.md`, `spec/architecture.md`, `spec/build-and-test.md`, `spec/harness-integration.md`
 
 > **Document ID:** `GSB-TASK-010`
-> **Version:** `1.0.0`
-> **Last Updated:** `2026-08-10`
+> **Version:** `1.0.1`
+> **Last Updated:** `2026-08-11`
 > **Status:** `Implemented`
 > **Owner:** `spec-steward`
 > **Implementation Owners:** `broker-core`, `client`, `macos-app`
@@ -133,7 +133,7 @@ The duration field is blank when policy is unconfigured. The app refreshes its b
 - No real home path, host alias, simulator ID, state root, local timing choice, operator identity, consumer-product name, local log, screenshot, seeded configuration, or preference may enter tracked public text.
 - Public fixtures use temporary roots and synthetic identifiers.
 - Tests never use the default broker state root.
-- `npm run verify:public-surface` scans tracked text plus non-ignored untracked text for the current home path and prohibited broker-state artifacts.
+- `npm run verify:public-surface` scans tracked text and files staged for addition for the current home path and prohibited broker-state artifacts; arbitrary unstaged or untracked scratch files are outside the default scan.
 - An ignored root-level `.public-safety.local` may contain one literal denylist value per line. The scanner reports only rule numbers and paths, never the values.
 - The normal `npm test` and release verification path runs `verify:public-surface`.
 
@@ -158,4 +158,5 @@ Release and machine rollout are separate steps. After a public release, the loca
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.1 | 2026-08-11 | Codex | Aligned public-surface verification wording with tracked and staged-addition scanning. |
 | 1.0.0 | 2026-08-10 | Codex | Finalized and implemented the public-safe lifecycle contract with boot-on-acquire and no compatibility mode. |

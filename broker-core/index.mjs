@@ -1465,7 +1465,15 @@ function readIdlePolicy(paths) {
         reasonCode: "invalid-config",
       });
     }
-    throw error;
+    const readError = new BrokerError("Idle policy could not be read.", {
+      reasonCode: "internal-error",
+    });
+    Object.defineProperty(readError, "cause", {
+      configurable: true,
+      value: error,
+      writable: true,
+    });
+    throw readError;
   }
   return rawPolicy === null ? null : validateIdlePolicy(rawPolicy);
 }

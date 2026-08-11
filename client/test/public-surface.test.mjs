@@ -33,16 +33,18 @@ test("public surface scan reports a local home path without echoing the matched 
 
 test("public surface scan matches complete home paths instead of raw prefixes", () => {
   const root = makeTempDir();
+  const rootHome = path.posix.join(path.posix.sep, "root");
+  const escapedRootHome = rootHome.replaceAll(path.posix.sep, String.raw`\/`);
   fs.writeFileSync(path.join(root, "README.md"), [
     "route: composition/root-layout",
-    String.raw`pattern: \/root\/`,
-    "actual: /root/.simulator-broker/state",
+    `pattern: ${escapedRootHome}${String.raw`\/`}`,
+    `actual: ${rootHome}/.simulator-broker/state`,
     "",
   ].join("\n"));
 
   const report = scanPublicSurface({
     files: ["README.md"],
-    homePath: "/root",
+    homePath: rootHome,
     root,
   });
 
