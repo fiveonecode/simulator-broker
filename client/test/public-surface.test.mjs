@@ -228,6 +228,29 @@ test("public surface scan rejects tracked broker state artifacts and ignores bin
   ]);
 });
 
+test("public surface scan rejects symlinks without reading link targets", () => {
+  const root = makeTempDir();
+  const localHome = path.join(root, "private-home");
+  const targetPath = path.join(localHome, "target.txt");
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.writeFileSync(targetPath, "private target\n");
+  fs.symlinkSync(targetPath, path.join(root, "runtime-link"));
+
+  const report = scanPublicSurface({
+    files: ["runtime-link"],
+    homePath: localHome,
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 1,
+    path: "runtime-link",
+    rule: "prohibited-symlink",
+  }]);
+  assert.equal(JSON.stringify(report).includes(localHome), false);
+});
+
 test("default public surface candidates ignore untracked scratch files", () => {
   const root = makeTempDir();
   const localHome = path.join(root, "private-home");

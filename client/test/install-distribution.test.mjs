@@ -327,6 +327,60 @@ test("install_distribution rejects unsupported Node versions before staging inst
   assert.equal(fs.existsSync(path.join(binDir, "simbroker")), false);
 });
 
+test("package_distribution rejects symlinks copied into the runtime payload", (t) => {
+  const root = makeTempDir();
+  const outputDir = path.join(root, "out");
+  const fakePathDir = path.join(root, "fake-path");
+  const fakeSecurityPath = path.join(fakePathDir, "security");
+  const symlinkTargetDir = path.join(root, "private-home");
+  const symlinkTargetPath = path.join(symlinkTargetDir, "target.txt");
+  const symlinkPath = path.resolve("client/.package-distribution-public-surface-symlink-test");
+  const appSource = path.resolve("DerivedData/SimulatorBrokerApp/Build/Products/Release/SimulatorBrokerApp.app");
+  const createdAppSource = !fs.existsSync(appSource);
+
+  assert.equal(fs.existsSync(symlinkPath), false);
+  fs.mkdirSync(fakePathDir, { recursive: true });
+  fs.mkdirSync(symlinkTargetDir, { recursive: true });
+  fs.writeFileSync(symlinkTargetPath, "private target\n");
+  fs.writeFileSync(fakeSecurityPath, [
+    "#!/usr/bin/env bash",
+    "printf '  1) ABC \"Developer ID Application: Example (TEAMID)\"\\n'",
+    "",
+  ].join("\n"));
+  fs.chmodSync(fakeSecurityPath, 0o755);
+  fs.mkdirSync(appSource, { recursive: true });
+  fs.symlinkSync(symlinkTargetPath, symlinkPath);
+  t.after(() => {
+    fs.rmSync(symlinkPath, { force: true });
+    if (createdAppSource) {
+      fs.rmSync(path.resolve("DerivedData/SimulatorBrokerApp"), { force: true, recursive: true });
+    }
+  });
+
+  const result = spawnSync("bash", [
+    path.resolve("scripts/package_distribution.sh"),
+    "--skip-build",
+    "--output-dir",
+    outputDir,
+    "--team-id",
+    "TEAMID",
+    "--signing-identity",
+    "Developer ID Application: Example (TEAMID)",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      PATH: `${fakePathDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Distribution public surface verification failed/);
+  assert.match(result.stderr, /payload\/runtime\/client\/\.package-distribution-public-surface-symlink-test:1 \[prohibited-symlink\]/);
+  assert.equal(result.stderr.includes(symlinkTargetDir), false);
+});
+
 test("package scripts reject path-like archive names before cleanup", () => {
   for (const scriptPath of ["scripts/package_local.sh", "scripts/package_distribution.sh"]) {
     const root = makeTempDir();

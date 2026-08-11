@@ -986,16 +986,24 @@ export async function startBrokerService(paths, options = {}) {
   }
 
   function runSerializedCommandWorker(request) {
+    return runSerializedServiceWork(() => {
+      assertCommandFreshForDispatch(paths, request);
+      return runCommandWorker(request);
+    });
+  }
+
+  function runSerializedIdleReconciliation(source, args) {
+    return runSerializedServiceWork(() => runScheduledIdleReconciliation(source, args));
+  }
+
+  function runSerializedServiceWork(work) {
     if (shuttingDown) {
       throw new BrokerError("Broker service is shutting down.", {
         reasonCode: "service-unavailable",
       });
     }
     const priorCommandWorkers = commandWorkerQueue.catch(() => {});
-    const commandWorker = priorCommandWorkers.then(() => {
-      assertCommandFreshForDispatch(paths, request);
-      return runCommandWorker(request);
-    });
+    const commandWorker = priorCommandWorkers.then(work);
     activeCommandWorkers.add(commandWorker);
     commandWorkerQueue = commandWorker.catch(() => {});
     const forgetCommandWorker = () => {
@@ -1282,7 +1290,7 @@ export async function startBrokerService(paths, options = {}) {
         if (activeIdleReconciliation !== null || shuttingDown) {
           return;
         }
-        const scheduledIdleReconciliation = runScheduledIdleReconciliation("service-timer", {
+        const scheduledIdleReconciliation = runSerializedIdleReconciliation("service-timer", {
           waitForLeaseMutationLock: false,
         }).catch((error) => {
           if (error instanceof BrokerError && error.payload?.reasonCode === LEASE_MUTATION_LOCK_BUSY_REASON_CODE) {

@@ -215,8 +215,19 @@ export function scanPublicSurface({
     if (!absoluteFile.startsWith(`${resolvedRoot}${path.sep}`)) {
       continue;
     }
-    if (fs.existsSync(absoluteFile) && fs.statSync(absoluteFile).isFile()) {
-      scanText(normalizedRelativeFile, textFileContent(absoluteFile));
+    if (fs.existsSync(absoluteFile)) {
+      const fileStats = fs.lstatSync(absoluteFile);
+      if (fileStats.isSymbolicLink()) {
+        addIssue({
+          line: 1,
+          path: normalizedRelativeFile,
+          rule: "prohibited-symlink",
+        });
+        continue;
+      }
+      if (fileStats.isFile()) {
+        scanText(normalizedRelativeFile, textFileContent(absoluteFile));
+      }
     }
     if (scanIndexBlobs) {
       scanText(normalizedRelativeFile, indexBlobContent(resolvedRoot, relativeFile));

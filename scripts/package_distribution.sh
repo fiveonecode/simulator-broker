@@ -59,7 +59,7 @@ scan_distribution_public_surface() {
 
   (
     cd "$bundle_root"
-    find . -type f -print | sed 's#^\./##' | LC_ALL=C sort > "$files_path"
+    find . \( -type f -o -type l \) -print | sed 's#^\./##' | LC_ALL=C sort > "$files_path"
   )
 
   node --input-type=module - "$repo_root" "$bundle_root" "$files_path" "$repo_root/.public-safety.local" <<'EOF'

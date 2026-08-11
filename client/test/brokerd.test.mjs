@@ -959,6 +959,7 @@ test("brokerd reconciles immediately, every thirty seconds, refreshes snapshots,
   assert.equal(snapshotCount, 1);
   assert.equal(intervalMilliseconds, 30_000);
   timerCallback();
+  await waitFor(() => sources.length === 2);
   assert.deepEqual(sources, ["service-startup", "service-timer"]);
   assert.deepEqual(reconcileLockWaits, [undefined, false]);
   assert.deepEqual(snapshotLockWaits, [true, true]);
@@ -968,7 +969,7 @@ test("brokerd reconciles immediately, every thirty seconds, refreshes snapshots,
   assert.equal(timerCleared, true);
 });
 
-test("brokerd dispatches scheduled idle reconciliation asynchronously without overlap", async () => {
+test("brokerd dispatches scheduled idle reconciliation asynchronously without overlap", async (t) => {
   const fixture = makeFixture();
   const paths = resolveBrokerPaths({
     hostConfigPath: fixture.hostConfigPath,
@@ -995,14 +996,22 @@ test("brokerd dispatches scheduled idle reconciliation asynchronously without ov
     },
     writeAppSnapshotArtifact() {},
   });
+  t.after(async () => {
+    for (const resolve of scheduledResolvers.splice(0)) {
+      resolve({ ok: true });
+    }
+    await service.shutdown({ exitProcess: false });
+  });
 
   timerCallback();
   timerCallback();
+  await waitFor(() => scheduledSources.length === 1);
   assert.deepEqual(scheduledSources, ["service-timer"]);
 
   scheduledResolvers.shift()({ ok: true });
   await new Promise((resolve) => setImmediate(resolve));
   timerCallback();
+  await waitFor(() => scheduledSources.length === 2);
   assert.deepEqual(scheduledSources, ["service-timer", "service-timer"]);
 
   scheduledResolvers.shift()({ ok: true });
@@ -1099,6 +1108,59 @@ test("brokerd serializes command workers", async (t) => {
   assert.equal(firstResponse.statusCode, 200);
   assert.equal(secondResponse.statusCode, 200);
   assert.deepEqual(startedCommands, ["global", "host"]);
+});
+
+test("brokerd serializes scheduled idle reconciliation behind active command workers", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  let timerCallback = null;
+  const timer = { unref() {} };
+  let resolveCommand = null;
+  const events = [];
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker(request) {
+      events.push(`command:${request.command}`);
+      return new Promise((resolve) => {
+        resolveCommand = () => resolve({
+          command: request.command,
+          group: request.group,
+        });
+      });
+    },
+    runScheduledIdleReconciliation(source) {
+      events.push(`reconcile:${source}`);
+      return { ok: true };
+    },
+    setIntervalFn(callback) {
+      timerCallback = callback;
+      return timer;
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => service.shutdown({ exitProcess: false }));
+
+  const request = requestService(fixture, {
+    body: { command: "global", group: "help", type: "command" },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await waitFor(() => resolveCommand !== null);
+  timerCallback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["command:global"]);
+
+  resolveCommand();
+  const response = await request;
+  await waitFor(() => events.includes("reconcile:service-timer"));
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(events, ["command:global", "reconcile:service-timer"]);
 });
 
 test("brokerd revalidates queued command expiry before worker dispatch", async (t) => {
@@ -1243,10 +1305,15 @@ test("brokerd rejects late command worker admission during shutdown", async (t) 
     },
     writeAppSnapshotArtifact() {},
   });
-  t.after(async () => service.shutdown({ exitProcess: false }));
+  t.after(async () => {
+    for (const resolve of scheduledResolvers.splice(0)) {
+      resolve({ ok: true });
+    }
+    await service.shutdown({ exitProcess: false });
+  });
 
   timerCallback();
-  assert.equal(scheduledResolvers.length, 1);
+  await waitFor(() => scheduledResolvers.length === 1);
 
   const metadata = readJson(paths.serviceMetadataPath);
   const body = JSON.stringify({
