@@ -3961,6 +3961,47 @@ test("stale lease recovery timestamps release after entering the mutation lock",
   assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
 });
 
+test("idle status timestamps summary after entering the mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-boundary",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: lease.leaseId,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const timestamps = [
+    "2026-01-01T00:00:59.999Z",
+    "2026-01-01T00:01:00.000Z",
+  ];
+
+  const status = idleStatusBroker(resolvedPaths, {
+    now: () => timestamps.shift(),
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(status.eligibleCount, 1);
+  assert.equal(status.nextScheduledCleanupAt, "2026-01-01T00:01:00.000Z");
+});
+
 test("idle reconciliation waits for the broker mutation lock", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
@@ -4011,6 +4052,33 @@ test("idle reconciliation supports nonblocking lease mutation lock attempts", ()
       simctlAdapter: paths.simctl.adapter,
     });
   }, (error) => error.payload?.reasonCode === "alias-busy");
+});
+
+test("nonblocking idle reconciliation reclaims stale lease mutation locks", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  fs.mkdirSync(resolvedPaths.leaseLockDir, { recursive: true });
+  writeJson(resolvedPaths.leaseLockOwnerPath, {
+    pid: 424242,
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  const result = reconcileIdleBroker(resolvedPaths, {
+    leaseMutationLockWait: false,
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(fs.existsSync(resolvedPaths.leaseLockDir), false);
 });
 
 test("idle reconciliation honors the grace boundary and all protected simulator classes", () => {

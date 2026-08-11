@@ -98,7 +98,9 @@ function isHomePathBoundary(text, offset, value) {
   const before = offset > 0 ? text[offset - 1] : "";
   const after = text[offset + value.length] ?? "";
   const pathFragment = /[A-Za-z0-9._~\\/:-]/u;
-  return !pathFragment.test(before)
+  const uriPrefixBoundary = /(?:^|[^A-Za-z0-9._~\\/-])[A-Za-z][A-Za-z0-9+.-]*:\/\/$/u;
+  const hasUriPrefixBoundary = before === "/" && uriPrefixBoundary.test(text.slice(0, offset));
+  return (!pathFragment.test(before) || hasUriPrefixBoundary)
     && (after === "" || after === path.posix.sep || !pathFragment.test(after));
 }
 

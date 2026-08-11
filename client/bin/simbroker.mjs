@@ -378,7 +378,13 @@ async function stopService(paths) {
     }
   }
 
-  const stopped = await waitForServiceToStop(paths);
+  const stopped = await waitForServiceToStop(paths, {
+    timeoutMs: serviceCommandTimeoutMs({
+      command: "reconcile",
+      group: "idle",
+      options: {},
+    }, { paths }),
+  });
   if (!stopped && stopError) {
     throw stopError;
   }
@@ -460,8 +466,14 @@ async function runServiceAwareRequest(paths, request) {
     && request.group === "lease"
     && request.command === "acquire"
     && idlePolicyConfiguredBroker(paths)) {
-    await startService(paths);
-    schedulerRunning = true;
+    try {
+      await startService(paths);
+      schedulerRunning = true;
+    } catch (error) {
+      if (!(error instanceof BrokerError)) {
+        throw error;
+      }
+    }
   }
   if (requestMayReportScheduler(request)) {
     const configured = request.group === "idle" && typeof payload.configured === "boolean"

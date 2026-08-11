@@ -512,7 +512,7 @@ struct BrokerCommandRequest: Sendable {
     else {
       return Self.hostBootstrapAliasCount * Self.simctlCommandTimeoutSeconds
     }
-    return (hostConfig.aliases?.count ?? 0) * Self.simctlCommandTimeoutSeconds
+    return (hostConfig.aliases?.count ?? Self.hostBootstrapAliasCount) * Self.simctlCommandTimeoutSeconds
   }
 
   private func timeoutSeconds(option: String, fallbackMilliseconds: Int = 0) -> Int {

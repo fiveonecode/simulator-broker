@@ -2647,12 +2647,6 @@ function withLeaseMutationLock(paths, work, {
         throw error;
       }
 
-      if (!wait) {
-        throw new BrokerError("The broker lease mutation lock is already held.", {
-          reasonCode: "alias-busy",
-        });
-      }
-
       const lockSnapshot = readLockSnapshot(paths.leaseLockDir, paths.leaseLockOwnerPath, {
         processExists,
         processSampler,
@@ -2666,6 +2660,12 @@ function withLeaseMutationLock(paths, work, {
             timeoutMs,
           }))) {
         continue;
+      }
+
+      if (!wait) {
+        throw new BrokerError("The broker lease mutation lock is already held.", {
+          reasonCode: "alias-busy",
+        });
       }
 
       if (Date.now() - startedAt > timeoutMs) {
@@ -4012,8 +4012,8 @@ export function disableIdlePolicyBroker(paths, options = {}) {
 }
 
 export function idleStatusBroker(paths, options = {}) {
-  const timestamp = nowIso(options.now);
   return withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
     const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
     return {
       command: "idle.status",
@@ -4022,7 +4022,7 @@ export function idleStatusBroker(paths, options = {}) {
       ...buildIdleSummary(paths, state, timestamp),
     };
   }, {
-    now: timestamp,
+    now: nowIso(options.now),
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,

@@ -259,6 +259,23 @@ final class BrokerServiceClientTests: XCTestCase {
     XCTAssertEqual(forcedBudget.executionTimeoutSeconds, 6140)
   }
 
+  func testIdleCleanupTimeoutBudgetFallsBackWhenHostAliasesAreAbsent() throws {
+    let fixture = try makeServiceFixture()
+    try writeJSONObject([
+      "hostId": "missing-aliases-host",
+      "version": 1,
+    ], to: fixture.paths.hostConfigURL)
+
+    let budget = BrokerCommandRequest(
+      command: "cleanup",
+      group: "idle",
+      options: ["apply": .bool(true)]
+    ).timeoutBudget(paths: fixture.paths)
+
+    XCTAssertEqual(budget.executionTimeoutSeconds, 1610)
+    XCTAssertEqual(budget.transferTimeoutSeconds, 1670)
+  }
+
   func testCommandClientRejectsLiveServiceIdentityMismatchBeforeMutation() async throws {
     let fixture = try makeServiceFixture()
     try writeServiceMetadata(paths: fixture.paths, socketPath: fixture.socketPath)

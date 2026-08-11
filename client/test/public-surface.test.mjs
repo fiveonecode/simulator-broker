@@ -56,6 +56,29 @@ test("public surface scan matches complete home paths instead of raw prefixes", 
   }]);
 });
 
+test("public surface scan detects home paths inside file URLs", () => {
+  const root = makeTempDir();
+  const localHome = path.join(root, "private-home");
+  fs.writeFileSync(path.join(root, "README.md"), [
+    `diagnostic: file://${localHome}/project/file.swift`,
+    `route: composition${localHome}/layout`,
+    "",
+  ].join("\n"));
+
+  const report = scanPublicSurface({
+    files: ["README.md"],
+    homePath: localHome,
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 1,
+    path: "README.md",
+    rule: "local-home-path",
+  }]);
+});
+
 test("public surface scan applies an ignored operator denylist without echoing its values", () => {
   const root = makeTempDir();
   const privateMarker = "operator-private-alias";
