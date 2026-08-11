@@ -381,6 +381,57 @@ test("package_distribution rejects symlinks copied into the runtime payload", (t
   assert.equal(result.stderr.includes(symlinkTargetDir), false);
 });
 
+test("package_distribution scans copied payload filenames containing newlines", (t) => {
+  const root = makeTempDir();
+  const outputDir = path.join(root, "out");
+  const fakePathDir = path.join(root, "fake-path");
+  const fakeSecurityPath = path.join(fakePathDir, "security");
+  const newlinePayloadPath = path.resolve("client/.package-distribution-public-surface-newline-test\nsecret.txt");
+  const appSource = path.resolve("DerivedData/SimulatorBrokerApp/Build/Products/Release/SimulatorBrokerApp.app");
+  const createdAppSource = !fs.existsSync(appSource);
+
+  assert.equal(fs.existsSync(newlinePayloadPath), false);
+  fs.mkdirSync(fakePathDir, { recursive: true });
+  fs.writeFileSync(fakeSecurityPath, [
+    "#!/usr/bin/env bash",
+    "printf '  1) ABC \"Developer ID Application: Example (TEAMID)\"\\n'",
+    "",
+  ].join("\n"));
+  fs.chmodSync(fakeSecurityPath, 0o755);
+  fs.mkdirSync(appSource, { recursive: true });
+  fs.writeFileSync(newlinePayloadPath, `${path.join(root, "private-token")}\n`);
+  t.after(() => {
+    fs.rmSync(newlinePayloadPath, { force: true });
+    if (createdAppSource) {
+      fs.rmSync(path.resolve("DerivedData/SimulatorBrokerApp"), { force: true, recursive: true });
+    }
+  });
+
+  const result = spawnSync("bash", [
+    path.resolve("scripts/package_distribution.sh"),
+    "--skip-build",
+    "--output-dir",
+    outputDir,
+    "--team-id",
+    "TEAMID",
+    "--signing-identity",
+    "Developer ID Application: Example (TEAMID)",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      PATH: `${fakePathDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Distribution public surface verification failed/);
+  assert.match(result.stderr, /payload\/runtime\/client\/\.package-distribution-public-surface-newline-test/);
+  assert.match(result.stderr, /\[local-home-path\]/);
+  assert.equal(result.stderr.includes(root), false);
+});
+
 test("package scripts reject path-like archive names before cleanup", () => {
   for (const scriptPath of ["scripts/package_local.sh", "scripts/package_distribution.sh"]) {
     const root = makeTempDir();

@@ -59,7 +59,7 @@ scan_distribution_public_surface() {
 
   (
     cd "$bundle_root"
-    find . \( -type f -o -type l \) -print | sed 's#^\./##' | LC_ALL=C sort > "$files_path"
+    find . \( -type f -o -type l \) -print0 | LC_ALL=C sort -z > "$files_path"
   )
 
   node --input-type=module - "$repo_root" "$bundle_root" "$files_path" "$repo_root/.public-safety.local" <<'EOF'
@@ -70,7 +70,11 @@ import { pathToFileURL } from "node:url";
 
 const [repoRoot, bundleRoot, filesPath, denylistPath] = process.argv.slice(2);
 const { scanPublicSurface } = await import(pathToFileURL(path.join(repoRoot, "client/public-surface.mjs")).href);
-const files = fs.readFileSync(filesPath, "utf8").split(/\r?\n/u).filter(Boolean);
+const files = fs.readFileSync(filesPath)
+  .toString("utf8")
+  .split("\0")
+  .filter(Boolean)
+  .map((file) => file.replace(/^\.\//u, ""));
 const report = scanPublicSurface({
   denylistPath,
   files,

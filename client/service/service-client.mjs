@@ -490,6 +490,14 @@ export function serviceCommandTimeoutMs(request, options = {}) {
   return serviceCommandExecutionTimeoutMs(request, options) + commandQueueTimeoutMs(request);
 }
 
+export function serviceStopTimeoutMs(paths, response = {}) {
+  return serviceCommandTimeoutMs({
+    command: "reconcile",
+    group: "idle",
+    options: {},
+  }, { paths }) + (response?.activeCommandDrainTimeoutMilliseconds ?? 0);
+}
+
 export function serviceStartupTimeoutMs(options = {}) {
   const startupIdleReconcileRequest = {
     command: "reconcile",

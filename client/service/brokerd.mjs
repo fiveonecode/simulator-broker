@@ -1048,7 +1048,7 @@ export async function startBrokerService(paths, options = {}) {
       await activeIdleReconciliation;
     }
     if (activeCommandWorkers.size > 0) {
-      await Promise.allSettled([...activeCommandWorkers]);
+      await Promise.allSettled(activeCommandWorkers.keys());
       await new Promise((resolve) => setImmediate(resolve));
     }
     removeIfExists(paths.serviceMetadataPath);

@@ -12,8 +12,9 @@ import {
   executeServiceCommand,
   probeService,
   serviceCommandExecutionTimeoutMs,
-  serviceStartupTimeoutMs,
   serviceCommandTimeoutMs,
+  serviceStopTimeoutMs,
+  serviceStartupTimeoutMs,
   streamServiceEvents,
 } from "../service/service-client.mjs";
 import {
@@ -1469,6 +1470,26 @@ test("service idle timeouts cover serialized state, snapshots, and bounded shutd
     group: "idle",
     options: {},
   }, { paths }), 1_125_000);
+});
+
+test("service stop timeout adds serialized command drain and idle reconciliation budgets", () => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  const idleReconciliationBudgetMilliseconds = serviceCommandTimeoutMs({
+    command: "reconcile",
+    group: "idle",
+    options: {},
+  }, { paths });
+  const activeCommandDrainTimeoutMilliseconds = idleReconciliationBudgetMilliseconds + 25_000;
+
+  assert.equal(
+    serviceStopTimeoutMs(paths, { activeCommandDrainTimeoutMilliseconds }),
+    idleReconciliationBudgetMilliseconds + activeCommandDrainTimeoutMilliseconds,
+  );
 });
 
 test("service mutation timeouts cover broker lock waits", () => {

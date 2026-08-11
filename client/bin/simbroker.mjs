@@ -21,6 +21,7 @@ import {
   probeService,
   requestServiceStop,
   serviceCommandTimeoutMs,
+  serviceStopTimeoutMs,
   serviceStartupTimeoutMs,
   streamServiceEvents,
 } from "../service/service-client.mjs";
@@ -418,14 +419,7 @@ async function stopService(paths) {
   }
 
   const stopped = await waitForServiceToStop(paths, {
-    timeoutMs: Math.max(
-      serviceCommandTimeoutMs({
-        command: "reconcile",
-        group: "idle",
-        options: {},
-      }, { paths }),
-      response?.activeCommandDrainTimeoutMilliseconds ?? 0,
-    ),
+    timeoutMs: serviceStopTimeoutMs(paths, response),
   });
   if (!stopped && stopError) {
     throw stopError;
