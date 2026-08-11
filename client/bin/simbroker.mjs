@@ -69,6 +69,10 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function serviceStartupLockHeld(paths) {
+  return fs.existsSync(paths.serviceLockDir);
+}
+
 function appendTransport(payload, transport) {
   return {
     ...payload,
@@ -214,6 +218,10 @@ async function waitForSpawnedService(paths, child, { timeoutMs = 5000 } = {}) {
           probe,
         };
       }
+      if (serviceStartupLockHeld(paths)) {
+        await sleep(100);
+        continue;
+      }
       return {
         childExit: outcome.exit,
         probe: null,
@@ -236,6 +244,10 @@ async function waitForSpawnedService(paths, child, { timeoutMs = 5000 } = {}) {
           childExit: null,
           probe,
         };
+      }
+      if (serviceStartupLockHeld(paths)) {
+        await sleep(100);
+        continue;
       }
       return {
         childExit: delay,

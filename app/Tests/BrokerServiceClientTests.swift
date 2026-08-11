@@ -112,6 +112,8 @@ final class BrokerServiceClientTests: XCTestCase {
       BrokerCommandRequest(command: "cleanup", group: "idle", options: ["apply": .bool(true)]).executionTimeoutSeconds,
       1610
     )
+    XCTAssertEqual(BrokerCommandRequest(command: "boot", group: "simulators", options: [:]).executionTimeoutSeconds, 1130)
+    XCTAssertEqual(BrokerCommandRequest(command: "boot", group: "simulators", options: [:]).transferTimeoutSeconds, 1190)
     XCTAssertEqual(BrokerCommandRequest(command: "shutdown", group: "simulators", options: [:]).executionTimeoutSeconds, 1010)
     XCTAssertEqual(BrokerCommandRequest(command: "shutdown", group: "simulators", options: [:]).transferTimeoutSeconds, 1070)
     XCTAssertEqual(BrokerCommandRequest(command: "erase", group: "simulators", options: [:]).executionTimeoutSeconds, 1130)

@@ -77,6 +77,25 @@ function textFileContent(filePath) {
   return content.toString("utf8");
 }
 
+function isHomePathBoundary(text, offset, value) {
+  const before = offset > 0 ? text[offset - 1] : "";
+  const after = text[offset + value.length] ?? "";
+  const pathFragment = /[A-Za-z0-9._~\\/:-]/u;
+  return !pathFragment.test(before)
+    && (after === "" || after === path.posix.sep || !pathFragment.test(after));
+}
+
+function indexOfHomePath(text, value) {
+  let offset = text.indexOf(value);
+  while (offset !== -1) {
+    if (isHomePathBoundary(text, offset, value)) {
+      return offset;
+    }
+    offset = text.indexOf(value, offset + value.length);
+  }
+  return -1;
+}
+
 export function scanPublicSurface({
   denylistPath,
   files,
@@ -115,7 +134,7 @@ export function scanPublicSurface({
       continue;
     }
     for (const rule of builtInRules) {
-      const offset = text.indexOf(rule.value);
+      const offset = indexOfHomePath(text, rule.value);
       if (offset !== -1) {
         issues.push({
           line: lineNumberForOffset(text, offset),

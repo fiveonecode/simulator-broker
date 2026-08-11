@@ -31,6 +31,29 @@ test("public surface scan reports a local home path without echoing the matched 
   assert.equal(JSON.stringify(report).includes(localHome), false);
 });
 
+test("public surface scan matches complete home paths instead of raw prefixes", () => {
+  const root = makeTempDir();
+  fs.writeFileSync(path.join(root, "README.md"), [
+    "route: composition/root-layout",
+    String.raw`pattern: \/root\/`,
+    "actual: /root/.simulator-broker/state",
+    "",
+  ].join("\n"));
+
+  const report = scanPublicSurface({
+    files: ["README.md"],
+    homePath: "/root",
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 3,
+    path: "README.md",
+    rule: "local-home-path",
+  }]);
+});
+
 test("public surface scan applies an ignored operator denylist without echoing its values", () => {
   const root = makeTempDir();
   const privateMarker = "operator-private-alias";

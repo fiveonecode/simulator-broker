@@ -485,10 +485,10 @@ struct BrokerCommandRequest: Sendable {
     }
     var commandCount: Int
     switch command {
-    case "boot", "shutdown":
-      commandCount = 1
-    case "erase":
+    case "boot", "erase":
       commandCount = 2
+    case "shutdown":
+      commandCount = 1
     case "repair":
       commandCount = 10 + (pendingRetirementCount(paths: paths) * 2)
     default:

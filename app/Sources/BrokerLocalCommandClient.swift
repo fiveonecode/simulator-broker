@@ -454,13 +454,17 @@ private enum BrokerLocalCommandTimeouts {
   private static let commandTransferWindowCount = 2
   private static let commandLauncherOverheadSeconds = 5
   private static let defaultCommandTimeoutNanoseconds: UInt64 = 30 * 1_000_000_000
+  private static let defaultLockTimeoutSeconds = 60
   private static let processSamplerInvocationsPerStateLoad = 1
   private static let processSamplerTimeoutSeconds = 10
+  private static let serviceStartHostAliasCount = 6
+  private static let serviceStartLeaseLockWaits = 2
   private static let serviceStartLockProcessSamplerInvocations = 2
-  private static let serviceStartSnapshotStateLoads = 1
-  private static let serviceStartTimeoutSeconds = (serviceStartSnapshotStateLoads * stateLoadBudgetSeconds)
+  private static let serviceStartStateLoads = 2
+  private static let serviceStartTimeoutSeconds = (serviceStartStateLoads * stateLoadBudgetSeconds)
+    + (serviceStartLeaseLockWaits * defaultLockTimeoutSeconds)
+    + (serviceStartHostAliasCount * simctlCommandTimeoutSeconds)
     + (serviceStartLockProcessSamplerInvocations * processSamplerTimeoutSeconds)
-    + commandLauncherOverheadSeconds
   private static let simctlCommandTimeoutSeconds = 120
   private static let simctlInventoryCommandsPerStateLoad = 3
   private static let stateLoadBudgetSeconds = (simctlInventoryCommandsPerStateLoad * simctlCommandTimeoutSeconds)

@@ -116,7 +116,7 @@ final class BrokerLocalCommandClientTests: XCTestCase {
 
     XCTAssertEqual(
       runner.resolvedTimeoutNanoseconds(for: ["service", "start", "--host-config", "/tmp/host.json"]),
-      400 * 1_000_000_000
+      1605 * 1_000_000_000
     )
     XCTAssertEqual(
       runner.resolvedTimeoutNanoseconds(for: ["host", "init", "--bootstrap-config"]),
