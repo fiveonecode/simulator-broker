@@ -165,16 +165,63 @@ function indexOfHomePath(text, value) {
   return -1;
 }
 
-function normalizeJsonSlashEscapes(text) {
+function normalizeJsonEscapes(text) {
   let normalized = "";
   const originalOffsets = [];
+  const pushDecoded = (decoded, originalOffset) => {
+    for (let offset = 0; offset < decoded.length; offset += 1) {
+      originalOffsets.push(originalOffset);
+    }
+    normalized += decoded;
+  };
+  const jsonEscapes = new Map([
+    ['"', '"'],
+    ["\\", "\\"],
+    ["/", "/"],
+    ["b", "\b"],
+    ["f", "\f"],
+    ["n", "\n"],
+    ["r", "\r"],
+    ["t", "\t"],
+  ]);
+
   for (let index = 0; index < text.length; index += 1) {
-    if (text[index] === "\\" && text[index + 1] === "/") {
+    if (text[index] !== "\\") {
       originalOffsets.push(index);
-      normalized += "/";
+      normalized += text[index];
+      continue;
+    }
+
+    const escape = text[index + 1];
+    if (jsonEscapes.has(escape)) {
+      pushDecoded(jsonEscapes.get(escape), index);
       index += 1;
       continue;
     }
+
+    if (escape === "u") {
+      const hex = text.slice(index + 2, index + 6);
+      if (/^[0-9A-Fa-f]{4}$/u.test(hex)) {
+        const highCodeUnit = Number.parseInt(hex, 16);
+        const lowEscape = text.slice(index + 6, index + 8);
+        const lowHex = text.slice(index + 8, index + 12);
+        if (highCodeUnit >= 0xd800
+          && highCodeUnit <= 0xdbff
+          && lowEscape === "\\u"
+          && /^[0-9A-Fa-f]{4}$/u.test(lowHex)) {
+          const lowCodeUnit = Number.parseInt(lowHex, 16);
+          if (lowCodeUnit >= 0xdc00 && lowCodeUnit <= 0xdfff) {
+            pushDecoded(String.fromCharCode(highCodeUnit, lowCodeUnit), index);
+            index += 11;
+            continue;
+          }
+        }
+        pushDecoded(String.fromCharCode(highCodeUnit), index);
+        index += 5;
+        continue;
+      }
+    }
+
     originalOffsets.push(index);
     normalized += text[index];
   }
@@ -227,7 +274,7 @@ function indexOfCanonicalHomePath(text, value) {
 }
 
 function indexOfJsonEscapedHomePath(text, value) {
-  const slashNormalized = normalizeJsonSlashEscapes(text);
+  const slashNormalized = normalizeJsonEscapes(text);
   const { normalized, originalOffsets } = canonicalTextWithOffsets(
     slashNormalized.normalized,
     slashNormalized.originalOffsets,
@@ -236,20 +283,15 @@ function indexOfJsonEscapedHomePath(text, value) {
   return normalizedOffset === -1 ? -1 : originalOffsets[normalizedOffset];
 }
 
-function indexOfJsonSlashNormalizedValue(text, value) {
-  let lineStartOffset = 0;
+function indexOfJsonEscapedValue(text, value) {
   const canonicalValue = canonicalText(value);
-  for (const line of text.match(/[^\n]*(?:\n|$)/gu) ?? []) {
-    if (line === "") {
-      continue;
-    }
-    const { normalized } = normalizeJsonSlashEscapes(line);
-    if (canonicalText(normalized).includes(canonicalValue)) {
-      return lineStartOffset;
-    }
-    lineStartOffset += line.length;
-  }
-  return -1;
+  const jsonNormalized = normalizeJsonEscapes(text);
+  const { normalized, originalOffsets } = canonicalTextWithOffsets(
+    jsonNormalized.normalized,
+    jsonNormalized.originalOffsets,
+  );
+  const normalizedOffset = normalized.indexOf(canonicalValue);
+  return normalizedOffset === -1 ? -1 : originalOffsets[normalizedOffset];
 }
 
 function canonicalText(value) {
@@ -314,7 +356,7 @@ export function scanPublicSurface({
       }
     }
     for (const rule of denylistRules) {
-      const offset = indexOfJsonSlashNormalizedValue(text, rule.value);
+      const offset = indexOfJsonEscapedValue(text, rule.value);
       if (offset !== -1) {
         addIssue({
           line: lineNumberForOffset(text, offset),

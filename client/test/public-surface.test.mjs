@@ -110,6 +110,25 @@ test("public surface scan detects JSON slash-escaped home paths", () => {
   }]);
 });
 
+test("public surface scan detects JSON Unicode-escaped home paths", () => {
+  const root = makeTempDir();
+  const localHome = path.posix.join(path.posix.sep, "Users", "alice");
+  fs.writeFileSync(path.join(root, "snapshot.json"), `intro\n{"projectPath":"\\/Users\\/\\u0061lice\\/project"}\n`);
+
+  const report = scanPublicSurface({
+    files: ["snapshot.json"],
+    homePath: localHome,
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 2,
+    path: "snapshot.json",
+    rule: "local-home-path",
+  }]);
+});
+
 test("public surface scan normalizes home path content while preserving diagnostic lines", () => {
   const root = makeTempDir();
   const localHome = path.posix.join(path.posix.sep, "Users", "caf\u00e9-home");
@@ -228,6 +247,28 @@ test("public surface scan detects JSON slash-escaped local denylist values", () 
   }]);
   assert.equal(JSON.stringify(report).includes(privateMarker), false);
   assert.equal(JSON.stringify(report).includes(escapedMarker), false);
+});
+
+test("public surface scan detects JSON Unicode-escaped local denylist values", () => {
+  const root = makeTempDir();
+  const privateMarker = "operator-private-alias";
+  fs.writeFileSync(path.join(root, ".public-safety.local"), `# local only\n${privateMarker}\n`);
+  fs.writeFileSync(path.join(root, "snapshot.json"), `intro\n{"marker":"operator-private-\\u0061lias"}\n`);
+
+  const report = scanPublicSurface({
+    denylistPath: path.join(root, ".public-safety.local"),
+    files: ["snapshot.json"],
+    homePath: "",
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 2,
+    path: "snapshot.json",
+    rule: "local-denylist-rule-2",
+  }]);
+  assert.equal(JSON.stringify(report).includes(privateMarker), false);
 });
 
 test("public surface scan applies local denylist values to relative filenames without echoing them", () => {

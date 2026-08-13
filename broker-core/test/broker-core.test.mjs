@@ -4420,6 +4420,73 @@ test("stale lease recovery timestamps release after entering the mutation lock",
   assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
 });
 
+function makeStaleLeaseForReadRecovery() {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "dead-agent",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: 424242,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  return { lease, paths, resolvedPaths };
+}
+
+test("host status stale lease recovery timestamps release after entering the mutation lock", () => {
+  const { lease, paths, resolvedPaths } = makeStaleLeaseForReadRecovery();
+  const timestamps = [
+    "2026-01-01T01:00:00.000Z",
+    "2026-01-01T01:00:45.000Z",
+  ];
+
+  hostStatusBroker(resolvedPaths, {
+    now: () => timestamps.shift(),
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
+});
+
+test("doctor stale lease recovery timestamps release after entering the mutation lock", () => {
+  const { lease, paths, resolvedPaths } = makeStaleLeaseForReadRecovery();
+  const timestamps = [
+    "2026-01-01T01:00:00.000Z",
+    "2026-01-01T01:00:45.000Z",
+  ];
+
+  doctorBroker(resolvedPaths, {
+    now: () => timestamps.shift(),
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
+});
+
+test("lease explain stale lease recovery timestamps release after entering the mutation lock", () => {
+  const { lease, paths, resolvedPaths } = makeStaleLeaseForReadRecovery();
+  const timestamps = [
+    "2026-01-01T01:00:00.000Z",
+    "2026-01-01T01:00:45.000Z",
+  ];
+
+  explainLeaseBroker(resolvedPaths, {
+    now: () => timestamps.shift(),
+    processExists: () => false,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
+});
+
 test("stale containment recovery timestamps release after containment completes", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);

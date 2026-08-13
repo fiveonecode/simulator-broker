@@ -3598,7 +3598,8 @@ export function initBroker(paths, options = {}) {
 }
 
 export function doctorBroker(paths, options = {}) {
-  const timestamp = nowIso(options.now);
+  const lockTimestamp = nowIso(options.now);
+  let reportTimestamp = lockTimestamp;
   const issues = [];
   let hostConfig = null;
   try {
@@ -3621,9 +3622,13 @@ export function doctorBroker(paths, options = {}) {
   if (hostConfig) {
     const state = withLeaseMutationLock(
       paths,
-      () => loadBrokerState(paths, stateLoadOptions(options, timestamp)),
+      () => {
+        const stateTimestamp = nowIso(options.now);
+        reportTimestamp = stateTimestamp;
+        return loadBrokerState(paths, stateLoadOptions(options, stateTimestamp));
+      },
       {
-        now: timestamp,
+        now: lockTimestamp,
         processExists: options.processExists,
         processSampler: options.processSampler,
         timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
@@ -3646,7 +3651,7 @@ export function doctorBroker(paths, options = {}) {
     issues,
     ok: issues.length === 0,
     stateRoot: paths.stateRoot,
-    timestamp,
+    timestamp: reportTimestamp,
   };
 }
 
@@ -3741,8 +3746,9 @@ export function initProjectBroker(paths, options = {}) {
 }
 
 export function hostStatusBroker(paths, options = {}) {
-  const timestamp = nowIso(options.now);
+  const lockTimestamp = nowIso(options.now);
   return withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
     const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
     const simulators = state.hostConfig.aliases.map((hostAlias) =>
       aliasSnapshot(hostAlias, state.registry.aliases[hostAlias.alias], state.leasesByAlias.get(hostAlias.alias), state.pinsByAlias.get(hostAlias.alias)));
@@ -3759,7 +3765,7 @@ export function hostStatusBroker(paths, options = {}) {
       simulators,
     };
   }, {
-    now: timestamp,
+    now: lockTimestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
@@ -4325,8 +4331,9 @@ export function cleanupIdleBroker(paths, options = {}) {
 }
 
 export function explainLeaseBroker(paths, options = {}) {
-  const timestamp = nowIso(options.now);
+  const lockTimestamp = nowIso(options.now);
   return withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
     const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
     const { projectConfig, projectFilePath } = readProjectConfigOrThrow(paths, options.projectFilePath);
     rememberKnownProjectFromDisk(paths, projectConfig, projectFilePath, timestamp);
@@ -4349,7 +4356,7 @@ export function explainLeaseBroker(paths, options = {}) {
       purpose,
     };
   }, {
-    now: timestamp,
+    now: lockTimestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
