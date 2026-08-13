@@ -110,6 +110,37 @@ test("public surface scan detects JSON slash-escaped home paths", () => {
   }]);
 });
 
+test("public surface scan normalizes home path content while preserving diagnostic lines", () => {
+  const root = makeTempDir();
+  const localHome = path.posix.join(path.posix.sep, "Users", "caf\u00e9-home");
+  const decomposedHome = localHome.normalize("NFD");
+  const escapedDecomposedHome = decomposedHome.replaceAll(path.posix.sep, String.raw`\/`);
+  fs.writeFileSync(path.join(root, "README.md"), `intro\nmachine path: ${decomposedHome}/state\n`);
+  fs.writeFileSync(path.join(root, "snapshot.json"), `intro\n{"projectPath":"${escapedDecomposedHome}${String.raw`\/`}project"}\n`);
+
+  const report = scanPublicSurface({
+    files: ["README.md", "snapshot.json"],
+    homePath: localHome,
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [
+    {
+      line: 2,
+      path: "README.md",
+      rule: "local-home-path",
+    },
+    {
+      line: 2,
+      path: "snapshot.json",
+      rule: "local-home-path",
+    },
+  ]);
+  assert.equal(JSON.stringify(report).includes(localHome), false);
+  assert.equal(JSON.stringify(report).includes(decomposedHome), false);
+});
+
 test("public surface scan detects home paths inside file URLs", () => {
   const root = makeTempDir();
   const localHome = path.join(root, "private-home");

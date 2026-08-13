@@ -483,6 +483,67 @@ test("package_distribution scans empty copied payload directories", (t) => {
   assert.equal(result.stderr.includes(root), false);
 });
 
+test("package_distribution scans the top-level archive name", (t) => {
+  const root = makeTempDir();
+  const outputDir = path.join(root, "out");
+  const fakePathDir = path.join(root, "fake-path");
+  const fakeSecurityPath = path.join(fakePathDir, "security");
+  const privateArchiveMarker = ["private", "release", "marker"].join("-");
+  const archiveName = `${privateArchiveMarker}-distribution`;
+  const localDenylistPath = path.resolve(".public-safety.local");
+  const originalDenylist = fs.existsSync(localDenylistPath)
+    ? fs.readFileSync(localDenylistPath)
+    : null;
+  const appSource = path.resolve("DerivedData/SimulatorBrokerApp/Build/Products/Release/SimulatorBrokerApp.app");
+  const createdAppSource = !fs.existsSync(appSource);
+
+  fs.mkdirSync(fakePathDir, { recursive: true });
+  fs.writeFileSync(fakeSecurityPath, [
+    "#!/usr/bin/env bash",
+    "printf '  1) ABC \"Developer ID Application: Example (TEAMID)\"\\n'",
+    "",
+  ].join("\n"));
+  fs.chmodSync(fakeSecurityPath, 0o755);
+  fs.mkdirSync(appSource, { recursive: true });
+  fs.writeFileSync(localDenylistPath, `${originalDenylist?.toString("utf8") ?? ""}\n${privateArchiveMarker}\n`);
+  t.after(() => {
+    if (originalDenylist === null) {
+      fs.rmSync(localDenylistPath, { force: true });
+    } else {
+      fs.writeFileSync(localDenylistPath, originalDenylist);
+    }
+    if (createdAppSource) {
+      fs.rmSync(path.resolve("DerivedData/SimulatorBrokerApp"), { force: true, recursive: true });
+    }
+  });
+
+  const result = spawnSync("bash", [
+    path.resolve("scripts/package_distribution.sh"),
+    "--skip-build",
+    "--output-dir",
+    outputDir,
+    "--archive-name",
+    archiveName,
+    "--team-id",
+    "TEAMID",
+    "--signing-identity",
+    "Developer ID Application: Example (TEAMID)",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      PATH: `${fakePathDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Distribution public surface verification failed/);
+  assert.match(result.stderr, /\[redacted\]-distribution:1 \[local-denylist-rule-/);
+  assert.equal(result.stderr.includes(privateArchiveMarker), false);
+  assert.equal(fs.existsSync(path.join(outputDir, `${archiveName}.zip`)), false);
+});
+
 test("package scripts reject path-like archive names before cleanup", () => {
   for (const scriptPath of ["scripts/package_local.sh", "scripts/package_distribution.sh"]) {
     const root = makeTempDir();

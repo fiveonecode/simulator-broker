@@ -184,8 +184,54 @@ function normalizeJsonSlashEscapes(text) {
   };
 }
 
+function canonicalTextWithOffsets(text, sourceOffsets) {
+  let normalized = "";
+  const originalOffsets = [];
+  const pushSegment = (segment, index) => {
+    const normalizedSegment = canonicalText(segment);
+    const originalOffset = sourceOffsets?.[index] ?? index;
+    for (let segmentOffset = 0; segmentOffset < normalizedSegment.length; segmentOffset += 1) {
+      originalOffsets.push(originalOffset);
+    }
+    normalized += normalizedSegment;
+  };
+
+  if (typeof Intl?.Segmenter === "function") {
+    const segmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
+    for (const { segment, index } of segmenter.segment(text)) {
+      pushSegment(segment, index);
+    }
+  } else {
+    for (let index = 0; index < text.length;) {
+      const start = index;
+      let segment = text[index];
+      index += 1;
+      while (index < text.length && /\p{Mark}/u.test(text[index])) {
+        segment += text[index];
+        index += 1;
+      }
+      pushSegment(segment, start);
+    }
+  }
+
+  return {
+    normalized,
+    originalOffsets,
+  };
+}
+
+function indexOfCanonicalHomePath(text, value) {
+  const { normalized, originalOffsets } = canonicalTextWithOffsets(text);
+  const normalizedOffset = indexOfHomePath(normalized, value);
+  return normalizedOffset === -1 ? -1 : originalOffsets[normalizedOffset];
+}
+
 function indexOfJsonEscapedHomePath(text, value) {
-  const { normalized, originalOffsets } = normalizeJsonSlashEscapes(text);
+  const slashNormalized = normalizeJsonSlashEscapes(text);
+  const { normalized, originalOffsets } = canonicalTextWithOffsets(
+    slashNormalized.normalized,
+    slashNormalized.originalOffsets,
+  );
   const normalizedOffset = indexOfHomePath(normalized, value);
   return normalizedOffset === -1 ? -1 : originalOffsets[normalizedOffset];
 }
@@ -255,7 +301,7 @@ export function scanPublicSurface({
     }
     const diagnosticPath = diagnosticPathFor(normalizedRelativeFile);
     for (const rule of builtInRules) {
-      let offset = indexOfHomePath(text, rule.value);
+      let offset = indexOfCanonicalHomePath(text, rule.value);
       if (offset === -1) {
         offset = indexOfJsonEscapedHomePath(text, rule.value);
       }
