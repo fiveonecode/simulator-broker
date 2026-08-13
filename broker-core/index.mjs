@@ -2260,6 +2260,7 @@ function resolveLifecycleAdapter(options = {}) {
       erase: typeof adapter.erase === "function" ? adapter.erase : () => {},
       repair: typeof adapter.repair === "function" ? adapter.repair : () => {},
       shutdown: typeof adapter.shutdown === "function" ? adapter.shutdown : () => {},
+      waitReady: typeof adapter.waitReady === "function" ? adapter.waitReady : () => {},
     };
   }
 
@@ -2275,6 +2276,11 @@ function resolveLifecycleAdapter(options = {}) {
     repair: (context) => repairHostAlias(context.paths, context.state, context.hostAlias, options),
     shutdown: ({ hostAlias }) => {
       simctl.shutdownDevice(hostAlias.simulatorId);
+    },
+    waitReady: ({ hostAlias }) => {
+      if (typeof simctl.waitForBooted === "function") {
+        simctl.waitForBooted(hostAlias.simulatorId);
+      }
     },
   };
 }
@@ -3175,7 +3181,8 @@ function containLeaseRecord(paths, state, lease, options = {}) {
     });
   }
 
-  removeLeaseAfterContainment(paths, state, lease, timestamp);
+  const releasedAt = nowIso(options.now);
+  removeLeaseAfterContainment(paths, state, lease, releasedAt);
   if (result.evidenceDir) {
     writeJsonAtomicRestricted(path.join(result.evidenceDir, "broker-status-after.json"), brokerStatusForLease(paths, state, lease));
   }
@@ -3196,7 +3203,7 @@ function containLeaseRecord(paths, state, lease, options = {}) {
     },
     projectId: lease.projectId,
     purposeId: lease.purposeId,
-  }, timestamp);
+  }, releasedAt);
 
   return {
     cleanupActions: result.cleanupActions,
@@ -3244,7 +3251,7 @@ function loadBrokerState(paths, { processExists = defaultProcessExists, registry
           processSampler: simctlOptions.processSampler,
           reason: "stale-owner",
           termWaitMs: simctlOptions.termWaitMs,
-          now: timestamp,
+          now: simctlOptions.now ?? timestamp,
         });
       } catch (error) {
         if (error instanceof BrokerError && error.payload?.reasonCode === "containment-incomplete") {
@@ -3493,6 +3500,7 @@ function stateLoadOptions(options, timestamp) {
     simctlInventory: options.simctlInventory,
     termWaitMs,
     timestamp,
+    now: options.now,
   };
 }
 
@@ -4066,6 +4074,16 @@ function loadPublicSafeIdleState(loader) {
     if (error instanceof BrokerError && error.payload?.reasonCode === "missing-host-config") {
       const readError = new BrokerError("Idle broker state could not be read.", {
         reasonCode: "missing-host-config",
+      });
+      Object.defineProperty(readError, "cause", {
+        configurable: true,
+        value: error,
+        writable: true,
+      });
+      throw readError;
+    } else if (error instanceof BrokerError && error.payload?.reasonCode === "invalid-config") {
+      const readError = new BrokerError("Idle broker state could not be read.", {
+        reasonCode: "invalid-config",
       });
       Object.defineProperty(readError, "cause", {
         configurable: true,
@@ -5782,6 +5800,21 @@ function maybeResetLeaseOnAcquire(paths, state, leaseRecord, options = {}) {
 function maybeBootLeaseOnAcquire(paths, state, leaseRecord, options = {}) {
   const registryEntry = state.registry.aliases[leaseRecord.alias];
   if (registryEntry.powerState === "booted") {
+    const hostAlias = findHostAliasOrThrow(state, leaseRecord.alias);
+    const adapter = resolveLifecycleAdapter(options);
+    invokeLifecycleAdapter("waitReady", adapter, {
+      action: "waitReady",
+      alias: leaseRecord.alias,
+      hostAlias,
+      paths,
+      requester: {
+        actorId: leaseRecord.actorId,
+        actorType: leaseRecord.actorType,
+        jobId: leaseRecord.jobId,
+      },
+      state,
+      timestamp: leaseRecord.startedAt,
+    });
     return false;
   }
   const hostAlias = findHostAliasOrThrow(state, leaseRecord.alias);

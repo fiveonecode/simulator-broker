@@ -1320,6 +1320,23 @@ test("system simctl boot waits for boot status before returning", () => {
   assert.equal(calls[1].options.timeoutMs, SIMCTL_COMMAND_TIMEOUT_MS);
 });
 
+test("system simctl warm readiness waits for boot status", () => {
+  const calls = [];
+  const adapter = createSystemSimctlAdapter({
+    commandRunner(args, options) {
+      calls.push({ args, options });
+      return "";
+    },
+  });
+
+  adapter.waitForBooted("SIM-WARM");
+
+  assert.deepEqual(calls.map((call) => call.args), [
+    ["bootstatus", "SIM-WARM", "-b"],
+  ]);
+  assert.equal(calls[0].options.timeoutMs, SIMCTL_COMMAND_TIMEOUT_MS);
+});
+
 test("system simctl inventory commands use an expanded output buffer", () => {
   const calls = [];
   const adapter = createSystemSimctlAdapter({
@@ -3774,6 +3791,43 @@ test("acquire samples boot-on-acquire timestamps inside the mutation lock", () =
   assert.equal(bootEvent.timestamp, acquiredAt);
 });
 
+test("acquire waits for already booted warm aliases before returning", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const fixture = readJson(paths.simctl.statePath);
+  fixture.devices.find((device) => device.udid === "SIM-MANUAL-1").state = "Booted";
+  writeJson(paths.simctl.statePath, fixture);
+  const resolvedPaths = brokerPaths(paths);
+  const waitCalls = [];
+  const readinessAdapter = {
+    ...paths.simctl.adapter,
+    bootDevice() {
+      assert.fail("warm acquisition should not boot an already booted simulator");
+    },
+    waitForBooted(simulatorId) {
+      waitCalls.push(simulatorId);
+      paths.simctl.adapter.waitForBooted(simulatorId);
+    },
+  };
+
+  initBroker(resolvedPaths, runtimeOptions(paths, {
+    processExists: () => true,
+    simctlAdapter: readinessAdapter,
+  }));
+  const acquired = acquireLeaseBroker(resolvedPaths, {
+    actorId: "human-warm",
+    actorType: "human",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "manual-testing",
+    simctlAdapter: readinessAdapter,
+  });
+
+  assert.equal(acquired.lease.alias, "manual-1");
+  assert.deepEqual(waitCalls, ["SIM-MANUAL-1"]);
+});
+
 test("shutdown candidates prefer the most recently released compatible alias", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
@@ -4120,6 +4174,58 @@ test("missing host idle state errors stay public-safe while preserving local cau
   });
 });
 
+test("parseable invalid host idle state errors stay public-safe while preserving local cause", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const privateAlias = "private-ui-alias";
+  const privateSimulatorId = "SIM-PRIVATE-ID";
+  writeJson(paths.hostConfigPath, {
+    aliases: [
+      {
+        alias: privateAlias,
+        capabilities: ["interactive-resettable"],
+        deviceFamily: "iPhone",
+        displayName: "Private UI One",
+        iosVersion: "18.2",
+        simulatorId: privateSimulatorId,
+      },
+      {
+        alias: privateAlias,
+        capabilities: ["interactive-resettable"],
+        deviceFamily: "iPhone",
+        displayName: "Private UI Two",
+        iosVersion: "18.2",
+        simulatorId: "SIM-OTHER-PRIVATE-ID",
+      },
+    ],
+    hostId: "private-host",
+    version: 1,
+  });
+  writeJson(resolvedPaths.idlePolicyPath, {
+    graceSeconds: 60,
+    version: 1,
+  });
+
+  for (const operation of [
+    () => idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+    () => reconcileIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+    () => cleanupIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+  ]) {
+    assert.throws(operation, (error) => {
+      const serialized = JSON.stringify(error.payload);
+      return error instanceof BrokerError
+        && error.payload?.reasonCode === "invalid-config"
+        && error.exitCode === 2
+        && error.payload?.error === "Idle broker state could not be read."
+        && serialized.includes(privateAlias) === false
+        && serialized.includes(privateSimulatorId) === false
+        && serialized.includes(paths.root) === false
+        && "stack" in error.payload === false
+        && error.cause?.message.includes(privateAlias);
+    });
+  }
+});
+
 test("malformed idle policy shapes reject non-number grace durations", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
@@ -4258,6 +4364,63 @@ test("stale lease recovery timestamps release after entering the mutation lock",
 
   assert.equal(recovered.eligibleCount, 0);
   assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
+});
+
+test("stale containment recovery timestamps release after containment completes", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const processes = makeProcessFixture([
+    { command: "xcodebuild test SIM-UI-1", pgid: 2000, pid: 2000, ppid: 1, rssBytes: 40 * 1024 * 1024 },
+  ]);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "dead-agent",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: 999999,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  registerLeaseProcessBroker(resolvedPaths, {
+    command: "xcodebuild test",
+    commandPgid: 2000,
+    commandPid: 2000,
+    leaseId: lease.leaseId,
+    processExists: () => true,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const timestamps = [
+    "2026-01-01T01:00:00.000Z",
+    "2026-01-01T01:00:05.000Z",
+    "2026-01-01T01:00:30.000Z",
+    "2026-01-01T01:00:45.000Z",
+  ];
+
+  const recovered = reconcileIdleBroker(resolvedPaths, {
+    now: () => timestamps.shift() ?? "2026-01-01T01:00:45.000Z",
+    processController: processes.controller,
+    processExists: (pid) => pid !== 999999,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+    termWaitMs: 0,
+  });
+
+  assert.equal(recovered.eligibleCount, 0);
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
+  assert.equal(fs.existsSync(path.join(paths.stateRoot, "leases", `${lease.leaseId}.json`)), false);
+  const containedEvent = readEventsBroker(resolvedPaths, { type: "lease.contained" }).events.at(-1);
+  assert.equal(containedEvent.leaseId, lease.leaseId);
+  assert.equal(containedEvent.timestamp, "2026-01-01T01:00:45.000Z");
 });
 
 test("lease release timestamps release after entering the mutation lock", () => {
