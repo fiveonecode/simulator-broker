@@ -4071,31 +4071,12 @@ function loadPublicSafeIdleState(loader) {
   try {
     return loader();
   } catch (error) {
-    if (error instanceof BrokerError && error.payload?.reasonCode === "missing-host-config") {
-      const readError = new BrokerError("Idle broker state could not be read.", {
-        reasonCode: "missing-host-config",
-      });
-      Object.defineProperty(readError, "cause", {
-        configurable: true,
-        value: error,
-        writable: true,
-      });
-      throw readError;
-    } else if (error instanceof BrokerError && error.payload?.reasonCode === "invalid-config") {
-      const readError = new BrokerError("Idle broker state could not be read.", {
-        reasonCode: "invalid-config",
-      });
-      Object.defineProperty(readError, "cause", {
-        configurable: true,
-        value: error,
-        writable: true,
-      });
-      throw readError;
-    } else if (error instanceof BrokerError) {
-      throw error;
-    }
+    const reasonCode = error instanceof BrokerError
+      && ["missing-host-config", "invalid-config"].includes(error.payload?.reasonCode)
+      ? error.payload.reasonCode
+      : "internal-error";
     const readError = new BrokerError("Idle broker state could not be read.", {
-      reasonCode: "internal-error",
+      reasonCode,
     });
     Object.defineProperty(readError, "cause", {
       configurable: true,
@@ -6140,7 +6121,7 @@ export function containLeaseBroker(paths, options = {}) {
       reason,
       requesterPid: options.requesterPid,
       termWaitMs,
-      now: timestamp,
+      now: options.now ?? timestamp,
     });
   }, {
     now: timestamp,

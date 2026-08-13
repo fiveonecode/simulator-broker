@@ -114,6 +114,42 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertNil(store.pendingIdleCleanupRequest)
   }
 
+  func testIdleCleanupPreviewMarksBusyBeforeTaskStarts() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let commandClient = DeferredCommandClient(
+      response: BrokerCommandEnvelope(
+        currentHolder: nil,
+        eligibleCount: 2,
+        error: nil,
+        exitCode: nil,
+        ok: true,
+        planId: "cleanup-plan",
+        reasonCode: nil,
+        requiredConfirmationFields: nil,
+        status: "changes_required",
+        unchanged: nil
+      )
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: commandClient,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+
+    store.requestIdleCleanup()
+    XCTAssertTrue(store.isApplyingAction)
+    store.requestIdleCleanup()
+
+    try await waitUntil { await commandClient.hasPendingSend() }
+    let requestCount = await commandClient.requests().count
+    XCTAssertEqual(requestCount, 1)
+
+    await commandClient.release()
+    try await waitUntil { store.isApplyingAction == false }
+  }
+
   func testIdleCleanupPreviewResultIsDiscardedAfterLeavingOverview() async throws {
     let snapshot = try loadFixture(named: "busy-snapshot")
     let loadedState = makeLoadedState(snapshot: snapshot)
@@ -1405,6 +1441,7 @@ private actor BlockingCommandClient: BrokerCommandSending {
 
 private actor DeferredCommandClient: BrokerCommandSending {
   private var continuation: CheckedContinuation<Void, Never>?
+  private var recordedRequests: [BrokerCommandRequest] = []
   private let response: BrokerCommandEnvelope
 
   init(response: BrokerCommandEnvelope) {
@@ -1412,10 +1449,15 @@ private actor DeferredCommandClient: BrokerCommandSending {
   }
 
   func send(_ request: BrokerCommandRequest) async throws -> BrokerCommandEnvelope {
+    recordedRequests.append(request)
     await withCheckedContinuation { continuation in
       self.continuation = continuation
     }
     return response
+  }
+
+  func requests() -> [BrokerCommandRequest] {
+    recordedRequests
   }
 
   func hasPendingSend() -> Bool {

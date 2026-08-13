@@ -647,8 +647,8 @@ final class BrokerDashboardStore {
     }
     idleCleanupPreviewGeneration += 1
     let previewGeneration = idleCleanupPreviewGeneration
+    isApplyingAction = true
     Task {
-      isApplyingAction = true
       defer { isApplyingAction = false }
       do {
         let response = try await commandClient.send(

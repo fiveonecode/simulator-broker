@@ -4226,6 +4226,60 @@ test("parseable invalid host idle state errors stay public-safe while preserving
   }
 });
 
+test("stale idle state lease artifact path errors stay public-safe while preserving local cause", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const processes = makeProcessFixture([
+    { command: "xcodebuild test SIM-UI-1", pgid: 2000, pid: 2000, ppid: 1, rssBytes: 40 * 1024 * 1024 },
+  ]);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "dead-agent",
+    actorType: "agent",
+    ownerPid: 999999,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  registerLeaseProcessBroker(resolvedPaths, {
+    command: "xcodebuild test",
+    commandPgid: 2000,
+    commandPid: 2000,
+    leaseId: lease.leaseId,
+    processExists: () => true,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const overlappingArtifactPath = path.join(resolvedPaths.stateRoot, "overlapping-lease-artifact.json");
+  const leasePath = path.join(resolvedPaths.leasesDir, `${lease.leaseId}.json`);
+  const staleLease = readJson(leasePath);
+  staleLease.artifactPath = overlappingArtifactPath;
+  writeJson(leasePath, staleLease);
+
+  assert.throws(() => {
+    idleStatusBroker(resolvedPaths, {
+      processController: processes.controller,
+      processExists: (pid) => pid !== 999999,
+      processSampler: processes.sampler,
+      simctlAdapter: paths.simctl.adapter,
+      termWaitMs: 0,
+    });
+  }, (error) => {
+    const serialized = JSON.stringify(error.payload);
+    return error instanceof BrokerError
+      && error.payload?.reasonCode === "internal-error"
+      && error.payload?.error === "Idle broker state could not be read."
+      && serialized.includes(paths.root) === false
+      && "artifactPath" in error.payload === false
+      && "protectedPath" in error.payload === false
+      && error.cause?.payload?.reasonCode === "invalid-lease-artifact-path"
+      && error.cause?.payload?.artifactPath === overlappingArtifactPath;
+  });
+});
+
 test("malformed idle policy shapes reject non-number grace durations", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
@@ -4418,6 +4472,58 @@ test("stale containment recovery timestamps release after containment completes"
   assert.equal(recovered.eligibleCount, 0);
   assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
   assert.equal(fs.existsSync(path.join(paths.stateRoot, "leases", `${lease.leaseId}.json`)), false);
+  const containedEvent = readEventsBroker(resolvedPaths, { type: "lease.contained" }).events.at(-1);
+  assert.equal(containedEvent.leaseId, lease.leaseId);
+  assert.equal(containedEvent.timestamp, "2026-01-01T01:00:45.000Z");
+});
+
+test("explicit containment timestamps release after containment completes", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const processes = makeProcessFixture([
+    { command: "xcodebuild test SIM-UI-1", pgid: 2000, pid: 2000, ppid: 1, rssBytes: 40 * 1024 * 1024 },
+  ]);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-contain",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: 999999,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  registerLeaseProcessBroker(resolvedPaths, {
+    command: "xcodebuild test",
+    commandPgid: 2000,
+    commandPid: 2000,
+    leaseId: lease.leaseId,
+    processExists: () => true,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const timestamps = [
+    "2026-01-01T01:00:00.000Z",
+    "2026-01-01T01:00:30.000Z",
+    "2026-01-01T01:00:45.000Z",
+  ];
+
+  const result = containLeaseBroker(resolvedPaths, {
+    leaseId: lease.leaseId,
+    now: () => timestamps.shift() ?? "2026-01-01T01:00:45.000Z",
+    processController: processes.controller,
+    processExists: (pid) => pid !== 999999,
+    processSampler: processes.sampler,
+    reason: "manual-cleanup",
+    simctlAdapter: paths.simctl.adapter,
+    termWaitMs: 0,
+  });
+
+  assert.equal(result.contained, true);
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
   const containedEvent = readEventsBroker(resolvedPaths, { type: "lease.contained" }).events.at(-1);
   assert.equal(containedEvent.leaseId, lease.leaseId);
   assert.equal(containedEvent.timestamp, "2026-01-01T01:00:45.000Z");
