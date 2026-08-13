@@ -3828,6 +3828,29 @@ test("shutdown candidates prefer the most recently released compatible alias", (
   assert.equal(selected.alias, second.alias);
 });
 
+test("candidate selection falls back to host order when either release timestamp is missing", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-1"].lastLeaseReleasedAt = null;
+  registry.aliases["ui-2"].lastLeaseReleasedAt = "2026-01-01T00:00:00.000Z";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  const selected = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-host-order",
+    actorType: "agent",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+
+  assert.equal(selected.alias, "ui-1");
+});
+
 test("idle policy is absent by default, strictly bounded, and stored outside project state", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
@@ -3978,6 +4001,101 @@ test("idle policy read errors stay public-safe while preserving diagnostics", (t
         && "stack" in error.payload === false
         && error.cause?.message.includes(resolvedPaths.idlePolicyPath);
     });
+  }
+});
+
+test("idle state read errors stay public-safe across status, reconcile, and cleanup", (t) => {
+  const originalReadFileSync = fs.readFileSync;
+  t.after(() => {
+    fs.readFileSync = originalReadFileSync;
+  });
+
+  const scenarios = [
+    {
+      name: "host config during status",
+      prepare(paths, resolvedPaths) {
+        return {
+          operation: () => idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+          targetPath: resolvedPaths.hostConfigPath,
+        };
+      },
+    },
+    {
+      name: "registry during status",
+      prepare(paths, resolvedPaths) {
+        return {
+          operation: () => idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+          targetPath: resolvedPaths.registryPath,
+        };
+      },
+    },
+    {
+      name: "pin during reconciliation",
+      prepare(paths, resolvedPaths) {
+        enableIdlePolicyBroker(resolvedPaths, {
+          actorId: "operator",
+          actorType: "human",
+          graceSeconds: 60,
+        });
+        const pin = createPinBroker(resolvedPaths, runtimeOptions(paths, {
+          actorId: "operator",
+          actorType: "human",
+          alias: "ui-1",
+          processExists: () => true,
+          purposeId: "agent-ui-session",
+        })).pin;
+        return {
+          operation: () => reconcileIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+          targetPath: path.join(resolvedPaths.pinsDir, `${pin.pinId}.json`),
+        };
+      },
+    },
+    {
+      name: "lease during cleanup preview",
+      prepare(paths, resolvedPaths) {
+        const lease = acquireLeaseBroker(resolvedPaths, runtimeOptions(paths, {
+          actorId: "agent-cleanup-read",
+          actorType: "agent",
+          ownerPid: process.pid,
+          processExists: (pid) => pid === process.pid,
+          purposeId: "agent-ui-session",
+        })).lease;
+        return {
+          operation: () => cleanupIdleBroker(resolvedPaths, runtimeOptions(paths, {
+            processExists: (pid) => pid === process.pid,
+          })),
+          targetPath: path.join(resolvedPaths.leasesDir, `${lease.leaseId}.json`),
+        };
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    fs.readFileSync = originalReadFileSync;
+    const paths = makePaths();
+    writeBaseHostConfig(paths.hostConfigPath);
+    writeBaseProject(paths.projectFilePath);
+    const resolvedPaths = brokerPaths(paths);
+    initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+    const { operation, targetPath } = scenario.prepare(paths, resolvedPaths);
+    fs.readFileSync = (filePath, ...args) => {
+      if (filePath === targetPath) {
+        const error = new Error(`EACCES: permission denied, open '${targetPath}'`);
+        error.code = "EACCES";
+        throw error;
+      }
+      return originalReadFileSync(filePath, ...args);
+    };
+
+    assert.throws(operation, (error) => {
+      const serialized = JSON.stringify(error.payload);
+      return error instanceof BrokerError
+        && error.payload?.reasonCode === "internal-error"
+        && error.payload?.error === "Idle broker state could not be read."
+        && serialized.includes(paths.root) === false
+        && "stack" in error.payload === false
+        && error.cause?.message.includes(targetPath);
+    }, scenario.name);
   }
 });
 

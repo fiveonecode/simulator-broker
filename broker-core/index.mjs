@@ -1716,12 +1716,13 @@ function sortCandidates(candidates) {
     if (tierComparison !== 0) {
       return tierComparison;
     }
-    const releaseComparison = compareNullableTimestamps(
-      right.registryEntry.lastLeaseReleasedAt,
-      left.registryEntry.lastLeaseReleasedAt,
-    );
-    if (releaseComparison !== 0) {
-      return releaseComparison;
+    const leftReleasedAt = Date.parse(left.registryEntry.lastLeaseReleasedAt ?? "");
+    const rightReleasedAt = Date.parse(right.registryEntry.lastLeaseReleasedAt ?? "");
+    if (Number.isFinite(leftReleasedAt) && Number.isFinite(rightReleasedAt)) {
+      const releaseComparison = rightReleasedAt - leftReleasedAt;
+      if (releaseComparison !== 0) {
+        return releaseComparison;
+      }
     }
     return left.index - right.index;
   });
@@ -4058,15 +4059,34 @@ export function disableIdlePolicyBroker(paths, options = {}) {
   });
 }
 
+function loadPublicSafeIdleState(loader) {
+  try {
+    return loader();
+  } catch (error) {
+    if (error instanceof BrokerError) {
+      throw error;
+    }
+    const readError = new BrokerError("Idle broker state could not be read.", {
+      reasonCode: "internal-error",
+    });
+    Object.defineProperty(readError, "cause", {
+      configurable: true,
+      value: error,
+      writable: true,
+    });
+    throw readError;
+  }
+}
+
 export function idleStatusBroker(paths, options = {}) {
   return withLeaseMutationLock(paths, () => {
     const timestamp = nowIso(options.now);
-    const state = loadBrokerState(paths, {
+    const state = loadPublicSafeIdleState(() => loadBrokerState(paths, {
       ...stateLoadOptions(options, timestamp),
       registryPersistenceDetails: {
         command: "idle.status",
       },
-    });
+    }));
     return {
       command: "idle.status",
       ok: true,
@@ -4210,12 +4230,12 @@ export function reconcileIdleBroker(paths, options = {}) {
         status: "not_configured",
       };
     }
-    const state = loadBrokerState(paths, {
+    const state = loadPublicSafeIdleState(() => loadBrokerState(paths, {
       ...stateLoadOptions(options, timestamp),
       registryPersistenceDetails: {
         command: "idle.reconcile",
       },
-    });
+    }));
     const candidates = idleEligibleCandidates(state, policy, timestamp);
     return {
       configured: true,
@@ -4239,7 +4259,8 @@ export function cleanupIdleBroker(paths, options = {}) {
   if (options.apply !== true) {
     return withLeaseMutationLock(paths, () => {
       const timestamp = nowIso(options.now);
-      const state = readBrokerStateSnapshot(paths, stateLoadOptions(options, timestamp));
+      const state = loadPublicSafeIdleState(() =>
+        readBrokerStateSnapshot(paths, stateLoadOptions(options, timestamp)));
       return idleCleanupPlan(state).publicPlan;
     }, {
       now: nowIso(options.now),
@@ -4257,12 +4278,12 @@ export function cleanupIdleBroker(paths, options = {}) {
   }
   return withLeaseMutationLock(paths, () => {
     const timestamp = nowIso(options.now);
-    const state = loadBrokerState(paths, {
+    const state = loadPublicSafeIdleState(() => loadBrokerState(paths, {
       ...stateLoadOptions(options, timestamp),
       registryPersistenceDetails: {
         command: "idle.cleanup",
       },
-    });
+    }));
     const plan = idleCleanupPlan(state);
     if (options.confirmPlanId !== plan.publicPlan.planId) {
       throw new BrokerError("Idle cleanup confirmation is stale; rerun preview and confirm the current plan.", {

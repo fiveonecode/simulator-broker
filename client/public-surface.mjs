@@ -223,7 +223,7 @@ export function scanPublicSurface({
 
   const diagnosticPathFor = (normalizedRelativeFile) => {
     let diagnosticPath = normalizedRelativeFile;
-    for (const rule of denylistRules) {
+    for (const rule of [...builtInRules, ...denylistRules]) {
       diagnosticPath = diagnosticPath.split(rule.value).join("[redacted]");
     }
     return diagnosticPath;
@@ -261,6 +261,15 @@ export function scanPublicSurface({
 
   const scanRelativePath = (normalizedRelativeFile) => {
     const diagnosticPath = diagnosticPathFor(normalizedRelativeFile);
+    for (const rule of builtInRules) {
+      if (normalizedRelativeFile.includes(rule.value)) {
+        addIssue({
+          line: 1,
+          path: diagnosticPath,
+          rule: rule.label,
+        });
+      }
+    }
     for (const rule of denylistRules) {
       if (normalizedRelativeFile.includes(rule.value)) {
         addIssue({

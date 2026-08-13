@@ -198,6 +198,28 @@ test("public surface scan applies local denylist values to relative filenames wi
   assert.equal(JSON.stringify(report).includes(privateMarker), false);
 });
 
+test("public surface scan applies the built-in home rule to relative filenames without echoing it", () => {
+  const root = makeTempDir();
+  const localHome = path.posix.join(path.posix.sep, "Users", "synthetic-operator");
+  const relativeFile = `captures${localHome}/notes.md`;
+  fs.mkdirSync(path.dirname(path.join(root, relativeFile)), { recursive: true });
+  fs.writeFileSync(path.join(root, relativeFile), "public notes\n");
+
+  const report = scanPublicSurface({
+    files: [relativeFile],
+    homePath: localHome,
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 1,
+    path: "captures[redacted]/notes.md",
+    rule: "local-home-path",
+  }]);
+  assert.equal(JSON.stringify(report).includes(localHome), false);
+});
+
 test("public surface scan rejects tracked broker state artifacts and ignores binary content", () => {
   const root = makeTempDir();
   fs.mkdirSync(path.join(root, "fixtures"));
