@@ -1336,6 +1336,108 @@ test("service stop reports active command drain timeout budget", async (t) => {
   service = null;
 });
 
+test("service stop closes command admission before acknowledging shutdown", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  let workerStarts = 0;
+  let holdImmediate = false;
+  const heldImmediateCallbacks = [];
+  const originalSetImmediate = global.setImmediate;
+  global.setImmediate = (callback, ...args) => {
+    if (holdImmediate) {
+      heldImmediateCallbacks.push(() => callback(...args));
+      return {
+        hasRef: () => false,
+        ref() {
+          return this;
+        },
+        unref() {
+          return this;
+        },
+      };
+    }
+    return originalSetImmediate(callback, ...args);
+  };
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker() {
+      workerStarts += 1;
+      return { ok: true };
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => {
+    holdImmediate = false;
+    global.setImmediate = originalSetImmediate;
+    for (const callback of heldImmediateCallbacks.splice(0)) {
+      callback();
+    }
+    await service.shutdown({ exitProcess: false });
+  });
+
+  const metadata = readJson(paths.serviceMetadataPath);
+  const body = JSON.stringify({
+    command: "host",
+    group: "help",
+    options: {},
+    type: "command",
+  });
+  let request = null;
+  const responsePromise = new Promise((resolve, reject) => {
+    request = http.request({
+      headers: {
+        "content-length": Buffer.byteLength(body),
+        "content-type": "application/json",
+      },
+      method: "POST",
+      path: "/v1/command",
+      socketPath: metadata.socketPath,
+    }, (response) => {
+      let responseBody = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        responseBody += chunk;
+      });
+      response.on("end", () => {
+        resolve({
+          json: JSON.parse(responseBody),
+          statusCode: response.statusCode ?? 0,
+        });
+      });
+    });
+    request.on("error", reject);
+    request.write(body.slice(0, 8));
+  });
+
+  holdImmediate = true;
+  const stop = await requestService(fixture, {
+    body: {},
+    method: "POST",
+    requestPath: "/v1/service/stop",
+  });
+  assert.equal(stop.statusCode, 200);
+  assert.equal(stop.json.ok, true);
+  assert.equal(heldImmediateCallbacks.length, 1);
+
+  request.end(body.slice(8));
+  const response = await responsePromise;
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.json.reasonCode, "service-unavailable");
+  assert.equal(workerStarts, 0);
+
+  holdImmediate = false;
+  for (const callback of heldImmediateCallbacks.splice(0)) {
+    callback();
+  }
+  await waitFor(() => !fs.existsSync(paths.serviceMetadataPath));
+});
+
 test("brokerd rejects late command worker admission during shutdown", async (t) => {
   const fixture = makeFixture();
   const paths = resolveBrokerPaths({

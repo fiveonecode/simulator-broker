@@ -1035,14 +1035,21 @@ export async function startBrokerService(paths, options = {}) {
     return commandWorker;
   }
 
-  async function shutdown({ exitProcess = true } = {}) {
+  function closeCommandAdmissionForShutdown() {
     if (shuttingDown) {
-      return;
+      return false;
     }
     shuttingDown = true;
     if (idleReconcileTimer !== null) {
       (options.clearIntervalFn ?? clearInterval)(idleReconcileTimer);
       idleReconcileTimer = null;
+    }
+    return true;
+  }
+
+  async function shutdown({ admissionAlreadyClosed = false, exitProcess = true } = {}) {
+    if (!admissionAlreadyClosed && !closeCommandAdmissionForShutdown()) {
+      return;
     }
     if (activeIdleReconciliation !== null) {
       await activeIdleReconciliation;
@@ -1201,6 +1208,7 @@ export async function startBrokerService(paths, options = {}) {
           signal: activeRequest?.controller.signal,
         });
         assertExpectedServiceIdentity(metadata, body.expectedServiceIdentity);
+        closeCommandAdmissionForShutdown();
         sendJson(response, 200, {
           activeCommandDrainTimeoutMilliseconds: activeCommandDrainTimeoutMilliseconds(),
           ok: true,
@@ -1208,7 +1216,7 @@ export async function startBrokerService(paths, options = {}) {
           stopping: true,
         }, () => {
           setImmediate(() => {
-            shutdown({ exitProcess: false }).catch((error) => {
+            shutdown({ admissionAlreadyClosed: true, exitProcess: false }).catch((error) => {
               console.error(error);
               process.exit(1);
             });

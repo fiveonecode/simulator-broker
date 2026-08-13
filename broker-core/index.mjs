@@ -4063,7 +4063,17 @@ function loadPublicSafeIdleState(loader) {
   try {
     return loader();
   } catch (error) {
-    if (error instanceof BrokerError) {
+    if (error instanceof BrokerError && error.payload?.reasonCode === "missing-host-config") {
+      const readError = new BrokerError("Idle broker state could not be read.", {
+        reasonCode: "missing-host-config",
+      });
+      Object.defineProperty(readError, "cause", {
+        configurable: true,
+        value: error,
+        writable: true,
+      });
+      throw readError;
+    } else if (error instanceof BrokerError) {
       throw error;
     }
     const readError = new BrokerError("Idle broker state could not be read.", {
@@ -4129,10 +4139,11 @@ function performIdleShutdowns(paths, state, candidates, options, timestamp, { co
         timestamp,
       });
     } catch {
+      const attemptTimestamp = nowIso(options.now);
       registryEntry.health = "repair-needed";
       registryEntry.driftReason = "idle-shutdown-failed";
-      registryEntry.updatedAt = timestamp;
-      state.registry.updatedAt = timestamp;
+      registryEntry.updatedAt = attemptTimestamp;
+      state.registry.updatedAt = attemptTimestamp;
       failureCount += 1;
       writeIdleRegistry(paths, state.registry, {
         command,
@@ -4149,12 +4160,13 @@ function performIdleShutdowns(paths, state, candidates, options, timestamp, { co
         payload: { reasonCode: "idle-shutdown-failed", source },
         projectId: null,
         purposeId: null,
-      }, timestamp);
+      }, attemptTimestamp);
       continue;
     }
+    const attemptTimestamp = nowIso(options.now);
     registryEntry.powerState = "shutdown";
-    registryEntry.lastShutdownAt = timestamp;
-    registryEntry.updatedAt = timestamp;
+    registryEntry.lastShutdownAt = attemptTimestamp;
+    registryEntry.updatedAt = attemptTimestamp;
     shutdownCount += 1;
     appendEventRecord(paths, "idle.simulator.shutdown", {
       alias: hostAlias.alias,
@@ -4164,11 +4176,12 @@ function performIdleShutdowns(paths, state, candidates, options, timestamp, { co
       payload: { reasonCode: "idle-grace-expired", source },
       projectId: null,
       purposeId: null,
-    }, timestamp);
+    }, attemptTimestamp);
   }
 
+  const completedAt = candidates.length > 0 ? nowIso(options.now) : timestamp;
   const lastCleanupResult = {
-    completedAt: timestamp,
+    completedAt,
     eligibleCount: candidates.length,
     failureCount,
     shutdownCount,
@@ -4177,7 +4190,7 @@ function performIdleShutdowns(paths, state, candidates, options, timestamp, { co
   };
   if (candidates.length > 0 || options.persistNoChanges !== false) {
     state.registry.idle.lastCleanupResult = lastCleanupResult;
-    state.registry.updatedAt = timestamp;
+    state.registry.updatedAt = completedAt;
     writeIdleRegistry(paths, state.registry, {
       command,
       eligibleCount: candidates.length,
@@ -4200,7 +4213,7 @@ function performIdleShutdowns(paths, state, candidates, options, timestamp, { co
       },
       projectId: null,
       purposeId: null,
-    }, timestamp);
+    }, completedAt);
   }
   return {
     command,

@@ -4099,6 +4099,27 @@ test("idle state read errors stay public-safe across status, reconcile, and clea
   }
 });
 
+test("missing host idle state errors stay public-safe while preserving local cause", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+
+  assert.throws(() => {
+    idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  }, (error) => {
+    const serialized = JSON.stringify(error.payload);
+    return error instanceof BrokerError
+      && error.payload?.reasonCode === "missing-host-config"
+      && error.exitCode === 2
+      && error.payload?.error === "Idle broker state could not be read."
+      && serialized.includes(paths.root) === false
+      && serialized.includes("host init") === false
+      && "hostConfigPath" in error.payload === false
+      && "suggestedCommand" in error.payload === false
+      && error.cause?.payload?.hostConfigPath === resolvedPaths.hostConfigPath
+      && error.cause?.payload?.suggestedCommand.includes(resolvedPaths.hostConfigPath);
+  });
+});
+
 test("malformed idle policy shapes reject non-number grace durations", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
@@ -4550,6 +4571,10 @@ test("confirmed idle cleanup samples operation timestamps after acquiring the lo
   const sampledTimestamps = [
     "2026-01-01T00:00:00.000Z",
     "2026-01-01T00:01:00.000Z",
+    "2026-01-01T00:02:00.000Z",
+    "2026-01-01T00:03:00.000Z",
+    "2026-01-01T00:04:00.000Z",
+    "2026-01-01T00:05:00.000Z",
   ];
 
   const result = cleanupIdleBroker(resolvedPaths, {
@@ -4562,10 +4587,14 @@ test("confirmed idle cleanup samples operation timestamps after acquiring the lo
     simctlAdapter: paths.simctl.adapter,
   });
 
-  assert.equal(result.lastCleanupResult.completedAt, "2026-01-01T00:01:00.000Z");
-  assert.equal(readJson(resolvedPaths.registryPath).aliases["ui-1"].lastShutdownAt, "2026-01-01T00:01:00.000Z");
+  const registry = readJson(resolvedPaths.registryPath);
+  assert.equal(result.lastCleanupResult.completedAt, "2026-01-01T00:05:00.000Z");
+  assert.equal(registry.aliases["ui-1"].lastShutdownAt, "2026-01-01T00:02:00.000Z");
+  assert.equal(registry.aliases["ui-2"].lastShutdownAt, "2026-01-01T00:03:00.000Z");
+  assert.equal(registry.aliases["ipad-1"].lastShutdownAt, "2026-01-01T00:04:00.000Z");
+  assert.equal(registry.updatedAt, "2026-01-01T00:05:00.000Z");
   const cleanupEvent = readEventsBroker(resolvedPaths, { type: "idle.cleanup.applied" }).events.at(-1);
-  assert.equal(cleanupEvent.timestamp, "2026-01-01T00:01:00.000Z");
+  assert.equal(cleanupEvent.timestamp, "2026-01-01T00:05:00.000Z");
 });
 
 test("idle cleanup audit append failures do not mark shut down aliases for repair", () => {
