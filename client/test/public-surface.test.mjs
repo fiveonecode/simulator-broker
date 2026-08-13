@@ -175,6 +175,30 @@ test("public surface scan applies an ignored operator denylist without echoing i
   assert.equal(JSON.stringify(report).includes(privateMarker), false);
 });
 
+test("public surface scan detects JSON slash-escaped local denylist values", () => {
+  const root = makeTempDir();
+  const privateMarker = "https://private.example.local/task/123";
+  const escapedMarker = privateMarker.replaceAll("/", String.raw`\/`);
+  fs.writeFileSync(path.join(root, ".public-safety.local"), `# local only\n${privateMarker}\n`);
+  fs.writeFileSync(path.join(root, "snapshot.json"), `{"taskUrl":"${escapedMarker}"}\n`);
+
+  const report = scanPublicSurface({
+    denylistPath: path.join(root, ".public-safety.local"),
+    files: ["snapshot.json"],
+    homePath: "",
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 1,
+    path: "snapshot.json",
+    rule: "local-denylist-rule-2",
+  }]);
+  assert.equal(JSON.stringify(report).includes(privateMarker), false);
+  assert.equal(JSON.stringify(report).includes(escapedMarker), false);
+});
+
 test("public surface scan applies local denylist values to relative filenames without echoing them", () => {
   const root = makeTempDir();
   const privateMarker = "operator-private-alias";

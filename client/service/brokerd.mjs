@@ -954,11 +954,14 @@ export async function startBrokerService(paths, options = {}) {
   let activeIdleReconciliation = null;
   let commandWorkerQueue = Promise.resolve();
   const activeCommandWorkers = new Map();
+  const activeSnapshotWorkers = new Set();
   const activeConnections = new Set();
   const activeRequests = new Set();
   const activeEventStreams = new Set();
   const runCommandWorker = options.runBrokerCommandWorker
     ?? ((request) => runBrokerCommandWorker(paths, request));
+  const runSnapshotWorker = options.runAppSnapshotWorker
+    ?? ((snapshotOptions) => runAppSnapshotWorker(paths, snapshotOptions));
 
   function trackActiveRequest(request, response) {
     const controller = new AbortController();
@@ -998,6 +1001,21 @@ export async function startBrokerService(paths, options = {}) {
 
   function runSerializedIdleReconciliation(source, args) {
     return runSerializedServiceWork(null, () => runScheduledIdleReconciliation(source, args));
+  }
+
+  function runTrackedAppSnapshotWorker(snapshotOptions) {
+    if (shuttingDown) {
+      throw new BrokerError("Broker service is shutting down.", {
+        reasonCode: "service-unavailable",
+      });
+    }
+    const snapshotWorker = Promise.resolve().then(() => runSnapshotWorker(snapshotOptions));
+    activeSnapshotWorkers.add(snapshotWorker);
+    const forgetSnapshotWorker = () => {
+      activeSnapshotWorkers.delete(snapshotWorker);
+    };
+    snapshotWorker.then(forgetSnapshotWorker, forgetSnapshotWorker);
+    return snapshotWorker;
   }
 
   function activeCommandDrainTimeoutMilliseconds(nowMilliseconds = Date.now()) {
@@ -1058,6 +1076,10 @@ export async function startBrokerService(paths, options = {}) {
       await Promise.allSettled(activeCommandWorkers.keys());
       await new Promise((resolve) => setImmediate(resolve));
     }
+    if (activeSnapshotWorkers.size > 0) {
+      await Promise.allSettled(activeSnapshotWorkers);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
     removeIfExists(paths.serviceMetadataPath);
     for (const stream of activeEventStreams) {
       stream.controller.abort();
@@ -1116,7 +1138,7 @@ export async function startBrokerService(paths, options = {}) {
       }
 
       if (request.method === "GET" && requestUrl.pathname === "/v1/app/snapshot") {
-        const payload = await runAppSnapshotWorker(paths, {
+        const payload = await runTrackedAppSnapshotWorker({
           eventLimit: parseNonNegativeIntegerQuery(requestUrl.searchParams.get("eventLimit"), "eventLimit") ?? 50,
         });
         sendJson(response, 200, {

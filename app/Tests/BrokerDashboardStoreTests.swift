@@ -207,6 +207,50 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertEqual(store.loadedState?.snapshot?.generatedAt, loadedState.snapshot?.generatedAt)
   }
 
+  func testIdleCleanupAcceptsSuccessfulFallbackRefreshAfterCommittedCommand() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let refreshError = SnapshotRefreshTestError(message: "Snapshot refresh failed once")
+    let loader = FailingOnceSnapshotLoader(error: refreshError, recoveredState: loadedState)
+    let commandClient = RecordingCommandClient()
+    await commandClient.enqueueResponse(
+      BrokerCommandEnvelope(
+        currentHolder: nil,
+        eligibleCount: 2,
+        error: nil,
+        exitCode: nil,
+        ok: true,
+        planId: "cleanup-plan",
+        reasonCode: nil,
+        requiredConfirmationFields: nil,
+        status: "changes_required",
+        unchanged: nil
+      )
+    )
+    let store = BrokerDashboardStore(
+      loader: loader,
+      commandClient: commandClient,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+
+    store.requestIdleCleanup()
+    try await waitUntil { store.pendingIdleCleanupRequest != nil }
+    store.confirmIdleCleanup()
+
+    try await waitUntil {
+      store.lastActionMessage == "Idle cleanup completed. Review the last result below."
+    }
+
+    let requests = await commandClient.requests()
+    XCTAssertEqual(requests.count, 2)
+    XCTAssertEqual(requests[1].group, "idle")
+    XCTAssertEqual(requests[1].command, "cleanup")
+    XCTAssertNil(store.lastErrorMessage)
+    let loadCount = await loader.loadCount()
+    XCTAssertEqual(loadCount, 2)
+  }
+
   func testOverrideErrorsPassThroughWithoutSettingLastErrorMessage() async throws {
     let snapshot = try loadFixture(named: "busy-snapshot")
     let loadedState = makeLoadedState(snapshot: snapshot)
@@ -1242,6 +1286,29 @@ private actor FailingSnapshotLoader: BrokerSnapshotLoading {
 
   func load() async throws -> BrokerLoadedState {
     throw error
+  }
+}
+
+private actor FailingOnceSnapshotLoader: BrokerSnapshotLoading {
+  private var count = 0
+  private let error: any Error
+  private let recoveredState: BrokerLoadedState
+
+  init(error: any Error, recoveredState: BrokerLoadedState) {
+    self.error = error
+    self.recoveredState = recoveredState
+  }
+
+  func load() async throws -> BrokerLoadedState {
+    count += 1
+    if count == 1 {
+      throw error
+    }
+    return recoveredState
+  }
+
+  func loadCount() -> Int {
+    count
   }
 }
 

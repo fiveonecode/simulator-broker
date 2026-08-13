@@ -699,16 +699,12 @@ final class BrokerDashboardStore {
         "confirmPlanId": .string(cleanup.planId),
       ]
     )
-    do {
-      try await executeMutation(
-        actionName: "idle-cleanup",
-        successMessage: "Idle cleanup completed. Review the last result below."
-      ) { [self, request] in
-        _ = try await self.commandClient.send(request)
-      }
-    } catch {
-      _ = await refresh(silent: true)
-      throw error
+    try await executeMutation(
+      actionName: "idle-cleanup",
+      successMessage: "Idle cleanup completed. Review the last result below.",
+      acceptSuccessfulRefreshRetry: true
+    ) { [self, request] in
+      _ = try await self.commandClient.send(request)
     }
   }
 
@@ -832,6 +828,7 @@ final class BrokerDashboardStore {
     actionName: String,
     alias: String? = nil,
     successMessage: String,
+    acceptSuccessfulRefreshRetry: Bool = false,
     operation: @escaping @Sendable () async throws -> Void
   ) async throws {
     logCommandStart(actionName: actionName, alias: alias)
@@ -842,10 +839,6 @@ final class BrokerDashboardStore {
 
     do {
       try await operation()
-      try await requireRefreshAfterMutation()
-      logCommandSuccess(actionName: actionName, alias: alias)
-      setActionMessage(successMessage)
-      lastErrorMessage = nil
     } catch let error as BrokerServiceCommandError where error.needsOverrideConfirmation {
       logCommandOverrideRequired(actionName: actionName, alias: alias, error: error)
       throw error
@@ -855,6 +848,30 @@ final class BrokerDashboardStore {
       lastErrorMessage = error.localizedDescription
       throw error
     }
+
+    do {
+      try await requireRefreshAfterMutation()
+    } catch {
+      if acceptSuccessfulRefreshRetry {
+        do {
+          try await requireRefreshAfterMutation(silent: true)
+          logCommandSuccess(actionName: actionName, alias: alias)
+          setActionMessage(successMessage)
+          lastErrorMessage = nil
+          return
+        } catch {
+          // Preserve the first post-commit refresh failure for diagnostics.
+        }
+      }
+      logCommandFailure(actionName: actionName, alias: alias, error: error)
+      lastActionMessage = nil
+      lastErrorMessage = error.localizedDescription
+      throw error
+    }
+
+    logCommandSuccess(actionName: actionName, alias: alias)
+    setActionMessage(successMessage)
+    lastErrorMessage = nil
   }
 
   private func performLocalAction(messageFactory: @escaping @Sendable () async throws -> String) async throws {
@@ -918,8 +935,8 @@ final class BrokerDashboardStore {
     }
   }
 
-  private func requireRefreshAfterMutation() async throws {
-    var outcome = await refresh()
+  private func requireRefreshAfterMutation(silent: Bool = false) async throws {
+    var outcome = await refresh(silent: silent)
     var followedGenerations: Set<Int> = []
 
     while true {

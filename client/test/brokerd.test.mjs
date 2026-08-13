@@ -1275,6 +1275,48 @@ test("brokerd waits for active command workers during shutdown", async (t) => {
   assert.equal(shutdownResolved, true);
 });
 
+test("brokerd waits for active app snapshot workers during shutdown", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  let resolveSnapshot = null;
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runAppSnapshotWorker() {
+      return new Promise((resolve) => {
+        resolveSnapshot = () => resolve({
+          generatedAt: "2026-01-01T00:00:00.000Z",
+        });
+      });
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => service.shutdown({ exitProcess: false }));
+
+  const request = requestServiceJson(fixture, "/v1/app/snapshot?eventLimit=10");
+  await waitFor(() => resolveSnapshot !== null);
+
+  let shutdownResolved = false;
+  const shutdownPromise = service.shutdown({ exitProcess: false }).then(() => {
+    shutdownResolved = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(shutdownResolved, false);
+
+  resolveSnapshot();
+  const response = await request;
+  await shutdownPromise;
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json.ok, true);
+  assert.equal(response.json.generatedAt, "2026-01-01T00:00:00.000Z");
+  assert.equal(shutdownResolved, true);
+});
+
 test("service stop reports active command drain timeout budget", async (t) => {
   const fixture = makeFixture();
   const paths = resolveBrokerPaths({

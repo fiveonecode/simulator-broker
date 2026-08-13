@@ -190,6 +190,15 @@ function indexOfJsonEscapedHomePath(text, value) {
   return normalizedOffset === -1 ? -1 : originalOffsets[normalizedOffset];
 }
 
+function indexOfJsonSlashNormalizedValue(text, value) {
+  if (!value.includes("/")) {
+    return text.indexOf(value);
+  }
+  const { normalized, originalOffsets } = normalizeJsonSlashEscapes(text);
+  const normalizedOffset = normalized.indexOf(value);
+  return normalizedOffset === -1 ? -1 : originalOffsets[normalizedOffset];
+}
+
 export function scanPublicSurface({
   denylistPath,
   files,
@@ -248,7 +257,7 @@ export function scanPublicSurface({
       }
     }
     for (const rule of denylistRules) {
-      const offset = text.indexOf(rule.value);
+      const offset = indexOfJsonSlashNormalizedValue(text, rule.value);
       if (offset !== -1) {
         addIssue({
           line: lineNumberForOffset(text, offset),
