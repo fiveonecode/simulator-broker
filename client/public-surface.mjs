@@ -54,7 +54,7 @@ function localDenylistRules(denylistPath) {
   }
   return fs.readFileSync(denylistPath, "utf8")
     .split(/\r?\n/u)
-    .map((value, index) => ({ index: index + 1, value: value.trim() }))
+    .map((value, index) => ({ index: index + 1, value: canonicalText(value.trim()) }))
     .filter((rule) => rule.value !== "" && !rule.value.startsWith("#"));
 }
 
@@ -191,12 +191,23 @@ function indexOfJsonEscapedHomePath(text, value) {
 }
 
 function indexOfJsonSlashNormalizedValue(text, value) {
-  if (!value.includes("/")) {
-    return text.indexOf(value);
+  let lineStartOffset = 0;
+  const canonicalValue = canonicalText(value);
+  for (const line of text.match(/[^\n]*(?:\n|$)/gu) ?? []) {
+    if (line === "") {
+      continue;
+    }
+    const { normalized } = normalizeJsonSlashEscapes(line);
+    if (canonicalText(normalized).includes(canonicalValue)) {
+      return lineStartOffset;
+    }
+    lineStartOffset += line.length;
   }
-  const { normalized, originalOffsets } = normalizeJsonSlashEscapes(text);
-  const normalizedOffset = normalized.indexOf(value);
-  return normalizedOffset === -1 ? -1 : originalOffsets[normalizedOffset];
+  return -1;
+}
+
+function canonicalText(value) {
+  return String(value).normalize("NFC");
 }
 
 export function scanPublicSurface({
@@ -215,7 +226,7 @@ export function scanPublicSurface({
   const denylistRules = localDenylistRules(resolvedDenylistPath);
   const builtInRules = [
     ...(typeof homePath === "string" && homePath.trim() !== ""
-      ? [{ label: "local-home-path", value: path.resolve(homePath) }]
+      ? [{ label: "local-home-path", value: canonicalText(path.resolve(homePath)) }]
       : []),
   ];
   const issues = [];
@@ -291,7 +302,7 @@ export function scanPublicSurface({
   };
 
   for (const relativeFile of candidateFiles) {
-    const normalizedRelativeFile = relativeFile.split(path.sep).join("/");
+    const normalizedRelativeFile = canonicalText(relativeFile.split(path.sep).join("/"));
     const diagnosticPath = diagnosticPathFor(normalizedRelativeFile);
     scanRelativePath(normalizedRelativeFile);
     if (isProhibitedTrackedArtifact(normalizedRelativeFile)) {

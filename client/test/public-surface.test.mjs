@@ -222,6 +222,31 @@ test("public surface scan applies local denylist values to relative filenames wi
   assert.equal(JSON.stringify(report).includes(privateMarker), false);
 });
 
+test("public surface scan normalizes local denylist filename matches and redaction", () => {
+  const root = makeTempDir();
+  const privateMarker = "caf\u00e9-product";
+  const decomposedMarker = privateMarker.normalize("NFD");
+  const privateFilename = `${decomposedMarker}-notes.md`;
+  fs.writeFileSync(path.join(root, ".public-safety.local"), `# local only\n${privateMarker}\n`);
+  fs.writeFileSync(path.join(root, privateFilename), "public notes\n");
+
+  const report = scanPublicSurface({
+    denylistPath: path.join(root, ".public-safety.local"),
+    files: [privateFilename],
+    homePath: "",
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 1,
+    path: "[redacted]-notes.md",
+    rule: "local-denylist-rule-2",
+  }]);
+  assert.equal(JSON.stringify(report).includes(privateMarker), false);
+  assert.equal(JSON.stringify(report).includes(decomposedMarker), false);
+});
+
 test("public surface scan applies the built-in home rule to relative filenames without echoing it", () => {
   const root = makeTempDir();
   const localHome = path.posix.join(path.posix.sep, "Users", "synthetic-operator");

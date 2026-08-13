@@ -21,7 +21,10 @@ import {
   writeAppSnapshotArtifactUnderMutationLock,
 } from "../../broker-core/index.mjs";
 import { executeBrokerCommand, streamEventsLocal } from "../command-dispatch.mjs";
-import { serviceCommandExecutionTimeoutMs } from "./service-client.mjs";
+import {
+  appSnapshotExecutionTimeoutMs,
+  serviceCommandExecutionTimeoutMs,
+} from "./service-client.mjs";
 
 const SERVICE_REQUEST_BODY_TIMEOUT_MS = 30_000;
 const SERVICE_COMMAND_BODY_MAX_BYTES = 64 * 1024;
@@ -954,7 +957,7 @@ export async function startBrokerService(paths, options = {}) {
   let activeIdleReconciliation = null;
   let commandWorkerQueue = Promise.resolve();
   const activeCommandWorkers = new Map();
-  const activeSnapshotWorkers = new Set();
+  const activeSnapshotWorkers = new Map();
   const activeConnections = new Set();
   const activeRequests = new Set();
   const activeEventStreams = new Set();
@@ -1010,7 +1013,9 @@ export async function startBrokerService(paths, options = {}) {
       });
     }
     const snapshotWorker = Promise.resolve().then(() => runSnapshotWorker(snapshotOptions));
-    activeSnapshotWorkers.add(snapshotWorker);
+    activeSnapshotWorkers.set(snapshotWorker, {
+      drainDeadlineMilliseconds: appSnapshotDrainDeadlineMilliseconds(snapshotOptions),
+    });
     const forgetSnapshotWorker = () => {
       activeSnapshotWorkers.delete(snapshotWorker);
     };
@@ -1018,12 +1023,18 @@ export async function startBrokerService(paths, options = {}) {
     return snapshotWorker;
   }
 
-  function activeCommandDrainTimeoutMilliseconds(nowMilliseconds = Date.now()) {
+  function activeWorkerDrainTimeoutMilliseconds(nowMilliseconds = Date.now()) {
     let timeoutMilliseconds = 0;
-    for (const activeWorker of activeCommandWorkers.values()) {
-      timeoutMilliseconds += Math.max(0, activeWorker.drainDeadlineMilliseconds - nowMilliseconds);
+    for (const activeWorkerGroup of [activeCommandWorkers, activeSnapshotWorkers]) {
+      for (const activeWorker of activeWorkerGroup.values()) {
+        timeoutMilliseconds += Math.max(0, activeWorker.drainDeadlineMilliseconds - nowMilliseconds);
+      }
     }
     return Math.max(0, Math.ceil(timeoutMilliseconds));
+  }
+
+  function appSnapshotDrainDeadlineMilliseconds(snapshotOptions) {
+    return Date.now() + appSnapshotExecutionTimeoutMs(snapshotOptions);
   }
 
   function commandDrainDeadlineMilliseconds(request) {
@@ -1077,7 +1088,7 @@ export async function startBrokerService(paths, options = {}) {
       await new Promise((resolve) => setImmediate(resolve));
     }
     if (activeSnapshotWorkers.size > 0) {
-      await Promise.allSettled(activeSnapshotWorkers);
+      await Promise.allSettled(activeSnapshotWorkers.keys());
       await new Promise((resolve) => setImmediate(resolve));
     }
     removeIfExists(paths.serviceMetadataPath);
@@ -1232,7 +1243,7 @@ export async function startBrokerService(paths, options = {}) {
         assertExpectedServiceIdentity(metadata, body.expectedServiceIdentity);
         closeCommandAdmissionForShutdown();
         sendJson(response, 200, {
-          activeCommandDrainTimeoutMilliseconds: activeCommandDrainTimeoutMilliseconds(),
+          activeCommandDrainTimeoutMilliseconds: activeWorkerDrainTimeoutMilliseconds(),
           ok: true,
           service: metadata,
           stopping: true,

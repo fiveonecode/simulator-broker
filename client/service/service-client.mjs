@@ -490,6 +490,15 @@ export function serviceCommandTimeoutMs(request, options = {}) {
   return serviceCommandExecutionTimeoutMs(request, options) + commandQueueTimeoutMs(request);
 }
 
+export function appSnapshotExecutionTimeoutMs(options = {}) {
+  if (options.timeoutMs !== undefined) {
+    return options.timeoutMs;
+  }
+  return DEFAULT_COMMAND_TIMEOUT_MS
+    + positiveDurationMs(options.leaseLockTimeoutMilliseconds, DEFAULT_LOCK_TIMEOUT_MS)
+    + stateLoadBudgetMs(1);
+}
+
 export function serviceStopTimeoutMs(paths, response = {}) {
   return serviceCommandTimeoutMs({
     command: "reconcile",

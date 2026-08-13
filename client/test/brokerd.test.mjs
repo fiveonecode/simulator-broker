@@ -16,7 +16,10 @@ import {
 } from "../../broker-core/containment.mjs";
 import { createDeviceRecord, createSimctlFixture } from "../../broker-core/test/support/simctl-fixture.mjs";
 import { acquireServiceStartLock, startBrokerService } from "../service/brokerd.mjs";
-import { serviceCommandExecutionTimeoutMs } from "../service/service-client.mjs";
+import {
+  appSnapshotExecutionTimeoutMs,
+  serviceCommandExecutionTimeoutMs,
+} from "../service/service-client.mjs";
 
 const CLI_PATH = path.resolve("client/bin/simbroker.mjs");
 
@@ -1374,6 +1377,58 @@ test("service stop reports active command drain timeout budget", async (t) => {
   resolveCommand();
   const commandResponse = await commandRequest;
   assert.equal(commandResponse.statusCode, 200);
+  await waitFor(() => !fs.existsSync(paths.serviceMetadataPath));
+  service = null;
+});
+
+test("service stop reports active snapshot drain timeout budget", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  const resolveSnapshots = [];
+  let service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runAppSnapshotWorker() {
+      return new Promise((resolve) => {
+        resolveSnapshots.push(() => resolve({
+          generatedAt: "2026-01-01T00:00:00.000Z",
+        }));
+      });
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => {
+    for (const resolveSnapshot of resolveSnapshots) {
+      resolveSnapshot();
+    }
+    if (service !== null) {
+      await service.shutdown({ exitProcess: false });
+    }
+  });
+
+  const firstSnapshotRequest = requestServiceJson(fixture, "/v1/app/snapshot?eventLimit=10");
+  const secondSnapshotRequest = requestServiceJson(fixture, "/v1/app/snapshot?eventLimit=10");
+  await waitFor(() => resolveSnapshots.length === 2);
+
+  const stop = await requestService(fixture, {
+    body: {},
+    method: "POST",
+    requestPath: "/v1/service/stop",
+  });
+  assert.equal(stop.statusCode, 200);
+  assert.equal(stop.json.ok, true);
+  assert.ok(stop.json.activeCommandDrainTimeoutMilliseconds > appSnapshotExecutionTimeoutMs());
+
+  for (const resolveSnapshot of resolveSnapshots) {
+    resolveSnapshot();
+  }
+  assert.equal((await firstSnapshotRequest).statusCode, 200);
+  assert.equal((await secondSnapshotRequest).statusCode, 200);
   await waitFor(() => !fs.existsSync(paths.serviceMetadataPath));
   service = null;
 });
