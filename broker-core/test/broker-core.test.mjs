@@ -5392,6 +5392,69 @@ test("idle cleanup apply does not contain stale leases excluded from the confirm
   assert.equal(readJson(paths.simctl.statePath).devices.find((device) => device.udid === idleLease.simulatorId).state, "Shutdown");
 });
 
+test("idle cleanup apply does not persist snapshot-only stale-lease registry edits", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const staleLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "dead-agent",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: 424242,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  const idleLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "idle-agent",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: idleLease.leaseId,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: () => true,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases[staleLease.alias].driftReason = "test-unhealthy";
+  registry.aliases[staleLease.alias].health = "repair-needed";
+  writeJson(resolvedPaths.registryPath, registry);
+  const staleAliasBefore = readJson(resolvedPaths.registryPath).aliases[staleLease.alias];
+
+  const preview = cleanupIdleBroker(resolvedPaths, {
+    now: "2026-01-01T02:00:00.000Z",
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(preview.eligibleCount, 1);
+
+  const result = cleanupIdleBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    apply: true,
+    confirmPlanId: preview.planId,
+    now: "2026-01-01T02:00:00.000Z",
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(result.shutdownCount, 1);
+  const staleAliasAfter = readJson(resolvedPaths.registryPath).aliases[staleLease.alias];
+  assert.equal(staleAliasAfter.activeLeaseId, staleLease.leaseId);
+  assert.equal(staleAliasAfter.lastLeaseReleasedAt, staleAliasBefore.lastLeaseReleasedAt);
+  assert.equal(staleAliasAfter.health, "repair-needed");
+  assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, `${staleLease.leaseId}.json`)), true);
+  assert.equal(readJson(paths.simctl.statePath).devices.find((device) => device.udid === idleLease.simulatorId).state, "Shutdown");
+});
+
 test("releasing a healthy lease is not blocked by unrelated stale containment failure", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);

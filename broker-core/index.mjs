@@ -4383,7 +4383,12 @@ export function cleanupIdleBroker(paths, options = {}) {
         reasonCode: "idle-plan-stale",
       });
     }
-    const result = performIdleShutdowns(paths, state, plan.candidates, {
+    const persistState = {
+      ...state,
+      registry: normalizeRegistry(readJsonIfExists(paths.registryPath), state.hostConfig, timestamp),
+    };
+    syncRegistryWithSimctl(persistState.hostConfig, persistState.registry, stateLoadOptions(options, timestamp));
+    const result = performIdleShutdowns(paths, persistState, plan.candidates, {
       ...options,
       actorId,
       actorType: "human",
