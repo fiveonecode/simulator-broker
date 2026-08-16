@@ -4375,12 +4375,8 @@ export function cleanupIdleBroker(paths, options = {}) {
   }
   return withLeaseMutationLock(paths, () => {
     const timestamp = nowIso(options.now);
-    const state = loadPublicSafeIdleState(() => loadBrokerState(paths, {
-      ...stateLoadOptions(options, timestamp),
-      registryPersistenceDetails: {
-        command: "idle.cleanup",
-      },
-    }));
+    const state = loadPublicSafeIdleState(() =>
+      readBrokerStateSnapshot(paths, stateLoadOptions(options, timestamp)));
     const plan = idleCleanupPlan(state);
     if (options.confirmPlanId !== plan.publicPlan.planId) {
       throw new BrokerError("Idle cleanup confirmation is stale; rerun preview and confirm the current plan.", {
