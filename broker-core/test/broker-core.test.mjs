@@ -3647,6 +3647,83 @@ test("app snapshot restarts idle grace in memory for unreclaimed stale leases", 
   assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, `${staleLease.leaseId}.json`)), true);
 });
 
+test("app snapshot keeps containment-aware stale leases active without restarting idle grace", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const processes = makeProcessFixture([
+    { command: "xcodebuild test SIM-UI-1", pgid: 2000, pid: 2000, ppid: 1, rssBytes: 40 * 1024 * 1024 },
+  ]);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator-idle",
+    actorType: "human",
+    graceSeconds: 60,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const firstLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-idle-first",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    processSampler: processes.sampler,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: firstLease.leaseId,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const staleLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-idle-containment",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: 999999,
+    processExists: () => true,
+    processSampler: processes.sampler,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  registerLeaseProcessBroker(resolvedPaths, {
+    command: "xcodebuild test",
+    commandPgid: 2000,
+    commandPid: 2000,
+    leaseId: staleLease.leaseId,
+    processExists: () => true,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const registryBefore = readJson(resolvedPaths.registryPath);
+
+  const snapshot = appSnapshotBroker(resolvedPaths, {
+    now: "2026-01-01T02:00:00.000Z",
+    processExists: () => false,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(snapshot.activeLeases.length, 1);
+  assert.equal(snapshot.activeLeases[0].leaseId, staleLease.leaseId);
+  assert.equal(snapshot.idle.eligibleCount, 0);
+  assert.equal(snapshot.idle.nextScheduledCleanupAt, null);
+  assert.equal(
+    snapshot.simulators.find((simulator) => simulator.alias === staleLease.alias)?.lastLeaseReleasedAt,
+    "2026-01-01T00:00:00.000Z",
+  );
+  assert.deepEqual(readJson(resolvedPaths.registryPath), registryBefore);
+  assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, `${staleLease.leaseId}.json`)), true);
+  assert.equal(processes.isAlive(2000), true);
+  assert.deepEqual(processes.actions, []);
+});
+
 test("acquire and release reuse the most recently released warm alias", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
@@ -5234,8 +5311,8 @@ test("idle cleanup preview does not reclaim stale containment-aware leases", () 
     termWaitMs: 0,
   });
 
-  assert.equal(preview.eligibleCount, 1);
-  assert.equal(preview.status, "changes_required");
+  assert.equal(preview.eligibleCount, 0);
+  assert.equal(preview.status, "no_changes");
   assert.equal(processes.isAlive(2000), true);
   assert.deepEqual(processes.actions, []);
   assert.equal(fs.existsSync(path.join(paths.stateRoot, "leases", `${lease.leaseId}.json`)), true);

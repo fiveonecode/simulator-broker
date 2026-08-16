@@ -3435,6 +3435,10 @@ function readBrokerStateSnapshot(paths, {
       leases.push(lease);
       continue;
     }
+    if (leaseHasContainmentProcessMetadata(lease)) {
+      leases.push(lease);
+      continue;
+    }
     const registryEntry = registry.aliases[lease.alias];
     if (registryEntry) {
       registryEntry.lastLeaseReleasedAt = timestamp;
