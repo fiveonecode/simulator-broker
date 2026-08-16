@@ -101,7 +101,9 @@ struct AutomaticShutdownSection: View {
   }
 
   private var graceSeconds: Int? {
-    guard let value = Int(graceSecondsText), (60 ... 86_400).contains(value) else {
+    guard let value = Int(graceSecondsText.trimmingCharacters(in: .whitespacesAndNewlines)),
+          (60 ... 86_400).contains(value)
+    else {
       return nil
     }
     return value

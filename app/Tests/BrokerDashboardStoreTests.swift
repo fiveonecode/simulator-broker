@@ -187,6 +187,71 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertNil(store.pendingIdleCleanupRequest)
   }
 
+  func testIdleCleanupPreviewWithZeroEligibleDoesNotStageConfirmation() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let commandClient = RecordingCommandClient()
+    await commandClient.enqueueResponse(
+      BrokerCommandEnvelope(
+        currentHolder: nil,
+        eligibleCount: 0,
+        error: nil,
+        exitCode: nil,
+        ok: true,
+        planId: "cleanup-plan-empty",
+        reasonCode: nil,
+        requiredConfirmationFields: nil,
+        status: "no_changes",
+        unchanged: nil
+      )
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: commandClient,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+
+    store.requestIdleCleanup()
+    try await waitUntil { store.isApplyingAction == false }
+
+    XCTAssertNil(store.pendingIdleCleanupRequest)
+    XCTAssertEqual(store.lastActionMessage, "No idle simulators are eligible right now.")
+    XCTAssertNil(store.lastErrorMessage)
+    let requests = await commandClient.requests()
+    XCTAssertEqual(requests.count, 1)
+    XCTAssertEqual(requests[0].group, "idle")
+    XCTAssertEqual(requests[0].command, "cleanup")
+    XCTAssertTrue(requests[0].options.isEmpty)
+  }
+
+  func testIdleCleanupPreviewErrorIsDiscardedAfterLeavingOverview() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let commandClient = BlockingCommandClient(
+      error: BrokerServiceCommandClientError.transportFailure("preview failed")
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: commandClient,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+    store.selectedPane = .overview
+
+    store.requestIdleCleanup()
+    try await waitUntil { await commandClient.hasPendingSend() }
+
+    store.selectedPane = .events
+    await commandClient.release()
+    try await waitUntil {
+      await commandClient.hasPendingSend() == false && store.isApplyingAction == false
+    }
+
+    XCTAssertNil(store.pendingIdleCleanupRequest)
+    XCTAssertNil(store.lastErrorMessage)
+  }
+
   func testCreatePinSendsProjectFilePathPurposeAndNote() async throws {
     let snapshot = try loadFixture(named: "busy-snapshot")
     let loadedState = makeLoadedState(snapshot: snapshot)

@@ -753,9 +753,9 @@ function serializeIdleReconciliationError(error) {
 }
 
 function deserializeIdleReconciliationError(serialized) {
-  if (serialized?.brokerError && serialized.payload) {
-    const { error: _error, ...payload } = serialized.payload;
-    const brokerError = new BrokerError(serialized.message ?? serialized.payload.error, payload);
+  if (serialized?.brokerError) {
+    const { error: _error, ...payload } = serialized.payload ?? {};
+    const brokerError = new BrokerError(serialized.message ?? serialized.payload?.error, payload);
     brokerError.stack = serialized.stack ?? brokerError.stack;
     return brokerError;
   }
@@ -767,7 +767,9 @@ function deserializeIdleReconciliationError(serialized) {
   return error;
 }
 
-function runServiceWorker(workerPayload) {
+export function runServiceWorker(workerPayload, {
+  exitErrorMessage = "Broker service worker exited before completion.",
+} = {}) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./brokerd.mjs", import.meta.url), {
       workerData: workerPayload,
@@ -791,12 +793,10 @@ function runServiceWorker(workerPayload) {
       finish(reject, error);
     });
     worker.once("exit", (code) => {
-      if (code !== 0) {
-        finish(reject, new BrokerError("Broker service worker exited before completion.", {
-          exitCode: code,
-          reasonCode: "internal-error",
-        }));
-      }
+      finish(reject, new BrokerError(exitErrorMessage, {
+        exitCode: code,
+        reasonCode: "internal-error",
+      }));
     });
     worker.unref();
   });
@@ -829,44 +829,15 @@ function shouldSurfaceServiceSnapshotRefreshError(request) {
 }
 
 function runIdleReconciliationWorker(paths, options, source, { waitForLeaseMutationLock = true } = {}) {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL("./brokerd.mjs", import.meta.url), {
-      workerData: {
-        idleReconcileOptions: options.idleReconcileOptions ?? {},
-        idleSnapshotOptions: options.idleSnapshotOptions ?? {},
-        paths,
-        source,
-        type: "idle-reconciliation",
-        waitForLeaseMutationLock,
-      },
-    });
-    let settled = false;
-    const finish = (callback, value) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      callback(value);
-    };
-    worker.once("message", (message) => {
-      if (message?.ok) {
-        finish(resolve, message.result ?? null);
-        return;
-      }
-      finish(reject, deserializeIdleReconciliationError(message?.error));
-    });
-    worker.once("error", (error) => {
-      finish(reject, error);
-    });
-    worker.once("exit", (code) => {
-      if (code !== 0) {
-        finish(reject, new BrokerError("Scheduled idle reconciliation worker exited before completion.", {
-          exitCode: code,
-          reasonCode: "internal-error",
-        }));
-      }
-    });
-    worker.unref();
+  return runServiceWorker({
+    idleReconcileOptions: options.idleReconcileOptions ?? {},
+    idleSnapshotOptions: options.idleSnapshotOptions ?? {},
+    paths,
+    source,
+    type: "idle-reconciliation",
+    waitForLeaseMutationLock,
+  }, {
+    exitErrorMessage: "Scheduled idle reconciliation worker exited before completion.",
   });
 }
 

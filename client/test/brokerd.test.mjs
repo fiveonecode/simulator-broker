@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
-import { resolveBrokerPaths } from "../../broker-core/index.mjs";
+import { BrokerError, resolveBrokerPaths } from "../../broker-core/index.mjs";
 import {
   DEFAULT_CONTAINMENT_POST_KILL_WAIT_MS,
   DEFAULT_CONTAINMENT_TERM_WAIT_MS,
@@ -15,7 +15,7 @@ import {
   STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS,
 } from "../../broker-core/containment.mjs";
 import { createDeviceRecord, createSimctlFixture } from "../../broker-core/test/support/simctl-fixture.mjs";
-import { acquireServiceStartLock, startBrokerService } from "../service/brokerd.mjs";
+import { acquireServiceStartLock, runServiceWorker, startBrokerService } from "../service/brokerd.mjs";
 import {
   appSnapshotExecutionTimeoutMs,
   serviceCommandExecutionTimeoutMs,
@@ -405,6 +405,13 @@ test("policy-enabled lease acquisition lazily starts brokerd and local-only repo
   assert.deepEqual(enabled.json.scheduler, {
     active: false,
     limitation: "service-not-running",
+  });
+  const localOnlyConfigured = runCliWithEnv(fixture, { SIMBROKER_LOCAL_ONLY: "1" }, "idle", "status");
+  assert.equal(localOnlyConfigured.status, 0, localOnlyConfigured.stderr);
+  assert.equal(localOnlyConfigured.json.configured, true);
+  assert.deepEqual(localOnlyConfigured.json.scheduler, {
+    active: false,
+    limitation: "local-only-mode",
   });
   assert.equal(runCli(fixture, "service", "status").json.running, false);
 
@@ -920,7 +927,15 @@ test("brokerd publishes service metadata only after startup snapshot refresh", a
   assert.equal(fs.existsSync(paths.serviceMetadataPath), true);
 });
 
-test("brokerd reconciles immediately, every thirty seconds, refreshes snapshots, and cancels the timer", async () => {
+test("brokerd workers reject clean exits that send no result", async () => {
+  await assert.rejects(
+    () => runServiceWorker({ type: "unknown-worker-type" }),
+    (error) => error instanceof BrokerError
+      && error.payload?.reasonCode === "internal-error",
+  );
+});
+
+test("brokerd reconciles immediately, every thirty seconds, refreshes snapshots, and cancels the timer", async (t) => {
   const fixture = makeFixture();
   const paths = resolveBrokerPaths({
     hostConfigPath: fixture.hostConfigPath,
@@ -954,6 +969,9 @@ test("brokerd reconciles immediately, every thirty seconds, refreshes snapshots,
       snapshotLockWaits.push(options.leaseMutationLockWait);
       snapshotCount += 1;
     },
+  });
+  t.after(async () => {
+    await service.shutdown({ exitProcess: false });
   });
 
   assert.deepEqual(sources, ["service-startup"]);

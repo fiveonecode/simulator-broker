@@ -108,6 +108,7 @@ function makeFixture() {
 
   return {
     hostConfigPath,
+    projectFilePath,
     repoRoot,
     root,
     simctl,
@@ -267,8 +268,16 @@ function runCliAsyncWithTimeout(fixture, envOverrides, timeoutMs, ...args) {
     child.on("error", reject);
     child.on("close", (status, signal) => {
       clearTimeout(timeout);
+      let json = null;
+      if (stdout && timedOut === false) {
+        try {
+          json = JSON.parse(stdout);
+        } catch {
+          json = null;
+        }
+      }
       resolve({
-        json: stdout ? JSON.parse(stdout) : null,
+        json,
         signal,
         status,
         stderr,
@@ -1313,6 +1322,20 @@ test("idle command requests enforce explicit policy and confirmed cleanup shapes
     actorType: "human",
     graceSeconds: 60,
   });
+
+  for (const value of ["59", "86401"]) {
+    const { flags: outOfRangeFlags } = parseArgs([
+      "--grace-seconds",
+      value,
+      "--actor-type",
+      "human",
+      "--actor-id",
+      "operator-1",
+    ]);
+    assert.throws(() => {
+      createCommandRequest({}, "idle", "enable", outOfRangeFlags);
+    }, (error) => error.payload?.reasonCode === "invalid-flag");
+  }
 
   const { flags: cleanupFlags } = parseArgs([
     "--apply",

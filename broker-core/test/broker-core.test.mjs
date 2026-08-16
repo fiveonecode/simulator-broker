@@ -3905,6 +3905,48 @@ test("candidate selection falls back to host order when either release timestamp
   assert.equal(selected.alias, "ui-1");
 });
 
+test("candidate selection stays host-ordered when any same-tier release timestamp is missing", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  const hostConfig = readJson(paths.hostConfigPath);
+  hostConfig.aliases.push({
+    alias: "ui-3",
+    capabilities: ["interactive-resettable"],
+    deviceFamily: "iPhone",
+    displayName: "UI Three",
+    iosVersion: "18.2",
+    resetPolicy: "erase-on-acquire",
+    simulatorId: "SIM-UI-3",
+  });
+  writeJson(paths.hostConfigPath, hostConfig);
+  const fixture = readJson(paths.simctl.statePath);
+  fixture.devices.push(createDeviceRecord({
+    deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+    name: "UI Three",
+    udid: "SIM-UI-3",
+  }));
+  writeJson(paths.simctl.statePath, fixture);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-1"].lastLeaseReleasedAt = "2026-01-01T00:00:01.000Z";
+  registry.aliases["ui-2"].lastLeaseReleasedAt = null;
+  registry.aliases["ui-3"].lastLeaseReleasedAt = "2026-01-01T00:00:02.000Z";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  const selected = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-mixed-release-order",
+    actorType: "agent",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+
+  assert.equal(selected.alias, "ui-1");
+});
+
 test("idle policy is absent by default, strictly bounded, and stored outside project state", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);

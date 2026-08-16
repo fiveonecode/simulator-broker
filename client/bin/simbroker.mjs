@@ -250,12 +250,14 @@ function observeChildExit(child) {
 async function waitForSpawnedService(paths, child, { timeoutMs = 5000 } = {}) {
   const startedAt = Date.now();
   const childExit = observeChildExit(child);
+  let lastExit = null;
   while (Date.now() - startedAt < timeoutMs) {
     const outcome = await Promise.race([
       probeService(paths, { timeoutMs: 250 }).then((probe) => ({ probe })),
       childExit.then((exit) => ({ exit })),
     ]);
     if (outcome.exit) {
+      lastExit = outcome.exit;
       const probe = await probeService(paths, { timeoutMs: 250 });
       if (probe) {
         return {
@@ -268,7 +270,7 @@ async function waitForSpawnedService(paths, child, { timeoutMs = 5000 } = {}) {
         continue;
       }
       return {
-        childExit: outcome.exit,
+        childExit: lastExit,
         probe: null,
       };
     }
@@ -283,6 +285,7 @@ async function waitForSpawnedService(paths, child, { timeoutMs = 5000 } = {}) {
       childExit.then((exit) => exit),
     ]);
     if (delay) {
+      lastExit = delay;
       const probe = await probeService(paths, { timeoutMs: 250 });
       if (probe) {
         return {
@@ -295,13 +298,13 @@ async function waitForSpawnedService(paths, child, { timeoutMs = 5000 } = {}) {
         continue;
       }
       return {
-        childExit: delay,
+        childExit: lastExit,
         probe: null,
       };
     }
   }
   return {
-    childExit: null,
+    childExit: lastExit,
     probe: null,
   };
 }
@@ -548,9 +551,9 @@ async function runServiceAwareRequest(paths, request) {
     if (scheduler) {
       payload.scheduler = {
         active: scheduler.active,
-        limitation: scheduler.limitation ?? (localOnlyMode(process.env)
+        limitation: localOnlyMode(process.env)
           ? "local-only-mode"
-          : (configured && !schedulerRunning ? "service-not-running" : null)),
+          : (scheduler.limitation ?? (configured && !schedulerRunning ? "service-not-running" : null)),
       };
     }
   }

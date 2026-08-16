@@ -115,6 +115,21 @@ function requirePositiveIntegerFlag(flags, key) {
   return parsed;
 }
 
+function requireBoundedIntegerFlag(flags, key, minimum, maximum) {
+  const parsed = parseIntegerFlag(flags, key);
+  if (parsed === null) {
+    throw new BrokerError(`Missing required flag --${key}.`, {
+      reasonCode: "missing-flag",
+    });
+  }
+  if (parsed < minimum || parsed > maximum) {
+    throw new BrokerError(`Flag --${key} must be an integer from ${minimum} through ${maximum}.`, {
+      reasonCode: "invalid-flag",
+    });
+  }
+  return parsed;
+}
+
 function requireNonNegativeIntegerFlag(flags, key) {
   const parsed = parseIntegerFlag(flags, key);
   if (parsed === null) {
@@ -393,7 +408,7 @@ function idleEnableOptions(flags) {
   ]));
   return {
     ...idleHumanOptions(flags),
-    graceSeconds: requirePositiveIntegerFlag(flags, "grace-seconds"),
+    graceSeconds: requireBoundedIntegerFlag(flags, "grace-seconds", 60, 86_400),
   };
 }
 

@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const LOCAL_DENYLIST_NAME = ".public-safety.local";
+const GIT_IO_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 const PROHIBITED_TRACKED_BASENAMES = new Set([
   ".DS_Store",
   LOCAL_DENYLIST_NAME,
@@ -58,8 +59,15 @@ function localDenylistRules(denylistPath) {
     .filter((rule) => rule.value !== "" && !rule.value.startsWith("#"));
 }
 
+function execGit(args, options = {}) {
+  return execFileSync("git", args, {
+    maxBuffer: GIT_IO_MAX_BUFFER_BYTES,
+    ...options,
+  });
+}
+
 function defaultCandidateFiles(root) {
-  const output = execFileSync("git", [
+  const output = execGit([
     "ls-files",
     "-z",
     "--cached",
@@ -72,7 +80,7 @@ function defaultCandidateFiles(root) {
 }
 
 function defaultCandidateIndexModes(root) {
-  const output = execFileSync("git", [
+  const output = execGit([
     "ls-files",
     "-sz",
     "--cached",
@@ -130,7 +138,7 @@ function textFileContent(filePath) {
 
 function indexBlobContent(root, relativeFile) {
   try {
-    return textContentFromBuffer(execFileSync("git", [
+    return textContentFromBuffer(execGit([
       "cat-file",
       "blob",
       `:${relativeFile}`,
@@ -304,7 +312,7 @@ export function scanPublicSurface({
   homePath = os.homedir(),
   root,
 } = {}) {
-  const resolvedRoot = path.resolve(root ?? execFileSync("git", ["rev-parse", "--show-toplevel"], {
+  const resolvedRoot = path.resolve(root ?? execGit(["rev-parse", "--show-toplevel"], {
     encoding: "utf8",
   }).trim());
   const candidateFiles = files ?? defaultCandidateFiles(resolvedRoot);

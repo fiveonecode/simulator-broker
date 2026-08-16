@@ -162,8 +162,10 @@ done
 
 validate_archive_name "$archive_name"
 
-cd "$repo_root"
-npm run verify:public-surface
+(
+  cd "$repo_root"
+  npm run verify:public-surface
+)
 
 if [[ -z "$signing_identity" ]]; then
   echo "package_distribution.sh requires --signing-identity or SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY." >&2

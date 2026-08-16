@@ -663,12 +663,21 @@ final class BrokerDashboardStore {
         guard selectedPane == .overview && previewGeneration == idleCleanupPreviewGeneration else {
           return
         }
+        if eligibleCount == 0 {
+          pendingIdleCleanupRequest = nil
+          lastErrorMessage = nil
+          setActionMessage("No idle simulators are eligible right now.")
+          return
+        }
         pendingIdleCleanupRequest = BrokerPendingIdleCleanupRequest(
           eligibleCount: eligibleCount,
           planId: planId
         )
         lastErrorMessage = nil
       } catch {
+        guard selectedPane == .overview && previewGeneration == idleCleanupPreviewGeneration else {
+          return
+        }
         lastErrorMessage = error.localizedDescription
       }
     }

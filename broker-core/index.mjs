@@ -1705,21 +1705,26 @@ function buildCandidateAnalysis({ hostConfig, registry, leasesByAlias, pinsByAli
 }
 
 function sortCandidates(candidates) {
+  const tierOf = (candidate) => {
+    if (candidate.pin) {
+      return 0;
+    }
+    return candidate.registryEntry.powerState === "booted" ? 1 : 2;
+  };
+  const releasedAt = (candidate) => Date.parse(candidate.registryEntry.lastLeaseReleasedAt ?? "");
+  const tierHasCompleteReleaseTimes = new Map();
+  for (const candidate of candidates) {
+    const tier = tierOf(candidate);
+    const complete = Number.isFinite(releasedAt(candidate));
+    tierHasCompleteReleaseTimes.set(tier, (tierHasCompleteReleaseTimes.get(tier) ?? true) && complete);
+  }
   return [...candidates].sort((left, right) => {
-    const tier = (candidate) => {
-      if (candidate.pin) {
-        return 0;
-      }
-      return candidate.registryEntry.powerState === "booted" ? 1 : 2;
-    };
-    const tierComparison = tier(left) - tier(right);
+    const tierComparison = tierOf(left) - tierOf(right);
     if (tierComparison !== 0) {
       return tierComparison;
     }
-    const leftReleasedAt = Date.parse(left.registryEntry.lastLeaseReleasedAt ?? "");
-    const rightReleasedAt = Date.parse(right.registryEntry.lastLeaseReleasedAt ?? "");
-    if (Number.isFinite(leftReleasedAt) && Number.isFinite(rightReleasedAt)) {
-      const releaseComparison = rightReleasedAt - leftReleasedAt;
+    if (tierHasCompleteReleaseTimes.get(tierOf(left))) {
+      const releaseComparison = releasedAt(right) - releasedAt(left);
       if (releaseComparison !== 0) {
         return releaseComparison;
       }
