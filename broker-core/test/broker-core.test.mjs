@@ -3589,6 +3589,64 @@ test("app snapshot preserves explicitly skipped leases with dead owners", () => 
   assert.equal(snapshot.simulators.find((simulator) => simulator.alias === lease.alias)?.activeLeaseId, lease.leaseId);
 });
 
+test("app snapshot restarts idle grace in memory for unreclaimed stale leases", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator-idle",
+    actorType: "human",
+    graceSeconds: 60,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const firstLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-idle-first",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: firstLease.leaseId,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const staleLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-idle-stale",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  const registryBefore = readJson(resolvedPaths.registryPath);
+
+  const snapshot = appSnapshotBroker(resolvedPaths, {
+    now: "2026-01-01T02:00:00.000Z",
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(snapshot.activeLeases.length, 0);
+  assert.equal(snapshot.idle.configured, true);
+  assert.equal(snapshot.idle.eligibleCount, 0);
+  assert.equal(snapshot.idle.nextScheduledCleanupAt, "2026-01-01T02:01:00.000Z");
+  assert.equal(
+    snapshot.simulators.find((simulator) => simulator.alias === staleLease.alias)?.lastLeaseReleasedAt,
+    "2026-01-01T02:00:00.000Z",
+  );
+  assert.deepEqual(readJson(resolvedPaths.registryPath), registryBefore);
+  assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, `${staleLease.leaseId}.json`)), true);
+});
+
 test("acquire and release reuse the most recently released warm alias", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
@@ -3762,6 +3820,76 @@ test("acquire reports boot failure when rollback registry persistence also fails
 
   assert.equal(fs.readdirSync(resolvedPaths.leasesDir).length, 1);
   fs.rmSync(resolvedPaths.registryPath, { force: true, recursive: true });
+});
+
+test("state load removes leftover acquire-rollback lease files without resurrecting them", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const leftoverLeaseId = "00000000-0000-4000-8000-000000000001";
+  writeJson(path.join(resolvedPaths.leasesDir, `${leftoverLeaseId}.json`), {
+    actorType: "agent",
+    alias: "ui-1",
+    leaseId: leftoverLeaseId,
+    ownerPid: process.pid,
+    projectId: "demo-app",
+    purposeId: "agent-ui-session",
+  });
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-1"].activeLeaseId = null;
+  registry.aliases["ui-1"].driftReason = "boot-on-acquire-failed";
+  registry.aliases["ui-1"].health = "repair-needed";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  hostStatusBroker(resolvedPaths, {
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(fs.readdirSync(resolvedPaths.leasesDir).length, 0);
+  const recovered = readJson(resolvedPaths.registryPath);
+  assert.equal(recovered.aliases["ui-1"].activeLeaseId, null);
+  assert.equal(recovered.aliases["ui-1"].health, "repair-needed");
+  assert.equal(recovered.aliases["ui-1"].driftReason, "boot-on-acquire-failed");
+  assert.equal(
+    readEventsBroker(resolvedPaths).events.some((event) =>
+      event.type === "lease.reclaimed"
+      && event.leaseId === leftoverLeaseId
+      && event.payload?.reasonCode === "acquire-rollback-leftover"),
+    true,
+  );
+});
+
+test("state load keeps a live lease that still matches a repair-needed registry holder", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const inProgressLeaseId = "00000000-0000-4000-8000-000000000002";
+  writeJson(path.join(resolvedPaths.leasesDir, `${inProgressLeaseId}.json`), {
+    actorType: "agent",
+    alias: "ui-1",
+    leaseId: inProgressLeaseId,
+    ownerPid: process.pid,
+    projectId: "demo-app",
+    purposeId: "agent-ui-session",
+  });
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-1"].activeLeaseId = inProgressLeaseId;
+  registry.aliases["ui-1"].driftReason = "boot-on-acquire-failed";
+  registry.aliases["ui-1"].health = "repair-needed";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  const status = hostStatusBroker(resolvedPaths, {
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, `${inProgressLeaseId}.json`)), true);
+  assert.equal(status.simulators.find((simulator) => simulator.alias === "ui-1")?.activeLeaseId, inProgressLeaseId);
 });
 
 test("acquire samples boot-on-acquire timestamps inside the mutation lock", () => {

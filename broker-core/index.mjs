@@ -3254,11 +3254,15 @@ function loadBrokerState(paths, { processExists = defaultProcessExists, registry
   const stateProcessSampler = memoizeProcessSampler(processSampler);
   const activeLeases = [];
   for (const lease of leases) {
-    if (leaseOwnerIsLive(lease, { processExists, processSampler: stateProcessSampler, timestamp })) {
+    if (skippedLeaseIds.has(lease.leaseId)) {
       activeLeases.push(lease);
       continue;
     }
-    if (skippedLeaseIds.has(lease.leaseId)) {
+    if (isLeftoverAcquireRollbackLease(lease, registry)) {
+      reclaimLeftoverAcquireRollbackLease(paths, lease, timestamp);
+      continue;
+    }
+    if (leaseOwnerIsLive(lease, { processExists, processSampler: stateProcessSampler, timestamp })) {
       activeLeases.push(lease);
       continue;
     }
@@ -3351,6 +3355,38 @@ function memoizeProcessSampler(processSampler) {
   };
 }
 
+function isLeftoverAcquireRollbackLease(lease, registry) {
+  const registryEntry = registry.aliases[lease.alias];
+  if (!registryEntry) {
+    return false;
+  }
+  if (registryEntry.health !== "repair-needed") {
+    return false;
+  }
+  if (registryEntry.driftReason !== "boot-on-acquire-failed"
+    && registryEntry.driftReason !== "reset-on-acquire-failed") {
+    return false;
+  }
+  return registryEntry.activeLeaseId !== lease.leaseId;
+}
+
+function reclaimLeftoverAcquireRollbackLease(paths, lease, timestamp) {
+  removeLeaseRecordFiles(paths, lease);
+  appendEventRecord(paths, "lease.reclaimed", {
+    alias: lease.alias,
+    actorType: lease.actorType,
+    jobId: lease.jobId ?? null,
+    leaseId: lease.leaseId,
+    payload: {
+      projectId: lease.projectId,
+      purposeId: lease.purposeId,
+      reasonCode: "acquire-rollback-leftover",
+    },
+    projectId: lease.projectId,
+    purposeId: lease.purposeId,
+  }, timestamp);
+}
+
 function leaseOwnerIsLive(lease, {
   processExists = defaultProcessExists,
   processSampler = processExists === defaultProcessExists ? defaultProcessSampler : null,
@@ -3386,9 +3422,24 @@ function readBrokerStateSnapshot(paths, {
   const pins = listJsonFiles(paths.pinsDir);
   const skippedLeaseIds = skipLeaseIds instanceof Set ? skipLeaseIds : new Set(skipLeaseIds ?? []);
   const stateProcessSampler = memoizeProcessSampler(processSampler);
-  const leases = listJsonFiles(paths.leasesDir).filter((lease) =>
-    skippedLeaseIds.has(lease.leaseId)
-      || leaseOwnerIsLive(lease, { processExists, processSampler: stateProcessSampler, timestamp }));
+  const leases = [];
+  for (const lease of listJsonFiles(paths.leasesDir)) {
+    if (skippedLeaseIds.has(lease.leaseId)) {
+      leases.push(lease);
+      continue;
+    }
+    if (isLeftoverAcquireRollbackLease(lease, registry)) {
+      continue;
+    }
+    if (leaseOwnerIsLive(lease, { processExists, processSampler: stateProcessSampler, timestamp })) {
+      leases.push(lease);
+      continue;
+    }
+    const registryEntry = registry.aliases[lease.alias];
+    if (registryEntry) {
+      registryEntry.lastLeaseReleasedAt = timestamp;
+    }
+  }
   const leasesByAlias = new Map(leases.map((lease) => [lease.alias, lease]));
   const pinsByAlias = new Map(pins.map((pin) => [pin.alias, pin]));
 
