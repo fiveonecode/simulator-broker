@@ -824,8 +824,21 @@ function serviceSnapshotRefreshError(snapshotRefresh) {
   });
 }
 
-function shouldSurfaceServiceSnapshotRefreshError(request) {
-  return !(request.group === "lease" && request.command === "acquire");
+function isIdlePolicySnapshotRefresh(snapshotRefresh) {
+  const message = snapshotRefresh?.error;
+  return snapshotRefresh?.reasonCode === "invalid-config"
+    && typeof message === "string"
+    && (message.startsWith("Idle policy") || message.startsWith("idle-policy"));
+}
+
+function shouldSurfaceServiceSnapshotRefreshError(request, snapshotRefresh) {
+  if (request.group === "lease" && request.command === "acquire") {
+    return false;
+  }
+  if (request.group !== "idle" && request.group !== "app" && isIdlePolicySnapshotRefresh(snapshotRefresh)) {
+    return false;
+  }
+  return true;
 }
 
 function runIdleReconciliationWorker(paths, options, source, { waitForLeaseMutationLock = true } = {}) {
@@ -1143,7 +1156,7 @@ export async function startBrokerService(paths, options = {}) {
         assertExpectedServiceIdentity(metadata, body.expectedServiceIdentity);
         assertCommandFreshForDispatch(paths, body);
         const payload = await runSerializedCommandWorker(body);
-        if (payload?.snapshotRefresh?.ok === false && shouldSurfaceServiceSnapshotRefreshError(body)) {
+        if (payload?.snapshotRefresh?.ok === false && shouldSurfaceServiceSnapshotRefreshError(body, payload.snapshotRefresh)) {
           throw serviceSnapshotRefreshError(payload.snapshotRefresh);
         }
         const serviceMetadata = body.group === "capacity" || body.group === "idle" ? {} : { servedBy: metadata };

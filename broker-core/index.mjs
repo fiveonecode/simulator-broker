@@ -1536,16 +1536,27 @@ function idleEligibleCandidates(state, policy, timestamp) {
   });
 }
 
+function unconfiguredIdleSummary(state) {
+  return {
+    configured: false,
+    eligibleCount: 0,
+    graceSeconds: null,
+    lastCleanupResult: state.registry.idle.lastCleanupResult,
+    nextScheduledCleanupAt: null,
+  };
+}
+
+function isIdlePolicyReadError(error) {
+  return error instanceof BrokerError
+    && (error.payload?.field === "idle-policy.graceSeconds"
+      || error.message.startsWith("Idle policy")
+      || error.message.startsWith("idle-policy"));
+}
+
 function buildIdleSummary(paths, state, timestamp) {
   const policy = readIdlePolicy(paths);
   if (!policy) {
-    return {
-      configured: false,
-      eligibleCount: 0,
-      graceSeconds: null,
-      lastCleanupResult: state.registry.idle.lastCleanupResult,
-      nextScheduledCleanupAt: null,
-    };
+    return unconfiguredIdleSummary(state);
   }
   const baseCandidates = idleBaseCandidates(state);
   const deadlines = baseCandidates
@@ -1977,7 +1988,15 @@ function createAppSnapshot(paths, state, { eventLimit = 50, timestamp } = {}) {
     aliasSnapshot(hostAlias, state.registry.aliases[hostAlias.alias], state.leasesByAlias.get(hostAlias.alias), state.pinsByAlias.get(hostAlias.alias)));
   const recentEvents = [...recentEventPayload.events]
     .sort((left, right) => sortByDescendingTimestamp(left, right, (event) => event.timestamp));
-  const idle = buildIdleSummary(paths, state, timestamp);
+  let idle;
+  try {
+    idle = buildIdleSummary(paths, state, timestamp);
+  } catch (error) {
+    if (!isIdlePolicyReadError(error)) {
+      throw error;
+    }
+    idle = unconfiguredIdleSummary(state);
+  }
 
   return {
     activeLeases,

@@ -4048,6 +4048,11 @@ test("malformed idle policy JSON maps to public-safe invalid config", () => {
   initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
   fs.writeFileSync(resolvedPaths.idlePolicyPath, "{not-json\n");
 
+  const snapshot = appSnapshotBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  assert.equal(snapshot.ok, true);
+  assert.equal(snapshot.idle.configured, false);
+  assert.equal(snapshot.idle.graceSeconds, null);
+
   for (const operation of [
     () => idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
     () => reconcileIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),

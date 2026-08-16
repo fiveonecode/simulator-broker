@@ -93,7 +93,7 @@ function isInvalidConfigBrokerError(error) {
 function canReportCommittedAcquireMetadataWarning(request, payload, error) {
   return request.group === "lease"
     && request.command === "acquire"
-    && payload?.snapshotRefresh?.ok === false
+    && payload?.lease != null
     && isInvalidConfigBrokerError(error);
 }
 

@@ -2497,7 +2497,7 @@ test("service-backed project validation maps malformed project JSON to invalid c
   assert.equal(result.json.exitCode, 2);
 });
 
-test("service-backed mutations surface malformed idle policy snapshot failures", async (t) => {
+test("service-backed mutations keep committed work when idle policy is malformed", async (t) => {
   const fixture = makeFixture();
   t.after(async () => stopServiceIfRunning(fixture));
 
@@ -2536,9 +2536,9 @@ test("service-backed mutations surface malformed idle policy snapshot failures",
     requestPath: "/v1/command",
   });
 
-  assert.equal(release.statusCode, 400);
-  assert.equal(release.json.reasonCode, "invalid-config");
-  assert.equal(release.json.exitCode, 2);
+  assert.equal(release.statusCode, 200);
+  assert.equal(release.json.ok, true);
+  assert.equal(release.json.snapshotRefresh, undefined);
   assert.equal(fs.existsSync(path.join(fixture.stateRoot, "leases", `${acquired.json.lease.leaseId}.json`)), false);
 });
 
@@ -2568,8 +2568,7 @@ test("service-backed lease acquire preserves committed leases when idle policy m
 
   assert.equal(acquired.status, 0, acquired.stderr);
   assert.equal(acquired.json.transport, "service");
-  assert.equal(acquired.json.snapshotRefresh.ok, false);
-  assert.equal(acquired.json.snapshotRefresh.reasonCode, "invalid-config");
+  assert.equal(acquired.json.snapshotRefresh, undefined);
   assert.deepEqual(acquired.json.scheduler, {
     active: false,
     limitation: "invalid-config",

@@ -872,9 +872,9 @@ test("lease acquire preserves the committed lease when idle policy metadata is m
   });
 
   assert.equal(acquired.ok, true);
-  assert.equal(acquired.snapshotRefresh.ok, false);
-  assert.equal(acquired.snapshotRefresh.reasonCode, "invalid-config");
+  assert.equal(acquired.snapshotRefresh, undefined);
   assert.equal(fs.existsSync(path.join(paths.leasesDir, `${acquired.lease.leaseId}.json`)), true);
+  assert.equal(readJson(paths.appSnapshotPath).idle.configured, false);
 });
 
 test("lease acquire CLI preserves committed leases when idle policy metadata is malformed", () => {
@@ -894,8 +894,7 @@ test("lease acquire CLI preserves committed leases when idle policy metadata is 
   );
 
   assert.equal(acquired.status, 0, acquired.stderr);
-  assert.equal(acquired.json.snapshotRefresh.ok, false);
-  assert.equal(acquired.json.snapshotRefresh.reasonCode, "invalid-config");
+  assert.equal(acquired.json.snapshotRefresh, undefined);
   assert.deepEqual(acquired.json.scheduler, {
     active: false,
     limitation: "invalid-config",
@@ -960,17 +959,11 @@ test("malformed idle policy does not break non-scheduler direct commands", () =>
 
   const hostStatus = runCli(fixture, "host", "status", "--json");
   assert.equal(hostStatus.status, 0);
-  assert.equal(hostStatus.json.snapshotRefresh.ok, false);
-  assert.equal(hostStatus.json.snapshotRefresh.reasonCode, "invalid-config");
-  assert.equal(hostStatus.json.snapshotRefresh.exitCode, 2);
-  assert.equal(JSON.stringify(hostStatus.json.snapshotRefresh).includes(fixture.root), false);
+  assert.equal(hostStatus.json.snapshotRefresh, undefined);
 
   const release = runCli(fixture, "lease", "release", "--lease-id", acquired.json.lease.leaseId, "--json");
   assert.equal(release.status, 0);
-  assert.equal(release.json.snapshotRefresh.ok, false);
-  assert.equal(release.json.snapshotRefresh.reasonCode, "invalid-config");
-  assert.equal(release.json.snapshotRefresh.exitCode, 2);
-  assert.equal(JSON.stringify(release.json.snapshotRefresh).includes(fixture.root), false);
+  assert.equal(release.json.snapshotRefresh, undefined);
 });
 
 test("final snapshot refresh propagates process sampler timeouts", () => {
