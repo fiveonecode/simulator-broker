@@ -446,7 +446,7 @@ async function stopService(paths) {
 }
 
 async function runServiceAwareRequest(paths, request) {
-  const canUseService = !localOnlyMode(process.env);
+  const canUseService = !localOnlyMode(process.env) && request.group !== "help";
   let service = canUseService
     ? await probeService(paths, { timeoutMs: serviceCommandTimeoutMs(request) })
     : null;
@@ -560,11 +560,22 @@ async function runServiceAwareRequest(paths, request) {
   return payload;
 }
 
+const invocation = parseArgs(process.argv.slice(2));
+
+function wantsJson() {
+  return invocation.flags.has("json");
+}
+
 async function main() {
-  const { flags, positionals } = parseArgs(process.argv.slice(2));
+  const { flags, positionals } = invocation;
   rejectExtraPositionals(positionals);
   const [group, command] = positionals;
   const paths = buildPaths(flags);
+
+  if (flags.has("help") || group === "help" || command === "help") {
+    const request = createCommandRequest(paths, group, command, flags);
+    return runServiceAwareRequest(paths, request);
+  }
 
   switch (`${group ?? ""}:${command ?? ""}`) {
     case "service:start":
@@ -591,11 +602,11 @@ main()
     process.stdout.write(format({
       ok: true,
       ...payload,
-    }));
+    }, { json: wantsJson() }));
   })
   .catch((error) => {
     if (error instanceof BrokerError) {
-      process.stdout.write(format(error.payload));
+      process.stdout.write(format(error.payload, { json: true }));
       process.exit(error.exitCode);
       return;
     }
@@ -606,7 +617,7 @@ main()
         exitCode,
         ok: false,
         reasonCode: error.reasonCode,
-      }));
+      }, { json: true }));
       process.exit(exitCode);
       return;
     }
@@ -617,6 +628,6 @@ main()
       ok: false,
       reasonCode: INTERNAL_ERROR_REASON_CODE,
       stack: error?.stack ?? null,
-    }));
+    }, { json: true }));
     process.exit(BROKER_EXIT_CODES.internal);
   });

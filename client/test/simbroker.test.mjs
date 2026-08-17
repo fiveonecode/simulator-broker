@@ -7,7 +7,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 
-import { createCommandRequest, executeBrokerCommand, parseArgs, streamEventsLocal } from "../command-dispatch.mjs";
+import { createCommandRequest, executeBrokerCommand, format, parseArgs, streamEventsLocal } from "../command-dispatch.mjs";
 import {
   executeServiceCommand,
   probeService,
@@ -176,8 +176,8 @@ function makeCapacityFixture() {
   };
 }
 
-function runCli(fixture, ...args) {
-  const result = spawnSync(process.execPath, [
+function spawnCli(fixture, ...args) {
+  return spawnSync(process.execPath, [
     CLI_PATH,
     "--host-config", fixture.hostConfigPath,
     "--state-root", fixture.stateRoot,
@@ -189,6 +189,10 @@ function runCli(fixture, ...args) {
       ...fixture.simctl?.env,
     },
   });
+}
+
+function runCli(fixture, ...args) {
+  const result = spawnCli(fixture, ...args);
 
   return {
     ...result,
@@ -479,7 +483,7 @@ test("doctor returns actual health data for the doctor command surface", () => {
   const initResult = runCli(fixture, "host", "init");
   assert.equal(initResult.status, 0);
 
-  const doctorResult = runCli(fixture, "doctor");
+  const doctorResult = runCli(fixture, "doctor", "--json");
   assert.equal(doctorResult.status, 0);
   assert.equal(doctorResult.json.ok, true);
   assert.deepEqual(doctorResult.json.issues, []);
@@ -488,31 +492,151 @@ test("doctor returns actual health data for the doctor command surface", () => {
 test("group help returns useful command lists for project, lease, host, and capacity", () => {
   const fixture = makeFixture();
 
-  const projectHelp = runCli(fixture, "project", "--help");
+  const projectHelp = runCli(fixture, "project", "--help", "--json");
   assert.equal(projectHelp.status, 0);
   assert.equal(projectHelp.json.ok, true);
   assert.equal(projectHelp.json.group, "project");
   assert.ok(projectHelp.json.commands.some((command) => command.includes("project forget")));
 
-  const leaseHelp = runCli(fixture, "lease", "--help");
+  const leaseHelp = runCli(fixture, "lease", "--help", "--json");
   assert.equal(leaseHelp.status, 0);
   assert.equal(leaseHelp.json.ok, true);
   assert.equal(leaseHelp.json.group, "lease");
   assert.ok(leaseHelp.json.commands.some((command) => command.includes("register-process")));
   assert.ok(leaseHelp.json.commands.some((command) => command.includes("contain")));
 
-  const hostHelp = runCli(fixture, "host", "--help");
+  const hostHelp = runCli(fixture, "host", "--help", "--json");
   assert.equal(hostHelp.status, 0);
   assert.equal(hostHelp.json.ok, true);
   assert.equal(hostHelp.json.group, "host");
   assert.ok(hostHelp.json.commands.some((command) => command.includes("host status")));
 
-  const capacityHelp = runCli(fixture, "capacity", "--help");
+  const capacityHelp = runCli(fixture, "capacity", "--help", "--json");
   assert.equal(capacityHelp.status, 0);
   assert.equal(capacityHelp.json.ok, true);
   assert.equal(capacityHelp.json.group, "capacity");
   assert.ok(capacityHelp.json.commands.some((command) => command.includes("capacity check")));
   assert.ok(capacityHelp.json.commands.some((command) => command.includes("--confirm <plan-id>")));
+});
+
+test("bare help and doctor print human text by default and JSON with --json", () => {
+  const fixture = makeFixture();
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+
+  const humanInvocations = [
+    [],
+    ["--help"],
+    ["help"],
+  ];
+
+  for (const args of humanInvocations) {
+    const result = spawnCli(fixture, ...args);
+    assert.equal(result.status, 0, result.stderr);
+    assert.notEqual(result.stdout.trimStart()[0], "{");
+    assert.match(result.stdout, /Usage:/);
+    assert.match(result.stdout, /host/);
+    assert.match(result.stdout, /Top-level commands:/);
+    assert.match(result.stdout, /doctor/);
+    assert.match(result.stdout, /simbroker <group> --help/);
+    assert.match(result.stdout, /simbroker doctor --help/);
+    assert.match(result.stdout, /--json/);
+  }
+
+  const jsonInvocations = [
+    ["--json"],
+    ["--help", "--json"],
+    ["help", "--json"],
+  ];
+
+  for (const args of jsonInvocations) {
+    const result = runCli(fixture, ...args);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.json.ok, true);
+    assert.equal(result.json.group, "global");
+    assert.equal(typeof result.json.usage, "string");
+    assert.ok(Array.isArray(result.json.commands));
+    assert.ok(result.json.commands.includes("host"));
+    assert.ok(result.json.commands.includes("doctor"));
+  }
+
+  const doctorText = spawnCli(fixture, "doctor");
+  assert.equal(doctorText.status, 0, doctorText.stderr);
+  assert.notEqual(doctorText.stdout.trimStart()[0], "{");
+  assert.match(doctorText.stdout, /Simulator Broker doctor/);
+  assert.match(doctorText.stdout, /Status: healthy/);
+  assert.match(doctorText.stdout, /Checklist:/);
+  assert.match(doctorText.stdout, /No issues found/);
+  assert.match(doctorText.stdout, /Next:/);
+
+  const doctorJson = runCli(fixture, "doctor", "--json");
+  assert.equal(doctorJson.status, 0, doctorJson.stderr);
+  assert.equal(doctorJson.json.ok, true);
+  assert.deepEqual(doctorJson.json.issues, []);
+  assert.equal(typeof doctorJson.json.hostConfigPath, "string");
+  assert.equal(typeof doctorJson.json.stateRoot, "string");
+});
+
+test("every advertised group and doctor have a working --help page", () => {
+  const fixture = makeFixture();
+  const advertised = [
+    ["host", "host status"],
+    ["project", "project forget"],
+    ["lease", "lease contain"],
+    ["capacity", "capacity check"],
+    ["idle", "idle status"],
+    ["events", "events watch"],
+    ["pin", "pin create"],
+    ["simulators", "simulators repair"],
+    ["service", "service start"],
+    ["doctor", "doctor --json"],
+  ];
+
+  for (const [group, expectedCommand] of advertised) {
+    const human = spawnCli(fixture, group, "--help");
+    assert.equal(human.status, 0, human.stderr || human.stdout);
+    assert.notEqual(human.stdout.trimStart()[0], "{");
+    assert.match(human.stdout, /Usage:/);
+    assert.match(human.stdout, new RegExp(expectedCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+    const machine = runCli(fixture, group, "--help", "--json");
+    assert.equal(machine.status, 0, machine.stderr);
+    assert.equal(machine.json.ok, true);
+    assert.equal(machine.json.group, group);
+    assert.ok(machine.json.commands.some((command) => command.includes(expectedCommand)));
+  }
+});
+
+test("doctor human formatter names unhealthy aliases and next commands", () => {
+  const text = format({
+    hostConfigPath: "/tmp/host-config.json",
+    issues: [{
+      alias: "ui-1",
+      health: "repair-needed",
+      reasonCode: "alias-unhealthy",
+    }],
+    ok: false,
+    stateRoot: "/tmp/state",
+  });
+
+  assert.notEqual(text.trimStart()[0], "{");
+  assert.match(text, /Status: needs attention/);
+  assert.match(text, /Alias ui-1: repair-needed/);
+  assert.match(text, /simbroker simulators repair --alias ui-1/);
+});
+
+test("doctor human output reports missing registry and next commands", () => {
+  const fixture = makeFixture();
+
+  const doctorText = spawnCli(fixture, "doctor");
+  assert.equal(doctorText.status, 0, doctorText.stderr);
+  assert.match(doctorText.stdout, /Status: needs attention/);
+  assert.match(doctorText.stdout, /Registry: missing/);
+  assert.match(doctorText.stdout, /simbroker host init --bootstrap-config/);
+
+  const doctorJson = runCli(makeFixture(), "doctor", "--json");
+  assert.equal(doctorJson.status, 0);
+  assert.equal(doctorJson.json.ok, false);
+  assert.ok(doctorJson.json.issues.some((issue) => issue.reasonCode === "missing-registry"));
 });
 
 test("capacity check, preview, and confirmed apply work through the direct CLI", () => {

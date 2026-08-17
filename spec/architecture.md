@@ -84,7 +84,8 @@ Does not own:
 Owns:
 
 - CLI surface for humans, agents, and shell scripts
-- stable JSON output
+- stable JSON output for mutating and status commands; `help` and `doctor`
+  default to human-readable text and keep the same payload behind `--json`
 - repo project discovery and validation
 - repo project scaffolding through `project init`
 - explicit removal of inactive local project registrations through `project forget`

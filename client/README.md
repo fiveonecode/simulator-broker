@@ -2,6 +2,10 @@
 
 CLI client and compatibility wrappers live here.
 
+Help and `doctor` print human-readable text by default. Pass `--json` for
+machine-readable payloads. Other commands still emit JSON by default so
+existing wrappers keep working.
+
 Current entrypoint:
 
 - `node client/bin/simbroker.mjs`
