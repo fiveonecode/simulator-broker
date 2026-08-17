@@ -6,6 +6,7 @@ globs:
   - LICENSE
   - README.md
   - SECURITY.md
+  - docs/**
   - examples/**/*.md
   - examples/**/.simulator-broker/*.json
   - spec/**
@@ -29,6 +30,7 @@ allowed_paths:
   - LICENSE
   - README.md
   - SECURITY.md
+  - docs/**
   - examples/**/*.md
   - examples/**/.simulator-broker/*.json
   - spec/**

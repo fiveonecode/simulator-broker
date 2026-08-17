@@ -1,5 +1,5 @@
 # Spec Index
-Related: `spec/architecture.md`, `spec/global-simulator-broker.md`, `spec/implementation-plan.md`, `spec/harness-integration.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/agents.md`, `spec/tasks/README.md`, `references/README.md`
+Related: `spec/architecture.md`, `spec/global-simulator-broker.md`, `spec/implementation-plan.md`, `spec/harness-integration.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/agents.md`, `spec/tasks/README.md`, `references/README.md`, `docs/getting-started.md`, `docs/concepts.md`
 
 ## Purpose
 
@@ -24,6 +24,7 @@ This repo exists to develop a reusable local simulator broker:
 | `spec/tasks/README.md` | Worker-ready cross-layer and macOS audit implementation tasks |
 | `spec/tasks/public-safe-on-demand-simulator-lifecycle.md` | Cross-layer contract for deterministic warm reuse and public-safe idle shutdown |
 | `references/README.md` | Public-safe reference and example policy |
+| `README.md`, `docs/getting-started.md`, `docs/concepts.md` | Public newcomer front door; not a substitute for these specs |
 
 ## Current project status
 

@@ -14,6 +14,7 @@ git diff --check -- \
   LICENSE \
   README.md \
   SECURITY.md \
+  docs \
   app \
   broker-core \
   client \
