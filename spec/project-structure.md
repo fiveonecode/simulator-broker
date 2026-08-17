@@ -9,6 +9,8 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
 - `WORKFLOW.md` — public-safe repo-owned Symphony execution, validation,
   protected-path, and handoff contract
 - `spec/` — active source of truth, including worker-ready task specs under `spec/tasks/`
+- `docs/` — public newcomer docs (getting started, concepts, status) and the
+  README screenshot; not source of truth
 - `examples/` — executable sample repos and smoke fixtures for broker adoption patterns; not source of truth
 - `references/` — public-safe reference notes; copied product snapshots are not checked in
 - `app/` — XcodeGen spec, SwiftUI source, and XCTest coverage for the macOS operator app
@@ -23,7 +25,8 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
 ## Important rule
 
 Only `spec/`, `WORKFLOW.md`, `.agents/`, and real implementation directories
-are source of truth. `examples/` are executable guidance and smoke fixtures.
+are source of truth. `docs/` is the public newcomer front door linked from
+`README.md`. `examples/` are executable guidance and smoke fixtures.
 `references/` is for seed material and comparison.
 
 ## State artifact layout

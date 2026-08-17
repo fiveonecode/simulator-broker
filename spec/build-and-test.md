@@ -68,6 +68,12 @@ Generated verification profiles:
 - `spec-only` — proof `contract`
 <!-- agent-harness-build-profiles:end -->
 
+## Public newcomer docs
+
+The public front door is `README.md` plus `docs/getting-started.md`,
+`docs/concepts.md`, and `docs/status.md`. Those pages are newcomer guidance.
+This file remains the contributor and verification contract.
+
 ## Contributor onboarding contract
 
 Use the repo-local contributor flow when the engineer already has this checkout on the target Mac.
