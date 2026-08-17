@@ -7,6 +7,12 @@ prefix="$default_prefix"
 bin_dir="${HOME}/.local/bin"
 applications_dir="${HOME}/Applications"
 install_source="distribution"
+cli_only=0
+profile_path=""
+path_persist_status="skipped"
+
+SIMBROKER_PATH_BEGIN="# >>> simulator-broker PATH >>>"
+SIMBROKER_PATH_END="# <<< simulator-broker PATH <<<"
 
 path_contains_dir() {
   local target_dir="$1"
@@ -24,6 +30,100 @@ path_contains_dir() {
 
 shell_quote() {
   printf '%q' "$1"
+}
+
+posix_single_quote() {
+  printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
+homebrew_bin_dir() {
+  if ! command -v brew >/dev/null 2>&1; then
+    return 1
+  fi
+  local brew_prefix=""
+  brew_prefix="$(brew --prefix 2>/dev/null || true)"
+  if [[ -z "$brew_prefix" ]]; then
+    return 1
+  fi
+  printf '%s\n' "$brew_prefix/bin"
+}
+
+write_path_snippet() {
+  local target_bin="$1"
+  local quoted_bin=""
+  quoted_bin="$(posix_single_quote "$target_bin")"
+  printf '%s\n' \
+    "$SIMBROKER_PATH_BEGIN" \
+    "# Managed by Simulator Broker. Do not add a second copy." \
+    "SIMBROKER_MANAGED_BIN_DIR=${quoted_bin}" \
+    'case ":$PATH:" in' \
+    '  *":${SIMBROKER_MANAGED_BIN_DIR}:"*) ;;' \
+    '  *) export PATH="${SIMBROKER_MANAGED_BIN_DIR}:$PATH" ;;' \
+    'esac' \
+    "$SIMBROKER_PATH_END"
+}
+
+persist_simbroker_path() {
+  local target_bin="$1"
+  local requested_profile="$2"
+  local brew_bin=""
+  local chosen_profile=""
+  local default_user_bin="${HOME}/.local/bin"
+
+  if brew_bin="$(homebrew_bin_dir)" && [[ "$target_bin" == "$brew_bin" ]]; then
+    path_persist_status="homebrew-prefix"
+    printf '%s\n' "PATH: $target_bin is the Homebrew prefix bin; a new login shell should already resolve simbroker."
+    return 0
+  fi
+
+  chosen_profile="$requested_profile"
+  if [[ -z "$chosen_profile" ]]; then
+    if [[ "$target_bin" != "$default_user_bin" ]]; then
+      path_persist_status="skipped-custom-bin-dir"
+      return 0
+    fi
+    if [[ "${SHELL:-}" == *zsh* ]]; then
+      chosen_profile="${HOME}/.zprofile"
+    else
+      chosen_profile="${HOME}/.profile"
+    fi
+  fi
+
+  mkdir -p "$(dirname "$chosen_profile")"
+  local snippet_file="$install_tmp_root/path-snippet.sh"
+  write_path_snippet "$target_bin" > "$snippet_file"
+  SIMBROKER_PATH_BEGIN="$SIMBROKER_PATH_BEGIN" \
+  SIMBROKER_PATH_END="$SIMBROKER_PATH_END" \
+  SIMBROKER_PATH_PROFILE="$chosen_profile" \
+  SIMBROKER_PATH_SNIPPET_FILE="$snippet_file" \
+  "$node_bin" <<'NODE'
+const fs = require("node:fs");
+
+const begin = process.env.SIMBROKER_PATH_BEGIN;
+const end = process.env.SIMBROKER_PATH_END;
+const file = process.env.SIMBROKER_PATH_PROFILE;
+const snippet = fs.readFileSync(process.env.SIMBROKER_PATH_SNIPPET_FILE, "utf8").replace(/\s*$/, "\n");
+let text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+const beginIndex = text.indexOf(begin);
+const endIndex = text.indexOf(end);
+if (beginIndex !== -1 && endIndex !== -1 && endIndex > beginIndex) {
+  let afterEnd = endIndex + end.length;
+  if (text.startsWith("\n", afterEnd)) {
+    afterEnd += 1;
+  }
+  text = `${text.slice(0, beginIndex)}${snippet}${text.slice(afterEnd)}`;
+} else {
+  if (text.length > 0 && text.endsWith("\n") === false) {
+    text += "\n";
+  }
+  text += snippet;
+}
+fs.mkdirSync(require("node:path").dirname(file), { recursive: true });
+fs.writeFileSync(file, text);
+NODE
+
+  path_persist_status="profile"
+  printf '%s\n' "PATH: wrote a guarded login-shell snippet to $chosen_profile"
 }
 
 require_supported_node() {
@@ -96,6 +196,14 @@ while [[ $# -gt 0 ]]; do
       install_source="$2"
       shift 2
       ;;
+    --cli-only)
+      cli_only=1
+      shift
+      ;;
+    --profile)
+      profile_path="$2"
+      shift 2
+      ;;
     *)
       echo "Unknown install_distribution.sh argument: $1" >&2
       exit 1
@@ -127,7 +235,7 @@ if [[ ! -f "$runtime_root/package.json" ]]; then
   exit 1
 fi
 
-if [[ ! -d "$app_source" ]]; then
+if [[ "$cli_only" -ne 1 && ! -d "$app_source" ]]; then
   echo "Missing app bundle in payload root: $app_source" >&2
   exit 1
 fi
@@ -155,11 +263,15 @@ if [[ -z "$node_bin" ]]; then
 fi
 require_supported_node "$node_bin"
 
-if [[ "$default_metadata_path" != "$metadata_path" ]]; then
+if [[ "$cli_only" -ne 1 && "$default_metadata_path" != "$metadata_path" ]]; then
   metadata_targets+=("$default_metadata_path")
 fi
 
-mkdir -p "$prefix" "$bin_dir" "$applications_dir"
+if [[ "$cli_only" -eq 1 ]]; then
+  mkdir -p "$prefix" "$bin_dir"
+else
+  mkdir -p "$prefix" "$bin_dir" "$applications_dir"
+fi
 install_tmp_root="$(mktemp -d "$prefix/.install.XXXXXX")"
 backup_root="$install_tmp_root/backup"
 staging_lib_dir="$install_tmp_root/staging/lib/simulator-broker-app"
@@ -177,7 +289,9 @@ rollback_install() {
   set +u
   if [[ "$backup_started" -eq 1 || "$commit_started" -eq 1 ]]; then
     restore_target "$lib_dir" "$backup_lib_dir"
-    restore_target "$app_destination" "$backup_app_destination"
+    if [[ "$cli_only" -ne 1 ]]; then
+      restore_target "$app_destination" "$backup_app_destination"
+    fi
     restore_target "$cli_wrapper" "$backup_cli_wrapper"
     restore_target "$env_file" "$backup_env_file"
 
@@ -205,11 +319,16 @@ finish_install() {
 }
 trap finish_install EXIT
 
-mkdir -p "$staging_lib_dir" "$(dirname "$staging_app_destination")" "$(dirname "$staging_cli_wrapper")"
+mkdir -p "$staging_lib_dir" "$(dirname "$staging_cli_wrapper")"
+if [[ "$cli_only" -ne 1 ]]; then
+  mkdir -p "$(dirname "$staging_app_destination")"
+fi
 cp -R "$runtime_root/broker-core" "$staging_lib_dir/"
 cp -R "$runtime_root/client" "$staging_lib_dir/"
 cp "$runtime_root/package.json" "$staging_lib_dir/package.json"
-cp -R "$app_source" "$staging_app_destination"
+if [[ "$cli_only" -ne 1 ]]; then
+  cp -R "$app_source" "$staging_app_destination"
+fi
 
 {
   printf '%s\n' '#!/usr/bin/env bash'
@@ -220,13 +339,20 @@ chmod +x "$staging_cli_wrapper"
 
 {
   printf 'export PATH=%s:"$PATH"\n' "$(shell_quote "$bin_dir")"
-  printf 'export SIMBROKER_APP=%s\n' "$(shell_quote "$app_destination")"
+  if [[ "$cli_only" -ne 1 ]]; then
+    printf 'export SIMBROKER_APP=%s\n' "$(shell_quote "$app_destination")"
+  fi
   printf 'export SIMBROKER_INSTALL_ROOT=%s\n' "$(shell_quote "$prefix")"
 } > "$staging_env_file"
 
 installed_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-SIMBROKER_INSTALL_APP_PATH="$app_destination" \
+installed_app_path=""
+if [[ "$cli_only" -ne 1 ]]; then
+  installed_app_path="$app_destination"
+fi
+SIMBROKER_INSTALL_APP_PATH="$installed_app_path" \
 SIMBROKER_INSTALL_BIN_DIR="$bin_dir" \
+SIMBROKER_INSTALL_CLI_ONLY="$cli_only" \
 SIMBROKER_INSTALL_CLI_PATH="$cli_wrapper" \
 SIMBROKER_INSTALL_LIB_DIR="$lib_dir" \
 SIMBROKER_INSTALL_METADATA_PATH="$staging_metadata_path" \
@@ -240,9 +366,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const metadataPath = process.env.SIMBROKER_INSTALL_METADATA_PATH;
+const cliOnly = process.env.SIMBROKER_INSTALL_CLI_ONLY === "1";
 const metadata = {
-  appPath: process.env.SIMBROKER_INSTALL_APP_PATH,
+  appPath: cliOnly ? null : process.env.SIMBROKER_INSTALL_APP_PATH,
   binDir: process.env.SIMBROKER_INSTALL_BIN_DIR,
+  cliOnly,
   cliPath: process.env.SIMBROKER_INSTALL_CLI_PATH,
   installSource: process.env.SIMBROKER_INSTALL_SOURCE,
   installedAt: process.env.SIMBROKER_INSTALLED_AT,
@@ -306,7 +434,9 @@ fi
 
 backup_started=1
 backup_existing "$lib_dir" "$backup_lib_dir"
-backup_existing "$app_destination" "$backup_app_destination"
+if [[ "$cli_only" -ne 1 ]]; then
+  backup_existing "$app_destination" "$backup_app_destination"
+fi
 backup_existing "$cli_wrapper" "$backup_cli_wrapper"
 backup_existing "$env_file" "$backup_env_file"
 
@@ -318,12 +448,18 @@ while [[ "$index" -lt "${#metadata_targets[@]}" ]]; do
   index=$((index + 1))
 done
 
-mkdir -p "$(dirname "$lib_dir")" "$(dirname "$app_destination")" "$(dirname "$cli_wrapper")" "$(dirname "$env_file")"
+if [[ "$cli_only" -eq 1 ]]; then
+  mkdir -p "$(dirname "$lib_dir")" "$(dirname "$cli_wrapper")" "$(dirname "$env_file")"
+else
+  mkdir -p "$(dirname "$lib_dir")" "$(dirname "$app_destination")" "$(dirname "$cli_wrapper")" "$(dirname "$env_file")"
+fi
 commit_started=1
 mv "$staging_lib_dir" "$lib_dir"
 maybe_fail_stage "after-runtime-swap"
-mv "$staging_app_destination" "$app_destination"
-maybe_fail_stage "after-app-swap"
+if [[ "$cli_only" -ne 1 ]]; then
+  mv "$staging_app_destination" "$app_destination"
+  maybe_fail_stage "after-app-swap"
+fi
 mv "$staging_cli_wrapper" "$cli_wrapper"
 mv "$staging_env_file" "$env_file"
 maybe_fail_stage "after-wrapper-swap"
@@ -339,15 +475,31 @@ if [[ "$service_was_running" -eq 1 ]]; then
 fi
 install_complete=1
 
-printf '%s\n' \
-  "Installed Simulator Broker." \
-  "Install source: $install_source" \
-  "CLI: $cli_wrapper" \
-  "App: $app_destination" \
-  "Env helper: $env_file"
+persist_simbroker_path "$bin_dir" "$profile_path"
+
+if [[ "$cli_only" -eq 1 ]]; then
+  printf '%s\n' \
+    "Installed Simulator Broker CLI." \
+    "Install source: $install_source" \
+    "CLI: $cli_wrapper" \
+    "Env helper: $env_file"
+else
+  printf '%s\n' \
+    "Installed Simulator Broker." \
+    "Install source: $install_source" \
+    "CLI: $cli_wrapper" \
+    "App: $app_destination" \
+    "Env helper: $env_file"
+fi
 
 if ! path_contains_dir "$bin_dir"; then
   printf '%s\n' "Warning: $bin_dir is not currently on PATH in this shell."
 fi
 
-printf '%s\n' "Next command: source \"$env_file\""
+if [[ "$path_persist_status" == "homebrew-prefix" ]]; then
+  printf '%s\n' "Next command: command -v simbroker"
+elif [[ "$path_persist_status" == "profile" ]]; then
+  printf '%s\n' "Next command: open a new login shell, then command -v simbroker"
+else
+  printf '%s\n' "Next command: source \"$env_file\""
+fi

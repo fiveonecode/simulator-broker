@@ -21,6 +21,7 @@ import {
   eraseSimulatorBroker,
   explainLeaseBroker,
   forgetKnownProjectBroker,
+  HOST_BOOTSTRAP_DEVICE_WARNING,
   hostStatusBroker,
   initBroker,
   initProjectBroker,
@@ -811,6 +812,36 @@ test("host init can bootstrap a starter host config when none exists yet", () =>
   assert.ok(status.simulators.every((simulator) => /^[0-9A-F-]{36}$/.test(simulator.simulatorId)));
   const simctlState = readJson(paths.simctl.statePath);
   assert.ok(simctlState.devices.some((device) => device.name === "Simulator Broker bootstrap-host manual-1"));
+});
+
+test("host init warns before creating bootstrap simulators", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const order = [];
+  const adapter = {
+    ...paths.simctl.adapter,
+    createDevice(name, deviceTypeId, runtimeId) {
+      order.push("create");
+      return paths.simctl.adapter.createDevice(name, deviceTypeId, runtimeId);
+    },
+  };
+
+  const result = initBroker(resolvedPaths, {
+    bootstrapConfig: true,
+    hostId: "bootstrap-warning-host",
+    processExists: () => true,
+    simctlAdapter: adapter,
+    writeBootstrapWarning(message) {
+      order.push("warn");
+      assert.equal(message, HOST_BOOTSTRAP_DEVICE_WARNING);
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.hostConfigCreated, true);
+  assert.equal(result.bootstrapWarning, HOST_BOOTSTRAP_DEVICE_WARNING);
+  assert.equal(order[0], "warn");
+  assert.ok(order.includes("create"));
 });
 
 test("host bootstrap rolls back simulators created before a later alias fails", () => {

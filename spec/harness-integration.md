@@ -38,17 +38,22 @@ Current sample coverage now includes:
 
 Recommended machine and repo onboarding order:
 
-1. Install Simulator Broker locally.
-2. Source the installed env helper so the current shell resolves `simbroker`:
+1. Install Simulator Broker locally (`bash scripts/install_local.sh --cli-only`
+   or `npm run install:local`).
+2. Verify the shell resolves the installed CLI with `command -v simbroker`.
+   After install, a new login shell should already have `simbroker` on `PATH`.
+   If this shell does not, source the env helper:
    `source "$HOME/Library/Application Support/SimulatorBroker/install/env.sh"`
-3. Verify the shell resolves the installed CLI with `command -v simbroker`.
+3. Confirm `command -v simbroker` points at the installed wrapper.
 4. Launch the app and complete host setup from the app if it shows `Set Up This Mac`.
 5. Confirm the app dashboard is live and `brokerd` is running.
 6. In each consumer repo, scaffold `.simulator-broker/project.json` with `simbroker project init --repo-root <repo>`.
 7. Validate with `simbroker project validate --repo-root <repo>`.
 8. Apply the repo harness changes from this guide or the `broker-harness-adoption` skill.
 
-If the shell still does not resolve `simbroker`, rerun the `source .../env.sh` step or use the absolute CLI path shown by the installed app.
+If the shell still does not resolve `simbroker`, open a new login shell, rerun
+the `source .../env.sh` step, or use the absolute CLI path shown by the
+installed app.
 
 ## 2. Adoption levels
 

@@ -41,7 +41,7 @@ Current implementation slice:
 - file-backed registry, lease, pin, and event authority in `broker-core/index.mjs`
 - lease containment helpers in `broker-core/containment.mjs` for process sampling, memory ceiling decisions, evidence writing, and lease-scoped termination
 - shared real-or-fixture `simctl` adapter boundary in `broker-core/simctl.mjs`
-- real simulator provisioning during `host init --bootstrap-config`
+- real simulator provisioning during `host init --bootstrap-config`, after an honest warning that real devices will be created
 - registry drift synchronization and repair rebinding through broker-managed lifecycle flows
 - reset-lock coordination for `erase-on-acquire`
 - boot-on-acquire and most-recent-release warm reuse

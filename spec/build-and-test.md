@@ -32,6 +32,9 @@ A first extracted implementation slice now exists:
 - the repo-owned macOS entrypoints now fail fast with actionable messages when `xcodegen` or `xcodebuild` is missing or misconfigured
 - local install smoke coverage for a fresh-machine-style bootstrap, service start, lease acquire, app snapshot flow, installed-app launch proof, simulator cleanup that preserves preexisting simulators, and restoration of preexisting default install metadata
 - installer coverage for stopping a running service before replacing the installed runtime, restarting it after metadata is written, shell-safe env helper serialization, and default-location install metadata for custom prefixes without leaving smoke-run paths in a developer install
+- CLI-only install through `bash scripts/install_local.sh --cli-only`, which copies the Node runtime and writes `simbroker` without XcodeGen or an app build
+- PATH persistence after install: Homebrew prefix bin when that is the install location, otherwise one guarded login-profile snippet for the default `~/.local/bin` location; `--profile` overrides the profile path so tests never edit the operator login rc
+- `host init --bootstrap-config` prints an honest warning that it creates real iOS Simulator devices before those devices are created
 - local-debug portable bundle support through a zip bundle plus package-smoke verification of the bundled install path and installed-app launch proof
 - a separate Release distribution packaging path that requires operator-supplied signing inputs, runs `codesign` plus `spctl`, optionally notarizes with `notarytool`, and writes a readiness summary JSON
 - executable `agent-harness/` changes now route through the implementation
@@ -84,14 +87,24 @@ Prerequisites:
 - `xcodegen` available on `PATH`
 - Node.js LTS available on `PATH`
 
-Canonical onboarding commands:
+Canonical CLI-only onboarding commands:
+
+```bash
+bash scripts/install_local.sh --cli-only
+command -v simbroker
+```
+
+Canonical contributor app+CLI onboarding commands:
 
 ```bash
 npm run install:local
-source "$HOME/Library/Application Support/SimulatorBroker/install/env.sh"
 command -v simbroker
 open "$HOME/Applications/Simulator Broker.app"
 ```
+
+The CLI-only path does not require `xcodegen`. After either installer, a new
+login shell should resolve `simbroker` without sourcing `env.sh`. The env
+helper remains a current-shell fallback.
 
 After the app shows the broker is ready, onboard each consumer repo with:
 
@@ -172,7 +185,9 @@ node client/bin/simbroker.mjs idle reconcile --json
 node client/bin/simbroker.mjs idle cleanup --json
 node client/bin/simbroker.mjs idle cleanup --apply --confirm <plan-id> --actor-type human --actor-id <operator-id> --json
 bash scripts/install_local.sh
+bash scripts/install_local.sh --cli-only
 bash scripts/install_distribution.sh --payload-root <payload-root>
+bash scripts/install_distribution.sh --payload-root <payload-root> --cli-only --profile <profile-path>
 bash scripts/package_distribution.sh --team-id <team-id> --signing-identity '<identity>'
 bash scripts/package_local.sh
 bash scripts/install_smoke.sh
@@ -255,7 +270,9 @@ Add stronger profiles next for:
 - `npm run test:app:focus -- <filter>` reruns one named XCTest scope and writes a stable `xcresult` bundle under `artifacts/app-tests/` unless the caller overrides the path explicitly
 - `./script/build_and_run.sh` is the canonical local macOS app run loop, stops only the app instance launched from the current checkout's built app path, and `./script/build_and_run.sh --verify` proves that built app launches as a foreground `.app`
 - `./script/build_and_run.sh --telemetry` proves the app emits filterable `AppLifecycle` and `Refresh` unified logs during a live run, while `bash scripts/test_app.sh` exercises `Setup` and `Commands` events in focused app tests
-- the installer prints the installed CLI path, app path, env helper path, any current-shell PATH warning, and the exact `source "<env-helper>"` next step after installation
+- the installer prints the installed CLI path, app path when an app was installed, env helper path, any current-shell PATH warning, PATH persist result, and the next command (`command -v simbroker` after persist, or `source "<env-helper>"` when persist is skipped)
+- `bash scripts/install_local.sh --cli-only` installs the CLI runtime without invoking `xcodegen` or `xcodebuild` and without requiring an app bundle
+- `host init --bootstrap-config` writes a warning that real Simulator devices will be created before it calls `simctl` create
 - `npm run test:install-smoke` proves a fresh-machine-style install can bootstrap host config, scaffold a repo, start the service, acquire a lease, generate an app snapshot from the installed CLI, launch the installed app bundle against the smoke fixture, assert the `SimulatorBrokerApp` process stays alive, restore any preexisting default install metadata including symlink target contents, and clean up only the simulators provisioned by the smoke run afterward
 - `npm run package:distribution` builds the app in `Release`, requires operator-supplied `SIMBROKER_DISTRIBUTION_TEAM_ID` plus `SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY`, optionally consumes `SIMBROKER_NOTARYTOOL_PROFILE`, and writes a machine-readable readiness summary under `artifacts/distribution/`
 - when notarization credentials are unavailable, `npm run package:distribution` still writes the summary JSON and tells the operator to rerun with `SIMBROKER_NOTARYTOOL_PROFILE` instead of implying the archive is Gatekeeper-ready
@@ -264,7 +281,7 @@ Add stronger profiles next for:
 - `implementation` verification passes for implementation-owned changes
 - `spec-only` verification passes for spec or harness changes
 - task-session closeout rejects stale required verification and committed path drift outside selected manifest constraints
-- README and `spec/harness-integration.md` now describe a no-hidden-step contributor onboarding path that includes sourcing the env helper before repo onboarding commands are run
+- README and `spec/harness-integration.md` now describe a no-hidden-step onboarding path: CLI-only install, persisted PATH, then repo onboarding commands. The env helper remains a current-shell fallback
 - manual CLI and service smoke artifacts are captured in the active session dir when a task changes the CLI, service, or broker core
 - manual app smoke artifacts include key window captures for overview, empty-state, simulator detail, destructive confirmation, and override-required remediation scenarios in addition to visibility states
 - app overview, simulator detail, and no-snapshot states may be launched deterministically for review with `open -na /path/to/SimulatorBrokerApp.app --args --state-root <root> [--host-config <path>] [--cli-path <path>] [--pane <pane>] [--simulator-alias <alias>]`

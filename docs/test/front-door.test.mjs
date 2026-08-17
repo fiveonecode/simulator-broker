@@ -47,6 +47,7 @@ test("README separates use-versus-develop install guidance and includes a hello-
 
   assert.ok(readme.includes("\n## Use it\n"));
   assert.ok(readme.includes("\n## Develop it\n"));
+  assert.ok(readme.includes("bash scripts/install_local.sh --cli-only"));
   assert.ok(readme.includes("npm run install:local"));
   assert.ok(readme.includes("\n## Five-minute hello world\n"));
   assert.ok(readme.includes("simbroker project init"));

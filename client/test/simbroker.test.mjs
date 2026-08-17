@@ -23,7 +23,7 @@ import {
   PROCESS_SAMPLER_TIMEOUT_MS,
   STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS,
 } from "../../broker-core/containment.mjs";
-import { readEventsBroker, resolveBrokerPaths } from "../../broker-core/index.mjs";
+import { HOST_BOOTSTRAP_DEVICE_WARNING, readEventsBroker, resolveBrokerPaths } from "../../broker-core/index.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS } from "../../broker-core/simctl.mjs";
 import { createDeviceRecord, createSimctlFixture } from "../../broker-core/test/support/simctl-fixture.mjs";
 
@@ -320,6 +320,26 @@ test("host init can bootstrap a starter host config on a fresh machine path", ()
   assert.ok(hostConfig.aliases.some((alias) => alias.alias === "ui-2"));
   assert.ok(hostConfig.aliases.some((alias) => alias.alias === "build-2"));
   assert.ok(hostConfig.aliases.every((alias) => /^[0-9A-F-]{36}$/.test(alias.simulatorId)));
+  assert.match(result.stderr, /creates real iOS Simulator devices/);
+  assert.equal(result.json.bootstrapWarning, HOST_BOOTSTRAP_DEVICE_WARNING);
+});
+
+test("host init --bootstrap-config warns on stdout-adjacent stderr before devices exist", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+
+  assert.equal(fs.existsSync(fixture.hostConfigPath), false);
+  const result = runCli(fixture, "host", "init", "--bootstrap-config", "--host-id", "warn-before-create");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /Warning: host init --bootstrap-config creates real iOS Simulator devices/);
+  assert.equal(result.json.ok, true);
+  assert.equal(result.json.hostConfigCreated, true);
+  assert.equal(result.json.bootstrapWarning, HOST_BOOTSTRAP_DEVICE_WARNING);
+  assert.match(result.stdout, /creates real iOS Simulator devices/);
 });
 
 test("host init can bootstrap a starter host config without an explicit host id", () => {
@@ -362,6 +382,8 @@ test("host init honors explicit false for force during bootstrap", () => {
   assert.equal(result.status, 0);
   assert.equal(result.json.ok, true);
   assert.equal(result.json.hostConfigCreated, false);
+  assert.equal(result.json.bootstrapWarning, undefined);
+  assert.doesNotMatch(result.stderr, /creates real iOS Simulator devices/);
   const hostConfig = JSON.parse(fs.readFileSync(fixture.hostConfigPath, "utf8"));
   assert.equal(hostConfig.aliases.length, 2);
   assert.equal(hostConfig.aliases.some((alias) => alias.alias === "build-2"), false);
@@ -597,6 +619,9 @@ test("every advertised group and doctor have a working --help page", () => {
     assert.notEqual(human.stdout.trimStart()[0], "{");
     assert.match(human.stdout, /Usage:/);
     assert.match(human.stdout, new RegExp(expectedCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    if (group === "host") {
+      assert.match(human.stdout, /creates real iOS Simulator devices/);
+    }
 
     const machine = runCli(fixture, group, "--help", "--json");
     assert.equal(machine.status, 0, machine.stderr);

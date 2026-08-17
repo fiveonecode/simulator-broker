@@ -205,7 +205,8 @@ Current implementation slice:
 - command option parsing rejects unknown flags before dispatch for lifecycle commands, lease acquire/register/contain/release, capacity commands, service control, event watches, pin mutations, and host initialization so misspelled state or routing flags cannot fall through to defaults before a destructive operation
 - boolean option parsing honors explicit `false` and rejects unsupported values for command-shaping booleans, including lease containment diagnostic capture and owner-kill controls
 - stable non-zero exit codes shared by direct CLI mode and service-backed CLI mode
-- local install, package, and smoke scripts under `scripts/`
+- local install, package, and smoke scripts under `scripts/`, including CLI-only install through `install_local.sh --cli-only` and PATH persistence through Homebrew prefix bin or one guarded login-profile line
+- `host init --bootstrap-config` warns that it creates real iOS Simulator devices before those devices are created
 
 ### `app`
 

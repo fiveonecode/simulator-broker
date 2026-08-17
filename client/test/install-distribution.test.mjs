@@ -327,6 +327,291 @@ test("install_distribution rejects unsupported Node versions before staging inst
   assert.equal(fs.existsSync(path.join(binDir, "simbroker")), false);
 });
 
+function stageCliOnlyPayload(root) {
+  const payloadRoot = path.join(root, "payload");
+  const runtimeRoot = path.join(payloadRoot, "runtime");
+  fs.mkdirSync(path.join(runtimeRoot, "broker-core"), { recursive: true });
+  fs.mkdirSync(path.join(runtimeRoot, "client", "bin"), { recursive: true });
+  writeJson(path.join(runtimeRoot, "package.json"), {
+    name: "simulator-broker-test-runtime",
+    version: "0.0.0",
+  });
+  fs.writeFileSync(path.join(runtimeRoot, "client", "bin", "simbroker.mjs"), `#!/usr/bin/env node
+if (process.argv[2] === "service" && process.argv[3] === "status") {
+  process.stdout.write(JSON.stringify({ ok: true, running: false }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({ ok: true, args: process.argv.slice(2) }) + "\\n");
+`);
+  fs.chmodSync(path.join(runtimeRoot, "client", "bin", "simbroker.mjs"), 0o755);
+  return payloadRoot;
+}
+
+function countPathBlocks(profileText) {
+  return (profileText.match(/# >>> simulator-broker PATH >>>/g) ?? []).length;
+}
+
+test("install_distribution --cli-only installs the CLI without an app bundle", () => {
+  const root = makeTempDir();
+  const payloadRoot = stageCliOnlyPayload(root);
+  const prefix = path.join(root, "prefix");
+  const binDir = path.join(root, "bin");
+  const applicationsDir = path.join(root, "Applications");
+
+  const result = spawnSync("bash", [
+    path.resolve("scripts/install_distribution.sh"),
+    "--payload-root",
+    payloadRoot,
+    "--prefix",
+    prefix,
+    "--bin-dir",
+    binDir,
+    "--applications-dir",
+    applicationsDir,
+    "--cli-only",
+    "--install-source",
+    "cli-only-test",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Installed Simulator Broker CLI/);
+  assert.equal(result.stdout.includes("xcodegen"), false);
+  assert.equal(result.stdout.includes("xcodebuild"), false);
+  const cliPath = path.join(binDir, "simbroker");
+  assert.equal(fs.existsSync(cliPath), true);
+  assert.equal(Boolean(fs.statSync(cliPath).mode & 0o111), true);
+  assert.equal(fs.existsSync(path.join(applicationsDir, "Simulator Broker.app")), false);
+  const metadata = JSON.parse(fs.readFileSync(path.join(prefix, "install.json"), "utf8"));
+  assert.equal(metadata.cliOnly, true);
+  assert.equal(metadata.appPath, null);
+  assert.equal(metadata.cliPath, cliPath);
+  assert.equal(fs.existsSync(path.join(root, "Library/Application Support/SimulatorBroker/install/install.json")), false);
+
+  const help = spawnSync(cliPath, ["--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0, help.stderr);
+});
+
+test("install_distribution persists PATH once to an isolated profile", () => {
+  const root = makeTempDir();
+  const payloadRoot = stageCliOnlyPayload(root);
+  const prefix = path.join(root, "prefix");
+  const binDir = path.join(root, "bin");
+  const profilePath = path.join(root, "profile", "zprofile");
+  const envMarker = path.join(root, "profile-command-was-not-expanded");
+  const quotedBinDir = path.join(root, `bin $(touch ${envMarker}) "quoted"`);
+
+  const runInstall = () => spawnSync("bash", [
+    path.resolve("scripts/install_distribution.sh"),
+    "--payload-root",
+    payloadRoot,
+    "--prefix",
+    prefix,
+    "--bin-dir",
+    quotedBinDir,
+    "--cli-only",
+    "--profile",
+    profilePath,
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+    },
+  });
+
+  const first = runInstall();
+  assert.equal(first.status, 0, first.stderr);
+  const second = runInstall();
+  assert.equal(second.status, 0, second.stderr);
+  const profileText = fs.readFileSync(profilePath, "utf8");
+  assert.equal(countPathBlocks(profileText), 1);
+  assert.match(profileText, /# >>> simulator-broker PATH >>>/);
+  assert.match(profileText, /# <<< simulator-broker PATH <<</);
+  assert.equal(fs.existsSync(envMarker), false);
+
+  const sourced = spawnSync("bash", [
+    "-c",
+    'source "$1"; printf "%s\\n" "$PATH"',
+    "bash",
+    profilePath,
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: "/usr/bin:/bin",
+    },
+  });
+  assert.equal(sourced.status, 0, sourced.stderr);
+  assert.equal(sourced.stdout.split(":")[0], quotedBinDir);
+  assert.equal(fs.existsSync(envMarker), false);
+});
+
+test("install_distribution does not edit a login profile for a custom bin-dir unless --profile is set", () => {
+  const root = makeTempDir();
+  const payloadRoot = stageCliOnlyPayload(root);
+  const prefix = path.join(root, "prefix");
+  const binDir = path.join(root, "bin");
+  const defaultProfile = path.join(root, ".zprofile");
+
+  const result = spawnSync("bash", [
+    path.resolve("scripts/install_distribution.sh"),
+    "--payload-root",
+    payloadRoot,
+    "--prefix",
+    prefix,
+    "--bin-dir",
+    binDir,
+    "--cli-only",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      SHELL: "/bin/zsh",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.existsSync(defaultProfile), false);
+});
+
+test("install_local --cli-only copies runtime without invoking XcodeGen or xcodebuild", () => {
+  const root = makeTempDir();
+  const prefix = path.join(root, "prefix");
+  const binDir = path.join(root, "bin");
+  const profilePath = path.join(root, "isolated.zprofile");
+  const fakePathDir = path.join(root, "fake-path");
+  const invokedMarker = path.join(root, "xcode-was-invoked");
+  fs.mkdirSync(fakePathDir, { recursive: true });
+  for (const tool of ["xcodegen", "xcodebuild"]) {
+    const toolPath = path.join(fakePathDir, tool);
+    fs.writeFileSync(toolPath, [
+      "#!/usr/bin/env bash",
+      `printf '%s\\n' '${tool}' >> '${invokedMarker}'`,
+      "exit 99",
+      "",
+    ].join("\n"));
+    fs.chmodSync(toolPath, 0o755);
+  }
+
+  const result = spawnSync("bash", [
+    path.resolve("scripts/install_local.sh"),
+    "--cli-only",
+    "--prefix",
+    prefix,
+    "--bin-dir",
+    binDir,
+    "--profile",
+    profilePath,
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      PATH: `${fakePathDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.existsSync(invokedMarker), false);
+  assert.equal(result.stdout.includes("xcodegen"), false);
+  assert.equal(result.stdout.includes("xcodebuild"), false);
+  const cliPath = path.join(binDir, "simbroker");
+  assert.equal(fs.existsSync(cliPath), true);
+  assert.equal(Boolean(fs.statSync(cliPath).mode & 0o111), true);
+  assert.equal(countPathBlocks(fs.readFileSync(profilePath, "utf8")), 1);
+
+  const help = spawnSync(cliPath, ["--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0, help.stderr);
+  assert.notEqual(help.stdout.trimStart()[0], "{");
+  assert.match(help.stdout, /Usage:/);
+});
+
+test("install_local --cli-only prefers a writable Homebrew prefix bin when --bin-dir is omitted", () => {
+  const root = makeTempDir();
+  const prefix = path.join(root, "prefix");
+  const brewPrefix = path.join(root, "opt", "homebrew");
+  const brewBin = path.join(brewPrefix, "bin");
+  const fakePathDir = path.join(root, "fake-path");
+  fs.mkdirSync(brewBin, { recursive: true });
+  fs.mkdirSync(fakePathDir, { recursive: true });
+  fs.writeFileSync(path.join(fakePathDir, "brew"), [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    'if [[ "${1:-}" == "--prefix" ]]; then',
+    `  printf '%s\\n' '${brewPrefix}'`,
+    "  exit 0",
+    "fi",
+    "exit 1",
+    "",
+  ].join("\n"));
+  fs.chmodSync(path.join(fakePathDir, "brew"), 0o755);
+
+  const result = spawnSync("bash", [
+    path.resolve("scripts/install_local.sh"),
+    "--cli-only",
+    "--prefix",
+    prefix,
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      PATH: `${fakePathDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.existsSync(path.join(brewBin, "simbroker")), true);
+  assert.match(result.stdout, /Homebrew prefix bin/);
+  assert.equal(fs.existsSync(path.join(root, ".zprofile")), false);
+});
+
+test("install_local --cli-only does not rewrite the live default install metadata", () => {
+  const root = makeTempDir();
+  const prefix = path.join(root, "isolated-prefix");
+  const binDir = path.join(root, "isolated-bin");
+  const profilePath = path.join(root, "isolated.zprofile");
+  const liveMetadata = path.join(
+    process.env.HOME,
+    "Library/Application Support/SimulatorBroker/install/install.json",
+  );
+  const before = fs.existsSync(liveMetadata)
+    ? {
+      content: fs.readFileSync(liveMetadata),
+      mtimeNs: fs.statSync(liveMetadata).mtimeNs,
+    }
+    : null;
+
+  const result = spawnSync("bash", [
+    path.resolve("scripts/install_local.sh"),
+    "--cli-only",
+    "--prefix",
+    prefix,
+    "--bin-dir",
+    binDir,
+    "--profile",
+    profilePath,
+  ], {
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  if (before === null) {
+    assert.equal(fs.existsSync(liveMetadata), false);
+  } else {
+    const after = fs.statSync(liveMetadata);
+    assert.equal(after.mtimeNs, before.mtimeNs);
+    assert.deepEqual(fs.readFileSync(liveMetadata), before.content);
+  }
+});
+
 test("package_distribution rejects symlinks copied into the runtime payload", (t) => {
   const root = makeTempDir();
   const outputDir = path.join(root, "out");

@@ -22,7 +22,8 @@ This Alpha already includes:
 - a macOS operator app with Overview, Simulators, Projects, and Events
 - a broker-owned `app-snapshot.json` read model
 - app-driven first-run setup and per-repo onboarding commands
-- local install through `npm run install:local`
+- CLI-only install through `bash scripts/install_local.sh --cli-only`, plus
+  the contributor app+CLI path `npm run install:local`
 - local-debug packaging through `npm run package:local`
 - signed distribution packaging through `npm run package:distribution`
 - `simbroker project init` for `.simulator-broker/project.json`
