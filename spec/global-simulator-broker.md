@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.14.0`
-> **Last Updated:** `2026-08-10`
+> **Version:** `0.14.1`
+> **Last Updated:** `2026-08-18`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -175,7 +175,8 @@ Current implementation slice:
 Must own:
 
 - stable human and agent CLI
-- stable JSON output
+- stable JSON output for mutating and status commands; `help` and `doctor`
+  default to human-readable text and keep the same payload behind `--json`
 - repo project discovery and validation
 - structured explain and denial reporting
 - compatibility shims for repo-owned wrappers
@@ -536,6 +537,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.14.1 | 2026-08-18 | Help and doctor default to human-readable text; `--json` keeps the stable machine payload. |
 | 0.14.0 | 2026-08-10 | Replaced lease rotation with deterministic warm reuse, required boot-on-acquire, and added opt-in public-safe idle lifecycle, scheduler, cleanup, app, and verification contracts. |
 | 0.13.13 | 2026-08-10 | Added locked, explicit, idempotent cleanup for inactive local project registrations with lease/pin conflict protection and snapshot refresh. |
 | 0.13.12 | 2026-08-04 | Clarified startup-lock sampler timeout coverage, per-state-load stale containment budget retries, deterministic snapshot host-config fixtures, and non-remediable erase conflicts. |

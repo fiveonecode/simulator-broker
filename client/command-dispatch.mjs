@@ -325,14 +325,23 @@ function formatHelpText(payload) {
   ];
 
   if (payload.group === "global") {
+    const topLevel = new Set(["doctor"]);
+    const groups = payload.commands.filter((command) => !topLevel.has(command));
+    const topLevelCommands = payload.commands.filter((command) => topLevel.has(command));
     lines.push("Command groups:");
-    for (const command of payload.commands) {
+    for (const command of groups) {
       lines.push(`  ${command}`);
+    }
+    if (topLevelCommands.length > 0) {
+      lines.push("", "Top-level commands:");
+      for (const command of topLevelCommands) {
+        lines.push(`  ${command}`);
+      }
     }
     lines.push(
       "",
       "Use `simbroker <group> --help` for the commands in a group.",
-      "Use `simbroker doctor` to check this Mac.",
+      "Use `simbroker doctor --help` for doctor usage.",
     );
   } else {
     lines.push("Commands:");
@@ -624,6 +633,49 @@ function helpPayload(group) {
       ],
       group: "lease",
       usage: "simbroker lease <command>",
+    },
+    events: {
+      commands: [
+        "events watch [--follow] [--json-lines] [--limit <n>] [--after-event-id <id>]",
+      ],
+      group: "events",
+      usage: "simbroker events <command>",
+    },
+    pin: {
+      commands: [
+        "pin create --purpose <purpose> --alias <alias> [--repo-root <repo>] [--note <note>]",
+        "pin clear --alias <alias>",
+      ],
+      group: "pin",
+      usage: "simbroker pin <command>",
+    },
+    simulators: {
+      commands: [
+        "simulators list",
+        "simulators boot --alias <alias>",
+        "simulators shutdown --alias <alias>",
+        "simulators erase --alias <alias>",
+        "simulators repair --alias <alias>",
+      ],
+      group: "simulators",
+      usage: "simbroker simulators <command>",
+    },
+    service: {
+      commands: [
+        "service start",
+        "service status",
+        "service stop",
+      ],
+      group: "service",
+      usage: "simbroker service <command>",
+    },
+    doctor: {
+      commands: [
+        "doctor",
+        "doctor --json",
+      ],
+      group: "doctor",
+      usage: "simbroker doctor [--json]",
     },
   };
   return {
@@ -1129,6 +1181,11 @@ export function executeBrokerCommand(paths, request) {
     case "help:lease":
     case "help:capacity":
     case "help:idle":
+    case "help:events":
+    case "help:pin":
+    case "help:simulators":
+    case "help:service":
+    case "help:doctor":
       return helpPayload(request.command);
     case "doctor:status":
       payload = doctorBroker(paths, options);

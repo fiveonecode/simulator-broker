@@ -7,7 +7,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 
-import { createCommandRequest, executeBrokerCommand, parseArgs, streamEventsLocal } from "../command-dispatch.mjs";
+import { createCommandRequest, executeBrokerCommand, format, parseArgs, streamEventsLocal } from "../command-dispatch.mjs";
 import {
   executeServiceCommand,
   probeService,
@@ -535,7 +535,10 @@ test("bare help and doctor print human text by default and JSON with --json", ()
     assert.notEqual(result.stdout.trimStart()[0], "{");
     assert.match(result.stdout, /Usage:/);
     assert.match(result.stdout, /host/);
+    assert.match(result.stdout, /Top-level commands:/);
     assert.match(result.stdout, /doctor/);
+    assert.match(result.stdout, /simbroker <group> --help/);
+    assert.match(result.stdout, /simbroker doctor --help/);
     assert.match(result.stdout, /--json/);
   }
 
@@ -571,6 +574,54 @@ test("bare help and doctor print human text by default and JSON with --json", ()
   assert.deepEqual(doctorJson.json.issues, []);
   assert.equal(typeof doctorJson.json.hostConfigPath, "string");
   assert.equal(typeof doctorJson.json.stateRoot, "string");
+});
+
+test("every advertised group and doctor have a working --help page", () => {
+  const fixture = makeFixture();
+  const advertised = [
+    ["host", "host status"],
+    ["project", "project forget"],
+    ["lease", "lease contain"],
+    ["capacity", "capacity check"],
+    ["idle", "idle status"],
+    ["events", "events watch"],
+    ["pin", "pin create"],
+    ["simulators", "simulators repair"],
+    ["service", "service start"],
+    ["doctor", "doctor --json"],
+  ];
+
+  for (const [group, expectedCommand] of advertised) {
+    const human = spawnCli(fixture, group, "--help");
+    assert.equal(human.status, 0, human.stderr || human.stdout);
+    assert.notEqual(human.stdout.trimStart()[0], "{");
+    assert.match(human.stdout, /Usage:/);
+    assert.match(human.stdout, new RegExp(expectedCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+    const machine = runCli(fixture, group, "--help", "--json");
+    assert.equal(machine.status, 0, machine.stderr);
+    assert.equal(machine.json.ok, true);
+    assert.equal(machine.json.group, group);
+    assert.ok(machine.json.commands.some((command) => command.includes(expectedCommand)));
+  }
+});
+
+test("doctor human formatter names unhealthy aliases and next commands", () => {
+  const text = format({
+    hostConfigPath: "/tmp/host-config.json",
+    issues: [{
+      alias: "ui-1",
+      health: "repair-needed",
+      reasonCode: "alias-unhealthy",
+    }],
+    ok: false,
+    stateRoot: "/tmp/state",
+  });
+
+  assert.notEqual(text.trimStart()[0], "{");
+  assert.match(text, /Status: needs attention/);
+  assert.match(text, /Alias ui-1: repair-needed/);
+  assert.match(text, /simbroker simulators repair --alias ui-1/);
 });
 
 test("doctor human output reports missing registry and next commands", () => {

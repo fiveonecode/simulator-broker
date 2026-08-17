@@ -446,7 +446,7 @@ async function stopService(paths) {
 }
 
 async function runServiceAwareRequest(paths, request) {
-  const canUseService = !localOnlyMode(process.env);
+  const canUseService = !localOnlyMode(process.env) && request.group !== "help";
   let service = canUseService
     ? await probeService(paths, { timeoutMs: serviceCommandTimeoutMs(request) })
     : null;
@@ -571,6 +571,11 @@ async function main() {
   rejectExtraPositionals(positionals);
   const [group, command] = positionals;
   const paths = buildPaths(flags);
+
+  if (flags.has("help") || group === "help" || command === "help") {
+    const request = createCommandRequest(paths, group, command, flags);
+    return runServiceAwareRequest(paths, request);
+  }
 
   switch (`${group ?? ""}:${command ?? ""}`) {
     case "service:start":
