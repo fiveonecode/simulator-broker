@@ -7,20 +7,26 @@ import path from "node:path";
 import {
   acquireLeaseBroker,
   appSnapshotBroker,
+  appSnapshotBrokerUnderMutationLock,
   BrokerError,
   bootSimulatorBroker,
   checkCapacityBroker,
   clearPinBroker,
+  cleanupIdleBroker,
   containLeaseBroker,
   createPinBroker,
+  disableIdlePolicyBroker,
   doctorBroker,
+  enableIdlePolicyBroker,
   eraseSimulatorBroker,
   explainLeaseBroker,
   forgetKnownProjectBroker,
   hostStatusBroker,
   initBroker,
   initProjectBroker,
+  idleStatusBroker,
   readEventsBroker,
+  reconcileIdleBroker,
   registerLeaseProcessBroker,
   reconcileCapacityBroker,
   repairSimulatorBroker,
@@ -1292,6 +1298,43 @@ test("system simctl boot propagates nonzero command results", () => {
   assert.throws(() => {
     adapter.bootDevice("SIM-FAIL");
   }, (error) => error.exitCode === 60 && error.stderr === "Unable to boot device");
+});
+
+test("system simctl boot waits for boot status before returning", () => {
+  const calls = [];
+  const adapter = createSystemSimctlAdapter({
+    commandRunner(args, options) {
+      calls.push({ args, options });
+      return "";
+    },
+  });
+
+  adapter.bootDevice("SIM-BOOT");
+
+  assert.deepEqual(calls.map((call) => call.args), [
+    ["boot", "SIM-BOOT"],
+    ["bootstatus", "SIM-BOOT", "-b"],
+  ]);
+  assert.equal(calls[0].options.allowFailure, true);
+  assert.equal(calls[0].options.timeoutMs, SIMCTL_COMMAND_TIMEOUT_MS);
+  assert.equal(calls[1].options.timeoutMs, SIMCTL_COMMAND_TIMEOUT_MS);
+});
+
+test("system simctl warm readiness waits for boot status", () => {
+  const calls = [];
+  const adapter = createSystemSimctlAdapter({
+    commandRunner(args, options) {
+      calls.push({ args, options });
+      return "";
+    },
+  });
+
+  adapter.waitForBooted("SIM-WARM");
+
+  assert.deepEqual(calls.map((call) => call.args), [
+    ["bootstatus", "SIM-WARM", "-b"],
+  ]);
+  assert.equal(calls[0].options.timeoutMs, SIMCTL_COMMAND_TIMEOUT_MS);
 });
 
 test("system simctl inventory commands use an expanded output buffer", () => {
@@ -3473,6 +3516,52 @@ test("locked app snapshot writer waits on the lease mutation lock", () => {
   assert.equal(fs.existsSync(resolvedPaths.appSnapshotPath), false);
 });
 
+test("locked app snapshot writer samples snapshot time after acquiring the mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator-idle",
+    actorType: "human",
+    graceSeconds: 60,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-snapshot-idle",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: lease.leaseId,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const timestamps = [
+    "2026-01-01T00:00:59.999Z",
+    "2026-01-01T00:01:05.000Z",
+  ];
+  const snapshot = writeAppSnapshotArtifactUnderMutationLock(resolvedPaths, {
+    now: () => timestamps.shift(),
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(snapshot.generatedAt, "2026-01-01T00:01:05.000Z");
+  assert.equal(snapshot.idle.eligibleCount, 1);
+  assert.equal(snapshot.idle.nextScheduledCleanupAt, "2026-01-01T00:01:05.000Z");
+});
+
 test("app snapshot preserves explicitly skipped leases with dead owners", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
@@ -3500,7 +3589,142 @@ test("app snapshot preserves explicitly skipped leases with dead owners", () => 
   assert.equal(snapshot.simulators.find((simulator) => simulator.alias === lease.alias)?.activeLeaseId, lease.leaseId);
 });
 
-test("acquire and release rotate fairly across matching aliases", () => {
+test("app snapshot restarts idle grace in memory for unreclaimed stale leases", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator-idle",
+    actorType: "human",
+    graceSeconds: 60,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const firstLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-idle-first",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: firstLease.leaseId,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const staleLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-idle-stale",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  const registryBefore = readJson(resolvedPaths.registryPath);
+
+  const snapshot = appSnapshotBroker(resolvedPaths, {
+    now: "2026-01-01T02:00:00.000Z",
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(snapshot.activeLeases.length, 0);
+  assert.equal(snapshot.idle.configured, true);
+  assert.equal(snapshot.idle.eligibleCount, 0);
+  assert.equal(snapshot.idle.nextScheduledCleanupAt, "2026-01-01T02:01:00.000Z");
+  assert.equal(
+    snapshot.simulators.find((simulator) => simulator.alias === staleLease.alias)?.lastLeaseReleasedAt,
+    "2026-01-01T02:00:00.000Z",
+  );
+  assert.deepEqual(readJson(resolvedPaths.registryPath), registryBefore);
+  assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, `${staleLease.leaseId}.json`)), true);
+});
+
+test("app snapshot keeps containment-aware stale leases active without restarting idle grace", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const processes = makeProcessFixture([
+    { command: "xcodebuild test SIM-UI-1", pgid: 2000, pid: 2000, ppid: 1, rssBytes: 40 * 1024 * 1024 },
+  ]);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator-idle",
+    actorType: "human",
+    graceSeconds: 60,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const firstLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-idle-first",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    processSampler: processes.sampler,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: firstLease.leaseId,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const staleLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-idle-containment",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: 999999,
+    processExists: () => true,
+    processSampler: processes.sampler,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  registerLeaseProcessBroker(resolvedPaths, {
+    command: "xcodebuild test",
+    commandPgid: 2000,
+    commandPid: 2000,
+    leaseId: staleLease.leaseId,
+    processExists: () => true,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const registryBefore = readJson(resolvedPaths.registryPath);
+
+  const snapshot = appSnapshotBroker(resolvedPaths, {
+    now: "2026-01-01T02:00:00.000Z",
+    processExists: () => false,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(snapshot.activeLeases.length, 1);
+  assert.equal(snapshot.activeLeases[0].leaseId, staleLease.leaseId);
+  assert.equal(snapshot.idle.eligibleCount, 0);
+  assert.equal(snapshot.idle.nextScheduledCleanupAt, null);
+  assert.equal(
+    snapshot.simulators.find((simulator) => simulator.alias === staleLease.alias)?.lastLeaseReleasedAt,
+    "2026-01-01T00:00:00.000Z",
+  );
+  assert.deepEqual(readJson(resolvedPaths.registryPath), registryBefore);
+  assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, `${staleLease.leaseId}.json`)), true);
+  assert.equal(processes.isAlive(2000), true);
+  assert.deepEqual(processes.actions, []);
+});
+
+test("acquire and release reuse the most recently released warm alias", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
   writeBaseProject(paths.projectFilePath);
@@ -3530,10 +3754,54 @@ test("acquire and release rotate fairly across matching aliases", () => {
     simctlAdapter: paths.simctl.adapter,
   }).lease;
 
-  assert.notEqual(firstLease.alias, secondLease.alias);
+  assert.equal(firstLease.alias, secondLease.alias);
+  const fixture = readJson(paths.simctl.statePath);
+  assert.equal(fixture.devices.find((device) => device.udid === secondLease.simulatorId).state, "Booted");
 });
 
-test("stale leases are reclaimed and fairness still prefers the least recently used alias", () => {
+test("repeated build leases reuse the same warm build alias", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, {
+    bootstrapConfig: true,
+    hostId: "bootstrap-host",
+    processExists: () => true,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  initProjectBroker(resolvedPaths, {
+    projectId: "build-reuse-demo",
+    projectName: "Build Reuse Demo",
+    repoRoot: path.join(paths.root, "repo"),
+  });
+  const firstLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "build-agent-1",
+    actorType: "agent",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-build-test",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: firstLease.leaseId,
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const secondLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "build-agent-2",
+    actorType: "agent",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-build-test",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+
+  assert.equal(firstLease.alias, secondLease.alias);
+  const fixture = readJson(paths.simctl.statePath);
+  assert.equal(fixture.devices.find((device) => device.udid === secondLease.simulatorId).state, "Booted");
+});
+
+test("stale lease recovery restarts grace and reuses the reclaimed warm alias", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
   writeBaseProject(paths.projectFilePath);
@@ -3561,11 +3829,1630 @@ test("stale leases are reclaimed and fairness still prefers the least recently u
     simctlAdapter: paths.simctl.adapter,
   }).lease;
 
-  assert.notEqual(staleLease.alias, freshLease.alias);
+  assert.equal(staleLease.alias, freshLease.alias);
   assert.equal(fs.existsSync(path.join(paths.stateRoot, "leases", `${staleLease.leaseId}.json`)), false);
   assert.equal(fs.existsSync(staleLeaseArtifactPath), false);
   const events = readEventsBroker(resolvedPaths).events;
   assert.ok(events.some((event) => event.type === "lease.reclaimed" && event.leaseId === staleLease.leaseId));
+});
+
+test("acquire marks an alias repair-needed and rolls back when boot fails", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const failingAdapter = {
+    ...paths.simctl.adapter,
+    bootDevice() {
+      throw new Error("private runtime detail");
+    },
+  };
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  assert.throws(() => {
+    acquireLeaseBroker(resolvedPaths, {
+      actorId: "agent-boot",
+      actorType: "agent",
+      ownerPid: process.pid,
+      processExists: (pid) => pid === process.pid,
+      purposeId: "agent-ui-session",
+      simctlAdapter: failingAdapter,
+    });
+  }, (error) => error.payload?.reasonCode === "boot-on-acquire-failed" && error.exitCode === 4);
+
+  assert.equal(fs.readdirSync(resolvedPaths.leasesDir).length, 0);
+  const registry = readJson(resolvedPaths.registryPath);
+  assert.equal(registry.aliases["ui-1"].health, "repair-needed");
+  assert.equal(registry.aliases["ui-1"].driftReason, "boot-on-acquire-failed");
+});
+
+test("acquire reports boot failure when rollback registry persistence also fails", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const sabotagingAdapter = {
+    ...paths.simctl.adapter,
+    bootDevice(simulatorId) {
+      paths.simctl.adapter.bootDevice(simulatorId);
+      fs.rmSync(resolvedPaths.registryPath);
+      fs.mkdirSync(resolvedPaths.registryPath);
+    },
+  };
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  assert.throws(() => {
+    acquireLeaseBroker(resolvedPaths, {
+      actorId: "agent-boot",
+      actorType: "agent",
+      ownerPid: process.pid,
+      processExists: (pid) => pid === process.pid,
+      purposeId: "agent-ui-session",
+      simctlAdapter: sabotagingAdapter,
+    });
+  }, (error) =>
+    error instanceof BrokerError
+      && error.payload?.reasonCode === "boot-on-acquire-failed"
+      && error.payload?.rollbackFailed === true);
+
+  assert.equal(fs.readdirSync(resolvedPaths.leasesDir).length, 1);
+  fs.rmSync(resolvedPaths.registryPath, { force: true, recursive: true });
+});
+
+test("state load removes leftover acquire-rollback lease files without resurrecting them", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const leftoverLeaseId = "00000000-0000-4000-8000-000000000001";
+  writeJson(path.join(resolvedPaths.leasesDir, `${leftoverLeaseId}.json`), {
+    actorType: "agent",
+    alias: "ui-1",
+    leaseId: leftoverLeaseId,
+    ownerPid: process.pid,
+    projectId: "demo-app",
+    purposeId: "agent-ui-session",
+  });
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-1"].activeLeaseId = null;
+  registry.aliases["ui-1"].driftReason = "boot-on-acquire-failed";
+  registry.aliases["ui-1"].health = "repair-needed";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  hostStatusBroker(resolvedPaths, {
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(fs.readdirSync(resolvedPaths.leasesDir).length, 0);
+  const recovered = readJson(resolvedPaths.registryPath);
+  assert.equal(recovered.aliases["ui-1"].activeLeaseId, null);
+  assert.equal(recovered.aliases["ui-1"].health, "repair-needed");
+  assert.equal(recovered.aliases["ui-1"].driftReason, "boot-on-acquire-failed");
+  assert.equal(
+    readEventsBroker(resolvedPaths).events.some((event) =>
+      event.type === "lease.reclaimed"
+      && event.leaseId === leftoverLeaseId
+      && event.payload?.reasonCode === "acquire-rollback-leftover"),
+    true,
+  );
+});
+
+test("state load keeps a live lease that still matches a repair-needed registry holder", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const inProgressLeaseId = "00000000-0000-4000-8000-000000000002";
+  writeJson(path.join(resolvedPaths.leasesDir, `${inProgressLeaseId}.json`), {
+    actorType: "agent",
+    alias: "ui-1",
+    leaseId: inProgressLeaseId,
+    ownerPid: process.pid,
+    projectId: "demo-app",
+    purposeId: "agent-ui-session",
+  });
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-1"].activeLeaseId = inProgressLeaseId;
+  registry.aliases["ui-1"].driftReason = "boot-on-acquire-failed";
+  registry.aliases["ui-1"].health = "repair-needed";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  const status = hostStatusBroker(resolvedPaths, {
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, `${inProgressLeaseId}.json`)), true);
+  assert.equal(status.simulators.find((simulator) => simulator.alias === "ui-1")?.activeLeaseId, inProgressLeaseId);
+});
+
+test("acquire samples boot-on-acquire timestamps inside the mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const lockStartedAt = "2026-04-10T00:00:00.000Z";
+  const acquiredAt = "2026-04-10T00:00:30.000Z";
+  const timestamps = [lockStartedAt, acquiredAt];
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-boot",
+    actorType: "agent",
+    now: () => timestamps.shift() ?? acquiredAt,
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+
+  assert.equal(lease.startedAt, acquiredAt);
+  const registry = readJson(resolvedPaths.registryPath);
+  assert.equal(registry.aliases["ui-1"].lastBootedAt, acquiredAt);
+  const bootEvent = readEventsBroker(resolvedPaths).events.find((event) => event.type === "simulator.booted");
+  assert.equal(bootEvent.timestamp, acquiredAt);
+});
+
+test("acquire waits for already booted warm aliases before returning", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const fixture = readJson(paths.simctl.statePath);
+  fixture.devices.find((device) => device.udid === "SIM-MANUAL-1").state = "Booted";
+  writeJson(paths.simctl.statePath, fixture);
+  const resolvedPaths = brokerPaths(paths);
+  const waitCalls = [];
+  const readinessAdapter = {
+    ...paths.simctl.adapter,
+    bootDevice() {
+      assert.fail("warm acquisition should not boot an already booted simulator");
+    },
+    waitForBooted(simulatorId) {
+      waitCalls.push(simulatorId);
+      paths.simctl.adapter.waitForBooted(simulatorId);
+    },
+  };
+
+  initBroker(resolvedPaths, runtimeOptions(paths, {
+    processExists: () => true,
+    simctlAdapter: readinessAdapter,
+  }));
+  const acquired = acquireLeaseBroker(resolvedPaths, {
+    actorId: "human-warm",
+    actorType: "human",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "manual-testing",
+    simctlAdapter: readinessAdapter,
+  });
+
+  assert.equal(acquired.lease.alias, "manual-1");
+  assert.deepEqual(waitCalls, ["SIM-MANUAL-1"]);
+});
+
+test("shutdown candidates prefer the most recently released compatible alias", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  const first = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-first",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  const second = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-second",
+    actorType: "agent",
+    now: "2026-01-01T00:00:01.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: first.leaseId,
+    now: "2026-01-01T00:00:02.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: second.leaseId,
+    now: "2026-01-01T00:00:03.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const fixture = readJson(paths.simctl.statePath);
+  fixture.devices.find((device) => device.udid === first.simulatorId).state = "Shutdown";
+  fixture.devices.find((device) => device.udid === second.simulatorId).state = "Shutdown";
+  writeJson(paths.simctl.statePath, fixture);
+
+  const selected = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-third",
+    actorType: "agent",
+    now: "2026-01-01T00:00:04.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  assert.equal(selected.alias, second.alias);
+});
+
+test("candidate selection falls back to host order when either release timestamp is missing", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-1"].lastLeaseReleasedAt = null;
+  registry.aliases["ui-2"].lastLeaseReleasedAt = "2026-01-01T00:00:00.000Z";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  const selected = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-host-order",
+    actorType: "agent",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+
+  assert.equal(selected.alias, "ui-1");
+});
+
+test("candidate selection stays host-ordered when any same-tier release timestamp is missing", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  const hostConfig = readJson(paths.hostConfigPath);
+  hostConfig.aliases.push({
+    alias: "ui-3",
+    capabilities: ["interactive-resettable"],
+    deviceFamily: "iPhone",
+    displayName: "UI Three",
+    iosVersion: "18.2",
+    resetPolicy: "erase-on-acquire",
+    simulatorId: "SIM-UI-3",
+  });
+  writeJson(paths.hostConfigPath, hostConfig);
+  const fixture = readJson(paths.simctl.statePath);
+  fixture.devices.push(createDeviceRecord({
+    deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+    name: "UI Three",
+    udid: "SIM-UI-3",
+  }));
+  writeJson(paths.simctl.statePath, fixture);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-1"].lastLeaseReleasedAt = "2026-01-01T00:00:01.000Z";
+  registry.aliases["ui-2"].lastLeaseReleasedAt = null;
+  registry.aliases["ui-3"].lastLeaseReleasedAt = "2026-01-01T00:00:02.000Z";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  const selected = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-mixed-release-order",
+    actorType: "agent",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+
+  assert.equal(selected.alias, "ui-1");
+});
+
+test("idle policy is absent by default, strictly bounded, and stored outside project state", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  const initial = idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  assert.equal(initial.configured, false);
+  assert.equal(initial.graceSeconds, null);
+  assert.equal(fs.existsSync(resolvedPaths.idlePolicyPath), false);
+  assert.throws(() => {
+    enableIdlePolicyBroker(resolvedPaths, {
+      actorId: "operator",
+      actorType: "human",
+      graceSeconds: 59,
+    });
+  }, (error) => error.payload?.reasonCode === "invalid-flag");
+
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  assert.deepEqual(readJson(resolvedPaths.idlePolicyPath), {
+    graceSeconds: 60,
+    version: 1,
+  });
+  const configured = idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  assert.equal(configured.configured, true);
+  assert.equal(configured.graceSeconds, 60);
+  assert.equal(appSnapshotBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })).idle.configured, true);
+
+  disableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+  });
+  assert.equal(fs.existsSync(resolvedPaths.idlePolicyPath), false);
+});
+
+test("idle policy mutations timestamp audit events after acquiring the mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const enableTimestamps = [
+    "2026-01-01T00:00:00.000Z",
+    "2026-01-01T00:00:30.000Z",
+  ];
+
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+    now: () => enableTimestamps.shift(),
+  });
+
+  const disableTimestamps = [
+    "2026-01-01T00:01:00.000Z",
+    "2026-01-01T00:01:45.000Z",
+  ];
+  disableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    now: () => disableTimestamps.shift(),
+  });
+
+  const events = readEventsBroker(resolvedPaths, { limit: 10 }).events;
+  assert.equal(events.find((event) => event.type === "idle.policy.enabled")?.timestamp, "2026-01-01T00:00:30.000Z");
+  assert.equal(events.find((event) => event.type === "idle.policy.disabled")?.timestamp, "2026-01-01T00:01:45.000Z");
+});
+
+test("app snapshot reads honor the lease mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  fs.mkdirSync(resolvedPaths.leaseLockDir, { recursive: true });
+  writeJson(resolvedPaths.leaseLockOwnerPath, {
+    pid: process.pid,
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  assert.throws(() => {
+    appSnapshotBrokerUnderMutationLock(resolvedPaths, runtimeOptions(paths, {
+      leaseMutationLockWait: false,
+      processExists: () => true,
+    }));
+  }, (error) => error.payload?.reasonCode === "alias-busy");
+});
+
+test("malformed idle policy JSON maps to public-safe invalid config", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  fs.writeFileSync(resolvedPaths.idlePolicyPath, "{not-json\n");
+
+  const snapshot = appSnapshotBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  assert.equal(snapshot.ok, true);
+  assert.equal(snapshot.idle.configured, false);
+  assert.equal(snapshot.idle.graceSeconds, null);
+
+  for (const operation of [
+    () => idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+    () => reconcileIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+  ]) {
+    assert.throws(operation, (error) => {
+      const serialized = JSON.stringify(error.payload);
+      return error.payload?.reasonCode === "invalid-config"
+        && error.exitCode === 2
+        && serialized.includes(paths.root) === false
+        && "stack" in error.payload === false;
+    });
+  }
+});
+
+test("idle policy read errors stay public-safe while preserving diagnostics", (t) => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  writeJson(resolvedPaths.idlePolicyPath, {
+    graceSeconds: 60,
+    version: 1,
+  });
+  const originalReadFileSync = fs.readFileSync;
+  t.after(() => {
+    fs.readFileSync = originalReadFileSync;
+  });
+  fs.readFileSync = (filePath, ...args) => {
+    if (filePath === resolvedPaths.idlePolicyPath) {
+      const error = new Error(`EACCES: permission denied, open '${resolvedPaths.idlePolicyPath}'`);
+      error.code = "EACCES";
+      throw error;
+    }
+    return originalReadFileSync(filePath, ...args);
+  };
+
+  for (const operation of [
+    () => idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+    () => reconcileIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+  ]) {
+    assert.throws(operation, (error) => {
+      const serialized = JSON.stringify(error.payload);
+      return error.payload?.reasonCode === "internal-error"
+        && error.payload?.error === "Idle policy could not be read."
+        && serialized.includes(paths.root) === false
+        && "stack" in error.payload === false
+        && error.cause?.message.includes(resolvedPaths.idlePolicyPath);
+    });
+  }
+});
+
+test("idle state read errors stay public-safe across status, reconcile, and cleanup", (t) => {
+  const originalReadFileSync = fs.readFileSync;
+  t.after(() => {
+    fs.readFileSync = originalReadFileSync;
+  });
+
+  const scenarios = [
+    {
+      name: "host config during status",
+      prepare(paths, resolvedPaths) {
+        return {
+          operation: () => idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+          targetPath: resolvedPaths.hostConfigPath,
+        };
+      },
+    },
+    {
+      name: "registry during status",
+      prepare(paths, resolvedPaths) {
+        return {
+          operation: () => idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+          targetPath: resolvedPaths.registryPath,
+        };
+      },
+    },
+    {
+      name: "pin during reconciliation",
+      prepare(paths, resolvedPaths) {
+        enableIdlePolicyBroker(resolvedPaths, {
+          actorId: "operator",
+          actorType: "human",
+          graceSeconds: 60,
+        });
+        const pin = createPinBroker(resolvedPaths, runtimeOptions(paths, {
+          actorId: "operator",
+          actorType: "human",
+          alias: "ui-1",
+          processExists: () => true,
+          purposeId: "agent-ui-session",
+        })).pin;
+        return {
+          operation: () => reconcileIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+          targetPath: path.join(resolvedPaths.pinsDir, `${pin.pinId}.json`),
+        };
+      },
+    },
+    {
+      name: "lease during cleanup preview",
+      prepare(paths, resolvedPaths) {
+        const lease = acquireLeaseBroker(resolvedPaths, runtimeOptions(paths, {
+          actorId: "agent-cleanup-read",
+          actorType: "agent",
+          ownerPid: process.pid,
+          processExists: (pid) => pid === process.pid,
+          purposeId: "agent-ui-session",
+        })).lease;
+        return {
+          operation: () => cleanupIdleBroker(resolvedPaths, runtimeOptions(paths, {
+            processExists: (pid) => pid === process.pid,
+          })),
+          targetPath: path.join(resolvedPaths.leasesDir, `${lease.leaseId}.json`),
+        };
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    fs.readFileSync = originalReadFileSync;
+    const paths = makePaths();
+    writeBaseHostConfig(paths.hostConfigPath);
+    writeBaseProject(paths.projectFilePath);
+    const resolvedPaths = brokerPaths(paths);
+    initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+    const { operation, targetPath } = scenario.prepare(paths, resolvedPaths);
+    fs.readFileSync = (filePath, ...args) => {
+      if (filePath === targetPath) {
+        const error = new Error(`EACCES: permission denied, open '${targetPath}'`);
+        error.code = "EACCES";
+        throw error;
+      }
+      return originalReadFileSync(filePath, ...args);
+    };
+
+    assert.throws(operation, (error) => {
+      const serialized = JSON.stringify(error.payload);
+      return error instanceof BrokerError
+        && error.payload?.reasonCode === "internal-error"
+        && error.payload?.error === "Idle broker state could not be read."
+        && serialized.includes(paths.root) === false
+        && "stack" in error.payload === false
+        && error.cause?.message.includes(targetPath);
+    }, scenario.name);
+  }
+});
+
+test("missing host idle state errors stay public-safe while preserving local cause", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+
+  assert.throws(() => {
+    idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  }, (error) => {
+    const serialized = JSON.stringify(error.payload);
+    return error instanceof BrokerError
+      && error.payload?.reasonCode === "missing-host-config"
+      && error.exitCode === 2
+      && error.payload?.error === "Idle broker state could not be read."
+      && serialized.includes(paths.root) === false
+      && serialized.includes("host init") === false
+      && "hostConfigPath" in error.payload === false
+      && "suggestedCommand" in error.payload === false
+      && error.cause?.payload?.hostConfigPath === resolvedPaths.hostConfigPath
+      && error.cause?.payload?.suggestedCommand.includes(resolvedPaths.hostConfigPath);
+  });
+});
+
+test("parseable invalid host idle state errors stay public-safe while preserving local cause", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const privateAlias = "private-ui-alias";
+  const privateSimulatorId = "SIM-PRIVATE-ID";
+  writeJson(paths.hostConfigPath, {
+    aliases: [
+      {
+        alias: privateAlias,
+        capabilities: ["interactive-resettable"],
+        deviceFamily: "iPhone",
+        displayName: "Private UI One",
+        iosVersion: "18.2",
+        simulatorId: privateSimulatorId,
+      },
+      {
+        alias: privateAlias,
+        capabilities: ["interactive-resettable"],
+        deviceFamily: "iPhone",
+        displayName: "Private UI Two",
+        iosVersion: "18.2",
+        simulatorId: "SIM-OTHER-PRIVATE-ID",
+      },
+    ],
+    hostId: "private-host",
+    version: 1,
+  });
+  writeJson(resolvedPaths.idlePolicyPath, {
+    graceSeconds: 60,
+    version: 1,
+  });
+
+  for (const operation of [
+    () => idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+    () => reconcileIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+    () => cleanupIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+  ]) {
+    assert.throws(operation, (error) => {
+      const serialized = JSON.stringify(error.payload);
+      return error instanceof BrokerError
+        && error.payload?.reasonCode === "invalid-config"
+        && error.exitCode === 2
+        && error.payload?.error === "Idle broker state could not be read."
+        && serialized.includes(privateAlias) === false
+        && serialized.includes(privateSimulatorId) === false
+        && serialized.includes(paths.root) === false
+        && "stack" in error.payload === false
+        && error.cause?.message.includes(privateAlias);
+    });
+  }
+});
+
+test("stale idle state lease artifact path errors stay public-safe while preserving local cause", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const processes = makeProcessFixture([
+    { command: "xcodebuild test SIM-UI-1", pgid: 2000, pid: 2000, ppid: 1, rssBytes: 40 * 1024 * 1024 },
+  ]);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "dead-agent",
+    actorType: "agent",
+    ownerPid: 999999,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  registerLeaseProcessBroker(resolvedPaths, {
+    command: "xcodebuild test",
+    commandPgid: 2000,
+    commandPid: 2000,
+    leaseId: lease.leaseId,
+    processExists: () => true,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const overlappingArtifactPath = path.join(resolvedPaths.stateRoot, "overlapping-lease-artifact.json");
+  const leasePath = path.join(resolvedPaths.leasesDir, `${lease.leaseId}.json`);
+  const staleLease = readJson(leasePath);
+  staleLease.artifactPath = overlappingArtifactPath;
+  writeJson(leasePath, staleLease);
+
+  assert.throws(() => {
+    idleStatusBroker(resolvedPaths, {
+      processController: processes.controller,
+      processExists: (pid) => pid !== 999999,
+      processSampler: processes.sampler,
+      simctlAdapter: paths.simctl.adapter,
+      termWaitMs: 0,
+    });
+  }, (error) => {
+    const serialized = JSON.stringify(error.payload);
+    return error instanceof BrokerError
+      && error.payload?.reasonCode === "internal-error"
+      && error.payload?.error === "Idle broker state could not be read."
+      && serialized.includes(paths.root) === false
+      && "artifactPath" in error.payload === false
+      && "protectedPath" in error.payload === false
+      && error.cause?.payload?.reasonCode === "invalid-lease-artifact-path"
+      && error.cause?.payload?.artifactPath === overlappingArtifactPath;
+  });
+});
+
+test("malformed idle policy shapes reject non-number grace durations", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  writeJson(resolvedPaths.idlePolicyPath, {
+    graceSeconds: "60",
+    version: 1,
+  });
+
+  assert.throws(
+    () => idleStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true })),
+    (error) => error.payload?.reasonCode === "invalid-config"
+      && error.payload?.field === "idle-policy.graceSeconds"
+      && JSON.stringify(error.payload).includes(paths.root) === false,
+  );
+});
+
+test("idle policy persistence errors stay public-safe while preserving diagnostics", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  fs.mkdirSync(resolvedPaths.idlePolicyPath, { recursive: true });
+
+  assert.throws(() => {
+    enableIdlePolicyBroker(resolvedPaths, {
+      actorId: "operator",
+      actorType: "human",
+      graceSeconds: 60,
+    });
+  }, (error) => {
+    const serialized = JSON.stringify(error.payload);
+    return error.payload?.reasonCode === "internal-error"
+      && error.payload?.error === "Idle policy could not be persisted."
+      && serialized.includes(paths.root) === false
+      && "stack" in error.payload === false
+      && error.cause?.message.includes(resolvedPaths.idlePolicyPath);
+  });
+});
+
+test("idle policy removal errors stay public-safe while preserving diagnostics", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  fs.mkdirSync(resolvedPaths.idlePolicyPath, { recursive: true });
+
+  assert.throws(() => {
+    disableIdlePolicyBroker(resolvedPaths, {
+      actorId: "operator",
+      actorType: "human",
+    });
+  }, (error) => {
+    const serialized = JSON.stringify(error.payload);
+    return error.payload?.reasonCode === "internal-error"
+      && error.payload?.error === "Idle policy could not be removed."
+      && serialized.includes(paths.root) === false
+      && "stack" in error.payload === false
+      && error.cause?.message.includes(resolvedPaths.idlePolicyPath);
+  });
+});
+
+test("stale lease recovery starts a fresh idle grace period", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "dead-agent",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: 424242,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+
+  const recovered = reconcileIdleBroker(resolvedPaths, {
+    now: "2026-01-01T01:00:00.000Z",
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(recovered.eligibleCount, 0);
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:00.000Z");
+  assert.equal(readJson(paths.simctl.statePath).devices.find((device) => device.udid === lease.simulatorId).state, "Booted");
+
+  const atBoundary = reconcileIdleBroker(resolvedPaths, {
+    now: "2026-01-01T01:01:00.000Z",
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(atBoundary.shutdownCount, 1);
+  assert.equal(readJson(paths.simctl.statePath).devices.find((device) => device.udid === lease.simulatorId).state, "Shutdown");
+});
+
+test("stale lease recovery timestamps release after entering the mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "dead-agent",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: 424242,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  const timestamps = [
+    "2026-01-01T01:00:00.000Z",
+    "2026-01-01T01:00:45.000Z",
+  ];
+
+  const recovered = reconcileIdleBroker(resolvedPaths, {
+    now: () => timestamps.shift(),
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(recovered.eligibleCount, 0);
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
+});
+
+function makeStaleLeaseForReadRecovery() {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "dead-agent",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: 424242,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  return { lease, paths, resolvedPaths };
+}
+
+test("host status stale lease recovery timestamps release after entering the mutation lock", () => {
+  const { lease, paths, resolvedPaths } = makeStaleLeaseForReadRecovery();
+  const timestamps = [
+    "2026-01-01T01:00:00.000Z",
+    "2026-01-01T01:00:45.000Z",
+  ];
+
+  hostStatusBroker(resolvedPaths, {
+    now: () => timestamps.shift(),
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
+});
+
+test("doctor stale lease recovery timestamps release after entering the mutation lock", () => {
+  const { lease, paths, resolvedPaths } = makeStaleLeaseForReadRecovery();
+  const timestamps = [
+    "2026-01-01T01:00:00.000Z",
+    "2026-01-01T01:00:45.000Z",
+  ];
+
+  doctorBroker(resolvedPaths, {
+    now: () => timestamps.shift(),
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
+});
+
+test("lease explain stale lease recovery timestamps release after entering the mutation lock", () => {
+  const { lease, paths, resolvedPaths } = makeStaleLeaseForReadRecovery();
+  const timestamps = [
+    "2026-01-01T01:00:00.000Z",
+    "2026-01-01T01:00:45.000Z",
+  ];
+
+  explainLeaseBroker(resolvedPaths, {
+    now: () => timestamps.shift(),
+    processExists: () => false,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
+});
+
+test("stale containment recovery timestamps release after containment completes", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const processes = makeProcessFixture([
+    { command: "xcodebuild test SIM-UI-1", pgid: 2000, pid: 2000, ppid: 1, rssBytes: 40 * 1024 * 1024 },
+  ]);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "dead-agent",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: 999999,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  registerLeaseProcessBroker(resolvedPaths, {
+    command: "xcodebuild test",
+    commandPgid: 2000,
+    commandPid: 2000,
+    leaseId: lease.leaseId,
+    processExists: () => true,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const timestamps = [
+    "2026-01-01T01:00:00.000Z",
+    "2026-01-01T01:00:05.000Z",
+    "2026-01-01T01:00:30.000Z",
+    "2026-01-01T01:00:45.000Z",
+  ];
+
+  const recovered = reconcileIdleBroker(resolvedPaths, {
+    now: () => timestamps.shift() ?? "2026-01-01T01:00:45.000Z",
+    processController: processes.controller,
+    processExists: (pid) => pid !== 999999,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+    termWaitMs: 0,
+  });
+
+  assert.equal(recovered.eligibleCount, 0);
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
+  assert.equal(fs.existsSync(path.join(paths.stateRoot, "leases", `${lease.leaseId}.json`)), false);
+  const containedEvent = readEventsBroker(resolvedPaths, { type: "lease.contained" }).events.at(-1);
+  assert.equal(containedEvent.leaseId, lease.leaseId);
+  assert.equal(containedEvent.timestamp, "2026-01-01T01:00:45.000Z");
+});
+
+test("explicit containment timestamps release after containment completes", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const processes = makeProcessFixture([
+    { command: "xcodebuild test SIM-UI-1", pgid: 2000, pid: 2000, ppid: 1, rssBytes: 40 * 1024 * 1024 },
+  ]);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-contain",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: 999999,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  registerLeaseProcessBroker(resolvedPaths, {
+    command: "xcodebuild test",
+    commandPgid: 2000,
+    commandPid: 2000,
+    leaseId: lease.leaseId,
+    processExists: () => true,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const timestamps = [
+    "2026-01-01T01:00:00.000Z",
+    "2026-01-01T01:00:30.000Z",
+    "2026-01-01T01:00:45.000Z",
+  ];
+
+  const result = containLeaseBroker(resolvedPaths, {
+    leaseId: lease.leaseId,
+    now: () => timestamps.shift() ?? "2026-01-01T01:00:45.000Z",
+    processController: processes.controller,
+    processExists: (pid) => pid !== 999999,
+    processSampler: processes.sampler,
+    reason: "manual-cleanup",
+    simctlAdapter: paths.simctl.adapter,
+    termWaitMs: 0,
+  });
+
+  assert.equal(result.contained, true);
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
+  const containedEvent = readEventsBroker(resolvedPaths, { type: "lease.contained" }).events.at(-1);
+  assert.equal(containedEvent.leaseId, lease.leaseId);
+  assert.equal(containedEvent.timestamp, "2026-01-01T01:00:45.000Z");
+});
+
+test("lease release timestamps release after entering the mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  const timestamps = [
+    "2026-01-01T01:00:00.000Z",
+    "2026-01-01T01:00:45.000Z",
+  ];
+
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: lease.leaseId,
+    now: () => timestamps.shift(),
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].lastLeaseReleasedAt, "2026-01-01T01:00:45.000Z");
+});
+
+test("idle status timestamps summary after entering the mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-boundary",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: lease.leaseId,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const timestamps = [
+    "2026-01-01T00:00:59.999Z",
+    "2026-01-01T00:01:00.000Z",
+  ];
+
+  const status = idleStatusBroker(resolvedPaths, {
+    now: () => timestamps.shift(),
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(status.eligibleCount, 1);
+  assert.equal(status.nextScheduledCleanupAt, "2026-01-01T00:01:00.000Z");
+});
+
+test("idle reconciliation waits for the broker mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  fs.mkdirSync(resolvedPaths.leaseLockDir, { recursive: true });
+  writeJson(resolvedPaths.leaseLockOwnerPath, {
+    pid: process.pid,
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  assert.throws(() => {
+    reconcileIdleBroker(resolvedPaths, {
+      leaseLockTimeoutMilliseconds: 1,
+      processExists: (pid) => pid === process.pid,
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => error.payload?.reasonCode === "alias-busy");
+});
+
+test("idle reconciliation supports nonblocking lease mutation lock attempts", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  fs.mkdirSync(resolvedPaths.leaseLockDir, { recursive: true });
+  writeJson(resolvedPaths.leaseLockOwnerPath, {
+    pid: process.pid,
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  assert.throws(() => {
+    reconcileIdleBroker(resolvedPaths, {
+      leaseMutationLockWait: false,
+      processExists: (pid) => pid === process.pid,
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => error.payload?.reasonCode === "alias-busy");
+});
+
+test("nonblocking idle reconciliation reclaims stale lease mutation locks", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  fs.mkdirSync(resolvedPaths.leaseLockDir, { recursive: true });
+  writeJson(resolvedPaths.leaseLockOwnerPath, {
+    pid: 424242,
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  const result = reconcileIdleBroker(resolvedPaths, {
+    leaseMutationLockWait: false,
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(fs.existsSync(resolvedPaths.leaseLockDir), false);
+});
+
+test("idle reconciliation honors the grace boundary and all protected simulator classes", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-boundary",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: lease.leaseId,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const beforeBoundary = reconcileIdleBroker(resolvedPaths, {
+    now: "2026-01-01T00:00:59.999Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(beforeBoundary.eligibleCount, 0);
+  assert.equal(readJson(paths.simctl.statePath).devices.find((device) => device.udid === lease.simulatorId).state, "Booted");
+
+  const atBoundary = reconcileIdleBroker(resolvedPaths, {
+    now: "2026-01-01T00:01:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(atBoundary.eligibleCount, 1);
+  assert.equal(atBoundary.shutdownCount, 1);
+  assert.equal(readJson(paths.simctl.statePath).devices.find((device) => device.udid === lease.simulatorId).state, "Shutdown");
+
+  const active = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-active",
+    actorType: "agent",
+    now: "2026-01-01T00:02:00.000Z",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  const pin = createPinBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    alias: "ui-2",
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).pin;
+  const fixture = readJson(paths.simctl.statePath);
+  fixture.devices.find((device) => device.udid === "SIM-MANUAL-1").state = "Booted";
+  fixture.devices.find((device) => device.udid === "SIM-UI-2").state = "Booted";
+  fixture.devices.find((device) => device.udid === "SIM-IPAD-1").state = "Booted";
+  fixture.devices.push(createDeviceRecord({
+    deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+    name: "External",
+    state: "Booted",
+    udid: "SIM-EXTERNAL-1",
+  }));
+  writeJson(paths.simctl.statePath, fixture);
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-2"].lastLeaseReleasedAt = "2025-12-31T00:00:00.000Z";
+  registry.aliases["ipad-1"].health = "repair-needed";
+  registry.aliases["ipad-1"].driftReason = "test-unhealthy";
+  registry.aliases["ipad-1"].lastLeaseReleasedAt = "2025-12-31T00:00:00.000Z";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  const protectedResult = reconcileIdleBroker(resolvedPaths, {
+    now: "2026-01-01T01:00:00.000Z",
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(protectedResult.eligibleCount, 0);
+  assert.equal(readJson(paths.simctl.statePath).devices.find((device) => device.udid === active.simulatorId).state, "Booted");
+  assert.equal(readJson(paths.simctl.statePath).devices.find((device) => device.udid === pin.alias.replace("ui-2", "SIM-UI-2")).state, "Booted");
+  assert.equal(readJson(paths.simctl.statePath).devices.find((device) => device.udid === "SIM-MANUAL-1").state, "Booted");
+  assert.equal(readJson(paths.simctl.statePath).devices.find((device) => device.udid === "SIM-EXTERNAL-1").state, "Booted");
+});
+
+test("confirmed idle cleanup is count-only, plan-bound, and records shutdown failures once", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const fixture = readJson(paths.simctl.statePath);
+  for (const device of fixture.devices) {
+    device.state = "Booted";
+  }
+  writeJson(paths.simctl.statePath, fixture);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  const preview = cleanupIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  assert.equal(preview.eligibleCount, 3);
+  assert.equal(preview.status, "changes_required");
+  const result = cleanupIdleBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    apply: true,
+    confirmPlanId: preview.planId,
+    lifecycleAdapter: {
+      shutdown({ hostAlias }) {
+        if (hostAlias.alias === "ui-2") {
+          throw new Error("private runtime detail");
+        }
+        paths.simctl.adapter.shutdownDevice(hostAlias.simulatorId);
+      },
+    },
+    processExists: () => true,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(result.eligibleCount, 3);
+  assert.equal(result.shutdownCount, 2);
+  assert.equal(result.failureCount, 1);
+  assert.equal(result.status, "repair_needed");
+  const serialized = JSON.stringify(result);
+  assert.equal(serialized.includes("ui-2"), false);
+  assert.equal(serialized.includes("SIM-UI-2"), false);
+  assert.equal(serialized.includes("private runtime detail"), false);
+  assert.equal(readJson(resolvedPaths.registryPath).aliases["ui-2"].driftReason, "idle-shutdown-failed");
+  const cleanupEvent = readEventsBroker(resolvedPaths, { type: "idle.cleanup.applied" }).events.at(-1);
+  assert.equal(cleanupEvent.payload.actorId, "operator");
+  assert.equal(JSON.stringify(result).includes("operator"), false);
+
+  assert.throws(() => {
+    cleanupIdleBroker(resolvedPaths, {
+      actorId: "operator",
+      actorType: "human",
+      apply: true,
+      confirmPlanId: preview.planId,
+      processExists: () => true,
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => error.payload?.reasonCode === "idle-plan-stale" && error.exitCode === 5);
+});
+
+test("confirmed idle cleanup samples operation timestamps after acquiring the lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const fixture = readJson(paths.simctl.statePath);
+  for (const device of fixture.devices) {
+    device.state = "Booted";
+  }
+  writeJson(paths.simctl.statePath, fixture);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const preview = cleanupIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const sampledTimestamps = [
+    "2026-01-01T00:00:00.000Z",
+    "2026-01-01T00:01:00.000Z",
+    "2026-01-01T00:02:00.000Z",
+    "2026-01-01T00:03:00.000Z",
+    "2026-01-01T00:04:00.000Z",
+    "2026-01-01T00:05:00.000Z",
+  ];
+
+  const result = cleanupIdleBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    apply: true,
+    confirmPlanId: preview.planId,
+    now: () => sampledTimestamps.shift() ?? "2026-01-01T00:01:00.000Z",
+    processExists: () => true,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const registry = readJson(resolvedPaths.registryPath);
+  assert.equal(result.lastCleanupResult.completedAt, "2026-01-01T00:05:00.000Z");
+  assert.equal(registry.aliases["ui-1"].lastShutdownAt, "2026-01-01T00:02:00.000Z");
+  assert.equal(registry.aliases["ui-2"].lastShutdownAt, "2026-01-01T00:03:00.000Z");
+  assert.equal(registry.aliases["ipad-1"].lastShutdownAt, "2026-01-01T00:04:00.000Z");
+  assert.equal(registry.updatedAt, "2026-01-01T00:05:00.000Z");
+  const cleanupEvent = readEventsBroker(resolvedPaths, { type: "idle.cleanup.applied" }).events.at(-1);
+  assert.equal(cleanupEvent.timestamp, "2026-01-01T00:05:00.000Z");
+});
+
+test("idle cleanup audit append failures do not mark shut down aliases for repair", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const fixture = readJson(paths.simctl.statePath);
+  for (const device of fixture.devices) {
+    device.state = "Booted";
+  }
+  writeJson(paths.simctl.statePath, fixture);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  const preview = cleanupIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  fs.rmSync(resolvedPaths.eventsPath, { force: true });
+  fs.mkdirSync(resolvedPaths.eventsPath);
+
+  const result = cleanupIdleBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    apply: true,
+    confirmPlanId: preview.planId,
+    processExists: () => true,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(result.eligibleCount, 3);
+  assert.equal(result.shutdownCount, 3);
+  assert.equal(result.failureCount, 0);
+  assert.equal(result.status, "success");
+  const registry = readJson(resolvedPaths.registryPath);
+  assert.equal(registry.aliases["ui-1"].powerState, "shutdown");
+  assert.notEqual(registry.aliases["ui-1"].driftReason, "idle-shutdown-failed");
+});
+
+test("idle cleanup registry persistence failures stay public-safe after shutdowns", (t) => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const fixture = readJson(paths.simctl.statePath);
+  for (const device of fixture.devices) {
+    device.state = "Booted";
+  }
+  writeJson(paths.simctl.statePath, fixture);
+  const resolvedPaths = brokerPaths(paths);
+  const originalRenameSync = fs.renameSync;
+
+  t.after(() => {
+    fs.renameSync = originalRenameSync;
+  });
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const preview = cleanupIdleBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  let registryWriteCount = 0;
+  fs.renameSync = (oldPath, newPath) => {
+    if (path.resolve(newPath) === resolvedPaths.registryPath) {
+      registryWriteCount += 1;
+      if (registryWriteCount === 1) {
+        throw new Error(`EACCES: permission denied, rename '${oldPath}' -> '${newPath}'`);
+      }
+    }
+    return originalRenameSync(oldPath, newPath);
+  };
+
+  assert.throws(() => {
+    cleanupIdleBroker(resolvedPaths, {
+      actorId: "operator",
+      actorType: "human",
+      apply: true,
+      confirmPlanId: preview.planId,
+      processExists: () => true,
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => {
+    const serialized = JSON.stringify(error.payload);
+    return error.payload?.reasonCode === "internal-error"
+      && error.payload?.error === "Idle registry state could not be persisted."
+      && error.payload?.command === "idle.cleanup"
+      && error.payload?.eligibleCount === 3
+      && error.payload?.shutdownCount === 3
+      && error.payload?.failureCount === 0
+      && error.payload?.status === "success"
+      && serialized.includes(paths.root) === false
+      && "stack" in error.payload === false
+      && error.cause?.message.includes(resolvedPaths.registryPath);
+  });
+
+  const postFailureFixture = readJson(paths.simctl.statePath);
+  assert.equal(postFailureFixture.devices.find((device) => device.udid === "SIM-UI-1").state, "Shutdown");
+});
+
+test("idle cleanup preview does not reclaim stale containment-aware leases", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const processes = makeProcessFixture([
+    { command: "xcodebuild test SIM-UI-1", pgid: 2000, pid: 2000, ppid: 1, rssBytes: 40 * 1024 * 1024 },
+  ]);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "dead-agent",
+    actorType: "agent",
+    ownerPid: 999999,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  registerLeaseProcessBroker(resolvedPaths, {
+    command: "xcodebuild test",
+    commandPgid: 2000,
+    commandPid: 2000,
+    leaseId: lease.leaseId,
+    processExists: () => true,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const preview = cleanupIdleBroker(resolvedPaths, {
+    processController: processes.controller,
+    processExists: () => false,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+    termWaitMs: 0,
+  });
+
+  assert.equal(preview.eligibleCount, 0);
+  assert.equal(preview.status, "no_changes");
+  assert.equal(processes.isAlive(2000), true);
+  assert.deepEqual(processes.actions, []);
+  assert.equal(fs.existsSync(path.join(paths.stateRoot, "leases", `${lease.leaseId}.json`)), true);
+  assert.equal(readEventsBroker(resolvedPaths).events.some((event) => event.type === "lease.contained"), false);
+});
+
+test("idle cleanup apply does not contain stale leases excluded from the confirmed plan", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const processes = makeProcessFixture([
+    { command: "xcodebuild test SIM-UI-1", pgid: 2000, pid: 2000, ppid: 1, rssBytes: 40 * 1024 * 1024 },
+  ]);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const containedLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "dead-agent",
+    actorType: "agent",
+    ownerPid: 999999,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  registerLeaseProcessBroker(resolvedPaths, {
+    command: "xcodebuild test",
+    commandPgid: 2000,
+    commandPid: 2000,
+    leaseId: containedLease.leaseId,
+    processExists: () => true,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const idleLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "idle-agent",
+    actorType: "agent",
+    ownerPid: process.pid,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: idleLease.leaseId,
+    processExists: () => true,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const preview = cleanupIdleBroker(resolvedPaths, {
+    processController: processes.controller,
+    processExists: () => false,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+    termWaitMs: 0,
+  });
+  assert.equal(preview.eligibleCount, 1);
+  assert.equal(preview.status, "changes_required");
+
+  const result = cleanupIdleBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    apply: true,
+    confirmPlanId: preview.planId,
+    processController: processes.controller,
+    processExists: () => false,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+    termWaitMs: 0,
+  });
+
+  assert.equal(result.shutdownCount, 1);
+  assert.equal(result.status, "success");
+  assert.equal(processes.isAlive(2000), true);
+  assert.deepEqual(processes.actions, []);
+  assert.equal(fs.existsSync(path.join(paths.stateRoot, "leases", `${containedLease.leaseId}.json`)), true);
+  assert.equal(readEventsBroker(resolvedPaths).events.some((event) => event.type === "lease.contained"), false);
+  assert.equal(readJson(paths.simctl.statePath).devices.find((device) => device.udid === containedLease.simulatorId).state, "Booted");
+  assert.equal(readJson(paths.simctl.statePath).devices.find((device) => device.udid === idleLease.simulatorId).state, "Shutdown");
+});
+
+test("idle cleanup apply does not persist snapshot-only stale-lease registry edits", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const staleLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "dead-agent",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: 424242,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  const idleLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "idle-agent",
+    actorType: "agent",
+    now: "2026-01-01T00:00:00.000Z",
+    ownerPid: process.pid,
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: idleLease.leaseId,
+    now: "2026-01-01T00:00:00.000Z",
+    processExists: () => true,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases[staleLease.alias].driftReason = "test-unhealthy";
+  registry.aliases[staleLease.alias].health = "repair-needed";
+  writeJson(resolvedPaths.registryPath, registry);
+  const staleAliasBefore = readJson(resolvedPaths.registryPath).aliases[staleLease.alias];
+
+  const preview = cleanupIdleBroker(resolvedPaths, {
+    now: "2026-01-01T02:00:00.000Z",
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(preview.eligibleCount, 1);
+
+  const result = cleanupIdleBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    apply: true,
+    confirmPlanId: preview.planId,
+    now: "2026-01-01T02:00:00.000Z",
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(result.shutdownCount, 1);
+  const staleAliasAfter = readJson(resolvedPaths.registryPath).aliases[staleLease.alias];
+  assert.equal(staleAliasAfter.activeLeaseId, staleLease.leaseId);
+  assert.equal(staleAliasAfter.lastLeaseReleasedAt, staleAliasBefore.lastLeaseReleasedAt);
+  assert.equal(staleAliasAfter.health, "repair-needed");
+  assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, `${staleLease.leaseId}.json`)), true);
+  assert.equal(readJson(paths.simctl.statePath).devices.find((device) => device.udid === idleLease.simulatorId).state, "Shutdown");
 });
 
 test("releasing a healthy lease is not blocked by unrelated stale containment failure", () => {

@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { BROKER_EXIT_CODES, INTERNAL_ERROR_REASON_CODE, resolveBrokerExitCode } from "../../broker-core/error-contract.mjs";
-import { BrokerError, resolveBrokerPaths } from "../../broker-core/index.mjs";
+import { BrokerError, idlePolicyConfiguredBroker, resolveBrokerPaths } from "../../broker-core/index.mjs";
 import {
   createCommandRequest,
   executeBrokerCommand,
@@ -21,12 +21,12 @@ import {
   probeService,
   requestServiceStop,
   serviceCommandTimeoutMs,
+  serviceStopTimeoutMs,
   serviceStartupTimeoutMs,
   streamServiceEvents,
 } from "../service/service-client.mjs";
 
 const BROKERD_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "brokerd.mjs");
-const SERVICE_START_TIMEOUT_MS = serviceStartupTimeoutMs();
 const SERVICE_CONTROL_FLAGS = new Set([
   "help",
   "host-config",
@@ -70,11 +70,59 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function serviceStartupLockHeld(paths) {
+  return fs.existsSync(paths.serviceLockDir);
+}
+
 function appendTransport(payload, transport) {
   return {
     ...payload,
     transport,
   };
+}
+
+function requestMayReportScheduler(request) {
+  return request.group === "idle"
+    || (request.group === "lease" && request.command === "acquire");
+}
+
+function isInvalidConfigBrokerError(error) {
+  return error instanceof BrokerError && error.payload?.reasonCode === "invalid-config";
+}
+
+function canReportCommittedAcquireMetadataWarning(request, payload, error) {
+  return request.group === "lease"
+    && request.command === "acquire"
+    && payload?.lease != null
+    && isInvalidConfigBrokerError(error);
+}
+
+function schedulerMetadataForRequest(paths, request, payload, activeWhenConfigured) {
+  try {
+    const configured = typeof payload.configured === "boolean"
+      ? payload.configured
+      : idlePolicyConfiguredBroker(paths);
+    return {
+      configured,
+      scheduler: request.group === "idle" || configured
+        ? {
+          active: activeWhenConfigured(configured),
+          limitation: activeWhenConfigured(configured) || !configured ? null : "service-not-running",
+        }
+        : null,
+    };
+  } catch (error) {
+    if (canReportCommittedAcquireMetadataWarning(request, payload, error)) {
+      return {
+        configured: false,
+        scheduler: {
+          active: false,
+          limitation: "invalid-config",
+        },
+      };
+    }
+    throw error;
+  }
 }
 
 function rejectValuelessPathFlags(flags) {
@@ -186,16 +234,79 @@ async function serviceStatus(paths) {
   };
 }
 
-async function waitForService(paths, { timeoutMs = 5000 } = {}) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    const probe = await probeService(paths, { timeoutMs: 250 });
-    if (probe) {
-      return probe;
+function observeChildExit(child) {
+  return new Promise((resolve, reject) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve({ code: child.exitCode, signal: child.signalCode });
+      return;
     }
-    await sleep(100);
+    child.once("exit", (code, signal) => {
+      resolve({ code, signal });
+    });
+    child.once("error", reject);
+  });
+}
+
+async function waitForSpawnedService(paths, child, { timeoutMs = 5000 } = {}) {
+  const startedAt = Date.now();
+  const childExit = observeChildExit(child);
+  let lastExit = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    const outcome = await Promise.race([
+      probeService(paths, { timeoutMs: 250 }).then((probe) => ({ probe })),
+      childExit.then((exit) => ({ exit })),
+    ]);
+    if (outcome.exit) {
+      lastExit = outcome.exit;
+      const probe = await probeService(paths, { timeoutMs: 250 });
+      if (probe) {
+        return {
+          childExit: null,
+          probe,
+        };
+      }
+      if (serviceStartupLockHeld(paths)) {
+        await sleep(100);
+        continue;
+      }
+      return {
+        childExit: lastExit,
+        probe: null,
+      };
+    }
+    if (outcome.probe) {
+      return {
+        childExit: null,
+        probe: outcome.probe,
+      };
+    }
+    const delay = await Promise.race([
+      sleep(100).then(() => null),
+      childExit.then((exit) => exit),
+    ]);
+    if (delay) {
+      lastExit = delay;
+      const probe = await probeService(paths, { timeoutMs: 250 });
+      if (probe) {
+        return {
+          childExit: null,
+          probe,
+        };
+      }
+      if (serviceStartupLockHeld(paths)) {
+        await sleep(100);
+        continue;
+      }
+      return {
+        childExit: lastExit,
+        probe: null,
+      };
+    }
   }
-  return null;
+  return {
+    childExit: lastExit,
+    probe: null,
+  };
 }
 
 async function waitForServiceToStop(paths, { timeoutMs = 5000 } = {}) {
@@ -255,7 +366,17 @@ async function startService(paths) {
   child.unref();
   fs.closeSync(logFd);
 
-  const probe = await waitForService(paths, { timeoutMs: SERVICE_START_TIMEOUT_MS });
+  const { childExit, probe } = await waitForSpawnedService(paths, child, { timeoutMs: serviceStartupTimeoutMs({ paths }) });
+  if (childExit) {
+    throw new BrokerError("Broker service exited before it became available.", {
+      exitStatus: childExit.code,
+      logPath: paths.serviceLogPath,
+      reasonCode: "service-unavailable",
+      serviceMetadataPath: paths.serviceMetadataPath,
+      serviceSocketPath: paths.serviceSocketPath,
+      signal: childExit.signal,
+    });
+  }
   if (!probe) {
     terminateSpawnedService(child);
     throw new BrokerError("Broker service failed to start.", {
@@ -300,7 +421,9 @@ async function stopService(paths) {
     }
   }
 
-  const stopped = await waitForServiceToStop(paths);
+  const stopped = await waitForServiceToStop(paths, {
+    timeoutMs: serviceStopTimeoutMs(paths, response),
+  });
   if (!stopped && stopError) {
     throw stopError;
   }
@@ -324,9 +447,36 @@ async function stopService(paths) {
 
 async function runServiceAwareRequest(paths, request) {
   const canUseService = !localOnlyMode(process.env);
-  const service = canUseService
+  let service = canUseService
     ? await probeService(paths, { timeoutMs: serviceCommandTimeoutMs(request) })
     : null;
+  let policyConfiguredForStartup = false;
+  if (!service
+    && canUseService
+    && request.group === "lease"
+    && request.command === "acquire") {
+    try {
+      policyConfiguredForStartup = idlePolicyConfiguredBroker(paths);
+    } catch (error) {
+      if (!isInvalidConfigBrokerError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  if (!service
+    && canUseService
+    && request.group === "lease"
+    && request.command === "acquire"
+    && policyConfiguredForStartup) {
+    await startService(paths);
+    service = await probeService(paths, { timeoutMs: serviceCommandTimeoutMs(request) });
+    if (!service) {
+      throw new BrokerError("Broker service did not become available for policy-enabled lease acquisition.", {
+        reasonCode: "service-unavailable",
+      });
+    }
+  }
 
   if (request.type === "events-stream") {
     if (service) {
@@ -347,10 +497,67 @@ async function runServiceAwareRequest(paths, request) {
     const payload = await executeServiceCommand(paths, request, {
       expectedServiceIdentity: service.service,
     });
-    return appendTransport(payload, "service");
+    const result = appendTransport(payload, "service");
+    if (requestMayReportScheduler(request)) {
+      try {
+        const configured = typeof payload.configured === "boolean"
+          ? payload.configured
+          : idlePolicyConfiguredBroker(paths);
+        if (request.group === "idle" || configured) {
+          result.scheduler = {
+            active: configured,
+            limitation: null,
+          };
+        }
+      } catch (error) {
+        if (!canReportCommittedAcquireMetadataWarning(request, payload, error)) {
+          throw error;
+        }
+        result.scheduler = {
+          active: false,
+          limitation: "invalid-config",
+        };
+      }
+    }
+    return result;
   }
 
-  return appendTransport(executeBrokerCommand(paths, request), "direct");
+  const payload = appendTransport(executeBrokerCommand(paths, request), "direct");
+  let schedulerRunning = false;
+  let configuredForScheduler = false;
+  if (canUseService
+    && request.group === "lease"
+    && request.command === "acquire") {
+    const schedulerMetadata = schedulerMetadataForRequest(paths, request, payload, () => false);
+    configuredForScheduler = schedulerMetadata.configured;
+    if (schedulerMetadata.scheduler?.limitation === "invalid-config") {
+      payload.scheduler = schedulerMetadata.scheduler;
+      return payload;
+    }
+  }
+  if (canUseService
+    && request.group === "lease"
+    && request.command === "acquire"
+    && configuredForScheduler) {
+    try {
+      await startService(paths);
+      schedulerRunning = true;
+    } catch {
+      // The direct lease acquire has already committed; return it with the scheduler limitation.
+    }
+  }
+  if (requestMayReportScheduler(request)) {
+    const { configured, scheduler } = schedulerMetadataForRequest(paths, request, payload, () => schedulerRunning);
+    if (scheduler) {
+      payload.scheduler = {
+        active: scheduler.active,
+        limitation: localOnlyMode(process.env)
+          ? "local-only-mode"
+          : (scheduler.limitation ?? (configured && !schedulerRunning ? "service-not-running" : null)),
+      };
+    }
+  }
+  return payload;
 }
 
 async function main() {

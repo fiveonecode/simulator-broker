@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import url from "node:url";
+import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 
 import {
   BROKER_EXIT_CODES,
@@ -14,16 +15,22 @@ import {
 import { defaultProcessSampler } from "../../broker-core/containment.mjs";
 import {
   BrokerError,
-  appSnapshotBroker,
+  appSnapshotBrokerUnderMutationLock,
   readEventsBroker,
-  writeAppSnapshotArtifact,
+  reconcileIdleBroker,
+  writeAppSnapshotArtifactUnderMutationLock,
 } from "../../broker-core/index.mjs";
 import { executeBrokerCommand, streamEventsLocal } from "../command-dispatch.mjs";
-import { serviceCommandExecutionTimeoutMs } from "./service-client.mjs";
+import {
+  appSnapshotExecutionTimeoutMs,
+  serviceCommandExecutionTimeoutMs,
+} from "./service-client.mjs";
 
 const SERVICE_REQUEST_BODY_TIMEOUT_MS = 30_000;
 const SERVICE_COMMAND_BODY_MAX_BYTES = 64 * 1024;
 const SERVICE_LOCK_OWNER_PID_IDENTITY_TOLERANCE_MS = 15_000;
+const IDLE_RECONCILE_INTERVAL_MS = 30_000;
+const LEASE_MUTATION_LOCK_BUSY_REASON_CODE = "alias-busy";
 
 function writeJsonAtomic(filePath, payload) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
@@ -518,9 +525,7 @@ function assertCommandFreshForDispatch(paths, body, nowMilliseconds = Date.now()
   if (executionTimeoutMs === null) {
     return;
   }
-  const recomputedExecutionTimeoutMs = serviceCommandExecutionTimeoutMs(body, {
-    paths: dispatchBudgetPaths(paths, body),
-  });
+  const recomputedExecutionTimeoutMs = commandExecutionTimeoutMsForDispatch(paths, body);
   if (recomputedExecutionTimeoutMs <= executionTimeoutMs) {
     return;
   }
@@ -530,6 +535,12 @@ function assertCommandFreshForDispatch(paths, body, nowMilliseconds = Date.now()
     queueTimeoutMilliseconds: queueTimeoutMs,
     reasonCode: "service-command-expired",
     recomputedExecutionTimeoutMilliseconds: recomputedExecutionTimeoutMs,
+  });
+}
+
+function commandExecutionTimeoutMsForDispatch(paths, body) {
+  return serviceCommandExecutionTimeoutMs(body, {
+    paths: dispatchBudgetPaths(paths, body),
   });
 }
 
@@ -731,6 +742,133 @@ function sendJson(response, statusCode, payload, onComplete = undefined) {
   response.end(`${JSON.stringify(payload, null, 2)}\n`, onComplete);
 }
 
+function serializeIdleReconciliationError(error) {
+  return {
+    brokerError: error instanceof BrokerError,
+    message: error?.message ?? String(error),
+    payload: error instanceof BrokerError ? error.payload : null,
+    reasonCode: typeof error?.reasonCode === "string" ? error.reasonCode : null,
+    stack: error?.stack ?? null,
+  };
+}
+
+function deserializeIdleReconciliationError(serialized) {
+  if (serialized?.brokerError) {
+    const { error: _error, ...payload } = serialized.payload ?? {};
+    const brokerError = new BrokerError(serialized.message ?? serialized.payload?.error, payload);
+    brokerError.stack = serialized.stack ?? brokerError.stack;
+    return brokerError;
+  }
+  const error = new Error(serialized?.message ?? "Scheduled idle reconciliation failed.");
+  error.stack = serialized?.stack ?? error.stack;
+  if (serialized?.reasonCode) {
+    error.reasonCode = serialized.reasonCode;
+  }
+  return error;
+}
+
+export function runServiceWorker(workerPayload, {
+  exitErrorMessage = "Broker service worker exited before completion.",
+} = {}) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./brokerd.mjs", import.meta.url), {
+      workerData: workerPayload,
+    });
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      callback(value);
+    };
+    worker.once("message", (message) => {
+      if (message?.ok) {
+        finish(resolve, message.result ?? null);
+        return;
+      }
+      finish(reject, deserializeIdleReconciliationError(message?.error));
+    });
+    worker.once("error", (error) => {
+      finish(reject, error);
+    });
+    worker.once("exit", (code) => {
+      finish(reject, new BrokerError(exitErrorMessage, {
+        exitCode: code,
+        reasonCode: "internal-error",
+      }));
+    });
+    worker.unref();
+  });
+}
+
+function runBrokerCommandWorker(paths, request) {
+  return runServiceWorker({
+    paths,
+    request,
+    type: "command",
+  });
+}
+
+function runAppSnapshotWorker(paths, options) {
+  return runServiceWorker({
+    options,
+    paths,
+    type: "app-snapshot",
+  });
+}
+
+function serviceSnapshotRefreshError(snapshotRefresh) {
+  return new BrokerError(snapshotRefresh?.error ?? "Failed to refresh the app snapshot after the command committed.", {
+    reasonCode: snapshotRefresh?.reasonCode ?? "internal-error",
+  });
+}
+
+function isIdlePolicySnapshotRefresh(snapshotRefresh) {
+  const message = snapshotRefresh?.error;
+  return snapshotRefresh?.reasonCode === "invalid-config"
+    && typeof message === "string"
+    && (message.startsWith("Idle policy") || message.startsWith("idle-policy"));
+}
+
+function shouldSurfaceServiceSnapshotRefreshError(request, snapshotRefresh) {
+  if (request.group === "lease" && request.command === "acquire") {
+    return false;
+  }
+  if (request.group !== "idle" && request.group !== "app" && isIdlePolicySnapshotRefresh(snapshotRefresh)) {
+    return false;
+  }
+  return true;
+}
+
+function runIdleReconciliationWorker(paths, options, source, { waitForLeaseMutationLock = true } = {}) {
+  return runServiceWorker({
+    idleReconcileOptions: options.idleReconcileOptions ?? {},
+    idleSnapshotOptions: options.idleSnapshotOptions ?? {},
+    paths,
+    source,
+    type: "idle-reconciliation",
+    waitForLeaseMutationLock,
+  }, {
+    exitErrorMessage: "Scheduled idle reconciliation worker exited before completion.",
+  });
+}
+
+async function runIdleReconciliationWorkerTask(data) {
+  const lockOptions = data.waitForLeaseMutationLock ? {} : { leaseMutationLockWait: false };
+  const result = reconcileIdleBroker(data.paths, {
+    ...(data.idleReconcileOptions ?? {}),
+    ...lockOptions,
+    persistNoChanges: false,
+    source: data.source,
+  });
+  writeAppSnapshotArtifactUnderMutationLock(data.paths, {
+    ...(data.idleSnapshotOptions ?? {}),
+    leaseMutationLockWait: true,
+  });
+  return result;
+}
+
 export async function startBrokerService(paths, options = {}) {
   ensurePrivateDir(paths.stateRoot);
   const startupLockToken = acquireServiceStartLock(paths);
@@ -767,9 +905,29 @@ export async function startBrokerService(paths, options = {}) {
     transport: "unix-http",
   };
 
+  const writeSnapshot = options.writeAppSnapshotArtifact ?? writeAppSnapshotArtifactUnderMutationLock;
+  const reconcileIdle = options.reconcileIdleBroker ?? reconcileIdleBroker;
+  const runScheduledIdleReconciliation = options.runScheduledIdleReconciliation
+    ?? (options.writeAppSnapshotArtifact || options.reconcileIdleBroker
+      ? async (source, args) => runIdleReconciliation(source, args)
+      : (source, args) => runIdleReconciliationWorker(paths, options, source, args));
+  const runIdleReconciliation = (source, { waitForLeaseMutationLock = true } = {}) => {
+    const lockOptions = waitForLeaseMutationLock ? {} : { leaseMutationLockWait: false };
+    const result = reconcileIdle(paths, {
+      ...(options.idleReconcileOptions ?? {}),
+      ...lockOptions,
+      persistNoChanges: false,
+      source,
+    });
+    writeSnapshot(paths, {
+      ...(options.idleSnapshotOptions ?? {}),
+      leaseMutationLockWait: true,
+    });
+    return result;
+  };
+
   try {
-    const writeStartupSnapshot = options.writeAppSnapshotArtifact ?? writeAppSnapshotArtifact;
-    writeStartupSnapshot(paths);
+    runIdleReconciliation("service-startup");
   } catch (error) {
     releaseStartupLock();
     removeIfExists(paths.serviceMetadataPath);
@@ -779,9 +937,18 @@ export async function startBrokerService(paths, options = {}) {
 
   let shuttingDown = false;
   let server = null;
+  let idleReconcileTimer = null;
+  let activeIdleReconciliation = null;
+  let commandWorkerQueue = Promise.resolve();
+  const activeCommandWorkers = new Map();
+  const activeSnapshotWorkers = new Map();
   const activeConnections = new Set();
   const activeRequests = new Set();
   const activeEventStreams = new Set();
+  const runCommandWorker = options.runBrokerCommandWorker
+    ?? ((request) => runBrokerCommandWorker(paths, request));
+  const runSnapshotWorker = options.runAppSnapshotWorker
+    ?? ((snapshotOptions) => runAppSnapshotWorker(paths, snapshotOptions));
 
   function trackActiveRequest(request, response) {
     const controller = new AbortController();
@@ -812,11 +979,102 @@ export async function startBrokerService(paths, options = {}) {
     };
   }
 
-  async function shutdown({ exitProcess = true } = {}) {
+  function runSerializedCommandWorker(request) {
+    return runSerializedServiceWork(request, () => {
+      assertCommandFreshForDispatch(paths, request);
+      return runCommandWorker(request);
+    });
+  }
+
+  function runSerializedIdleReconciliation(source, args) {
+    return runSerializedServiceWork(null, () => runScheduledIdleReconciliation(source, args));
+  }
+
+  function runTrackedAppSnapshotWorker(snapshotOptions) {
     if (shuttingDown) {
-      return;
+      throw new BrokerError("Broker service is shutting down.", {
+        reasonCode: "service-unavailable",
+      });
+    }
+    const snapshotWorker = Promise.resolve().then(() => runSnapshotWorker(snapshotOptions));
+    activeSnapshotWorkers.set(snapshotWorker, {
+      drainDeadlineMilliseconds: appSnapshotDrainDeadlineMilliseconds(snapshotOptions),
+    });
+    const forgetSnapshotWorker = () => {
+      activeSnapshotWorkers.delete(snapshotWorker);
+    };
+    snapshotWorker.then(forgetSnapshotWorker, forgetSnapshotWorker);
+    return snapshotWorker;
+  }
+
+  function activeWorkerDrainTimeoutMilliseconds(nowMilliseconds = Date.now()) {
+    let timeoutMilliseconds = 0;
+    for (const activeWorkerGroup of [activeCommandWorkers, activeSnapshotWorkers]) {
+      for (const activeWorker of activeWorkerGroup.values()) {
+        timeoutMilliseconds += Math.max(0, activeWorker.drainDeadlineMilliseconds - nowMilliseconds);
+      }
+    }
+    return Math.max(0, Math.ceil(timeoutMilliseconds));
+  }
+
+  function appSnapshotDrainDeadlineMilliseconds(snapshotOptions) {
+    return Date.now() + appSnapshotExecutionTimeoutMs(snapshotOptions);
+  }
+
+  function commandDrainDeadlineMilliseconds(request) {
+    const executionTimeoutMs = optionalBodyInteger(request, "clientCommandExecutionTimeoutMilliseconds", { positive: true })
+      ?? commandExecutionTimeoutMsForDispatch(paths, request);
+    return Date.now() + executionTimeoutMs;
+  }
+
+  function runSerializedServiceWork(request, work) {
+    if (shuttingDown) {
+      throw new BrokerError("Broker service is shutting down.", {
+        reasonCode: "service-unavailable",
+      });
+    }
+    const priorCommandWorkers = commandWorkerQueue.catch(() => {});
+    const commandWorker = priorCommandWorkers.then(work);
+    if (request !== null) {
+      activeCommandWorkers.set(commandWorker, {
+        drainDeadlineMilliseconds: commandDrainDeadlineMilliseconds(request),
+      });
+    }
+    commandWorkerQueue = commandWorker.catch(() => {});
+    const forgetCommandWorker = () => {
+      activeCommandWorkers.delete(commandWorker);
+    };
+    commandWorker.then(forgetCommandWorker, forgetCommandWorker);
+    return commandWorker;
+  }
+
+  function closeCommandAdmissionForShutdown() {
+    if (shuttingDown) {
+      return false;
     }
     shuttingDown = true;
+    if (idleReconcileTimer !== null) {
+      (options.clearIntervalFn ?? clearInterval)(idleReconcileTimer);
+      idleReconcileTimer = null;
+    }
+    return true;
+  }
+
+  async function shutdown({ admissionAlreadyClosed = false, exitProcess = true } = {}) {
+    if (!admissionAlreadyClosed && !closeCommandAdmissionForShutdown()) {
+      return;
+    }
+    if (activeIdleReconciliation !== null) {
+      await activeIdleReconciliation;
+    }
+    if (activeCommandWorkers.size > 0) {
+      await Promise.allSettled(activeCommandWorkers.keys());
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    if (activeSnapshotWorkers.size > 0) {
+      await Promise.allSettled(activeSnapshotWorkers.keys());
+      await new Promise((resolve) => setImmediate(resolve));
+    }
     removeIfExists(paths.serviceMetadataPath);
     for (const stream of activeEventStreams) {
       stream.controller.abort();
@@ -875,7 +1133,7 @@ export async function startBrokerService(paths, options = {}) {
       }
 
       if (request.method === "GET" && requestUrl.pathname === "/v1/app/snapshot") {
-        const payload = appSnapshotBroker(paths, {
+        const payload = await runTrackedAppSnapshotWorker({
           eventLimit: parseNonNegativeIntegerQuery(requestUrl.searchParams.get("eventLimit"), "eventLimit") ?? 50,
         });
         sendJson(response, 200, {
@@ -897,8 +1155,11 @@ export async function startBrokerService(paths, options = {}) {
         }
         assertExpectedServiceIdentity(metadata, body.expectedServiceIdentity);
         assertCommandFreshForDispatch(paths, body);
-        const payload = executeBrokerCommand(paths, body);
-        const serviceMetadata = body.group === "capacity" ? {} : { servedBy: metadata };
+        const payload = await runSerializedCommandWorker(body);
+        if (payload?.snapshotRefresh?.ok === false && shouldSurfaceServiceSnapshotRefreshError(body, payload.snapshotRefresh)) {
+          throw serviceSnapshotRefreshError(payload.snapshotRefresh);
+        }
+        const serviceMetadata = body.group === "capacity" || body.group === "idle" ? {} : { servedBy: metadata };
         sendJson(response, 200, {
           ok: true,
           ...payload,
@@ -964,13 +1225,15 @@ export async function startBrokerService(paths, options = {}) {
           signal: activeRequest?.controller.signal,
         });
         assertExpectedServiceIdentity(metadata, body.expectedServiceIdentity);
+        closeCommandAdmissionForShutdown();
         sendJson(response, 200, {
+          activeCommandDrainTimeoutMilliseconds: activeWorkerDrainTimeoutMilliseconds(),
           ok: true,
           service: metadata,
           stopping: true,
         }, () => {
           setImmediate(() => {
-            shutdown({ exitProcess: false }).catch((error) => {
+            shutdown({ admissionAlreadyClosed: true, exitProcess: false }).catch((error) => {
               console.error(error);
               process.exit(1);
             });
@@ -1071,6 +1334,25 @@ export async function startBrokerService(paths, options = {}) {
       restoreUmask();
       fs.chmodSync(paths.serviceSocketPath, 0o600);
       writeJsonAtomic(paths.serviceMetadataPath, metadata);
+      idleReconcileTimer = (options.setIntervalFn ?? setInterval)(() => {
+        if (activeIdleReconciliation !== null || shuttingDown) {
+          return;
+        }
+        const scheduledIdleReconciliation = runSerializedIdleReconciliation("service-timer", {
+          waitForLeaseMutationLock: false,
+        }).catch((error) => {
+          if (error instanceof BrokerError && error.payload?.reasonCode === LEASE_MUTATION_LOCK_BUSY_REASON_CODE) {
+            return;
+          }
+          (options.onIdleReconcileError ?? console.error)(error);
+        }).finally(() => {
+          if (activeIdleReconciliation === scheduledIdleReconciliation) {
+            activeIdleReconciliation = null;
+          }
+        });
+        activeIdleReconciliation = scheduledIdleReconciliation;
+      }, IDLE_RECONCILE_INTERVAL_MS);
+      idleReconcileTimer?.unref?.();
       releaseStartupLock();
       resolve({
         metadata,
@@ -1078,4 +1360,45 @@ export async function startBrokerService(paths, options = {}) {
       });
     });
   });
+}
+
+if (!isMainThread && workerData?.type === "idle-reconciliation") {
+  runIdleReconciliationWorkerTask(workerData)
+    .then((result) => {
+      parentPort?.postMessage({ ok: true, result });
+    })
+    .catch((error) => {
+      parentPort?.postMessage({
+        error: serializeIdleReconciliationError(error),
+        ok: false,
+      });
+    });
+}
+
+if (!isMainThread && workerData?.type === "command") {
+  Promise.resolve()
+    .then(() => executeBrokerCommand(workerData.paths, workerData.request))
+    .then((result) => {
+      parentPort?.postMessage({ ok: true, result });
+    })
+    .catch((error) => {
+      parentPort?.postMessage({
+        error: serializeIdleReconciliationError(error),
+        ok: false,
+      });
+    });
+}
+
+if (!isMainThread && workerData?.type === "app-snapshot") {
+  Promise.resolve()
+    .then(() => appSnapshotBrokerUnderMutationLock(workerData.paths, workerData.options ?? {}))
+    .then((result) => {
+      parentPort?.postMessage({ ok: true, result });
+    })
+    .catch((error) => {
+      parentPort?.postMessage({
+        error: serializeIdleReconciliationError(error),
+        ok: false,
+      });
+    });
 }

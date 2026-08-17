@@ -99,7 +99,7 @@ final class BrokerServiceClientTests: XCTestCase {
       ).executionTimeoutSeconds,
       7100
     )
-    XCTAssertEqual(BrokerCommandRequest(command: "acquire", group: "lease", options: [:]).executionTimeoutSeconds, 1191)
+    XCTAssertEqual(BrokerCommandRequest(command: "acquire", group: "lease", options: [:]).executionTimeoutSeconds, 1431)
     XCTAssertEqual(BrokerCommandRequest(command: "release", group: "lease", options: [:]).executionTimeoutSeconds, 890)
     XCTAssertEqual(BrokerCommandRequest(command: "release", group: "lease", options: [:]).transferTimeoutSeconds, 950)
     XCTAssertEqual(BrokerCommandRequest(command: "create", group: "pin", options: [:]).executionTimeoutSeconds, 890)
@@ -107,6 +107,13 @@ final class BrokerServiceClientTests: XCTestCase {
     XCTAssertEqual(BrokerCommandRequest(command: "status", group: "host", options: [:]).executionTimeoutSeconds, 890)
     XCTAssertEqual(BrokerCommandRequest(command: "status", group: "doctor", options: [:]).executionTimeoutSeconds, 890)
     XCTAssertEqual(BrokerCommandRequest(command: "explain", group: "lease", options: [:]).executionTimeoutSeconds, 890)
+    XCTAssertEqual(BrokerCommandRequest(command: "status", group: "idle", options: [:]).executionTimeoutSeconds, 890)
+    XCTAssertEqual(
+      BrokerCommandRequest(command: "cleanup", group: "idle", options: ["apply": .bool(true)]).executionTimeoutSeconds,
+      1610
+    )
+    XCTAssertEqual(BrokerCommandRequest(command: "boot", group: "simulators", options: [:]).executionTimeoutSeconds, 1130)
+    XCTAssertEqual(BrokerCommandRequest(command: "boot", group: "simulators", options: [:]).transferTimeoutSeconds, 1190)
     XCTAssertEqual(BrokerCommandRequest(command: "shutdown", group: "simulators", options: [:]).executionTimeoutSeconds, 1010)
     XCTAssertEqual(BrokerCommandRequest(command: "shutdown", group: "simulators", options: [:]).transferTimeoutSeconds, 1070)
     XCTAssertEqual(BrokerCommandRequest(command: "erase", group: "simulators", options: [:]).executionTimeoutSeconds, 1130)
@@ -165,6 +172,23 @@ final class BrokerServiceClientTests: XCTestCase {
       ).executionTimeoutSeconds,
       4930
     )
+  }
+
+  func testIdleCleanupEnvelopeDecodesCountOnlyPlanFields() throws {
+    let envelope = try JSONDecoder().decode(BrokerCommandEnvelope.self, from: Data("""
+    {
+      "eligibleCount": 2,
+      "ok": true,
+      "planId": "cleanup-plan",
+      "schemaVersion": 1,
+      "status": "changes_required"
+    }
+    """.utf8))
+
+    XCTAssertEqual(envelope.eligibleCount, 2)
+    XCTAssertEqual(envelope.planId, "cleanup-plan")
+    XCTAssertEqual(envelope.status, "changes_required")
+    XCTAssertTrue(envelope.ok == true)
   }
 
   func testCommandTransferTimeoutsCoverStaleContainmentBudget() throws {
@@ -233,6 +257,23 @@ final class BrokerServiceClientTests: XCTestCase {
 
     XCTAssertEqual(unchangedBudget.executionTimeoutSeconds, 890)
     XCTAssertEqual(forcedBudget.executionTimeoutSeconds, 6140)
+  }
+
+  func testIdleCleanupTimeoutBudgetFallsBackWhenHostAliasesAreAbsent() throws {
+    let fixture = try makeServiceFixture()
+    try writeJSONObject([
+      "hostId": "missing-aliases-host",
+      "version": 1,
+    ], to: fixture.paths.hostConfigURL)
+
+    let budget = BrokerCommandRequest(
+      command: "cleanup",
+      group: "idle",
+      options: ["apply": .bool(true)]
+    ).timeoutBudget(paths: fixture.paths)
+
+    XCTAssertEqual(budget.executionTimeoutSeconds, 1610)
+    XCTAssertEqual(budget.transferTimeoutSeconds, 1670)
   }
 
   func testCommandClientRejectsLiveServiceIdentityMismatchBeforeMutation() async throws {

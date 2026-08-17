@@ -166,6 +166,10 @@ export function createSystemSimctlAdapter({ commandRunner = defaultCommandRunner
       if (typeof result === "object" && result !== null && result.exitCode !== 0) {
         throwSimctlResult(args, result);
       }
+      runCommand(["bootstatus", simulatorId, "-b"]);
+    },
+    waitForBooted(simulatorId) {
+      runCommand(["bootstatus", simulatorId, "-b"]);
     },
     createDevice(name, deviceTypeId, runtimeId) {
       return String(runCommand(["create", name, deviceTypeId, runtimeId])).trim();
@@ -233,6 +237,9 @@ export function createFixtureSimctlAdapter({ statePath }) {
         device.lastBootedAt = new Date().toISOString();
         device.state = "Booted";
       });
+    },
+    waitForBooted(simulatorId) {
+      findDeviceOrThrow(readFixtureState(resolvedStatePath), simulatorId);
     },
     createDevice(name, deviceTypeId, runtimeId) {
       return mutateState((state) => {

@@ -7,6 +7,12 @@ derived_data_path="${DERIVED_DATA_PATH:-$repo_root/DerivedData/SimulatorBrokerAp
 result_bundle_path=""
 build_only=false
 declare -a only_testing_filters=()
+test_runtime_root="$(mktemp -d "${TMPDIR:-/tmp}/simbroker-app-tests.XXXXXX")"
+
+cleanup() {
+  rm -rf "$test_runtime_root"
+}
+trap cleanup EXIT
 
 usage() {
   cat <<'EOF'
@@ -133,6 +139,8 @@ declare -a xcodebuild_command=(
   -derivedDataPath "$derived_data_path"
   -destination "platform=macOS"
   -resultBundlePath "$result_bundle_path"
+  "SIMBROKER_TEST_HOST_CONFIG=$test_runtime_root/host-config.json"
+  "SIMBROKER_TEST_STATE_ROOT=$test_runtime_root/state"
 )
 
 if ((${#only_testing_filters[@]} > 0)); then

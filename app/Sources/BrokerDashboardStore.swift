@@ -61,6 +61,7 @@ final class BrokerDashboardStore {
   private let localCommandRunner: any BrokerLocalCommandRunning
   private let loader: any BrokerSnapshotLoading
   private var completedRefreshOutcomes: [Int: BrokerRefreshOutcome] = [:]
+  private var idleCleanupPreviewGeneration = 0
   private var refreshGeneration = 0
   private var refreshOutcomeWaiters: [Int: [CheckedContinuation<BrokerRefreshOutcome, Never>]] = [:]
   private let refreshInterval: Duration
@@ -78,11 +79,16 @@ final class BrokerDashboardStore {
   var loadedState: BrokerLoadedState?
   var pendingClearPinRequest: BrokerPendingClearPinRequest?
   var pendingCreatePinRequest: BrokerPendingCreatePinRequest?
+  var pendingIdleCleanupRequest: BrokerPendingIdleCleanupRequest?
   var pendingLifecycleRequest: BrokerPendingLifecycleRequest?
   var pendingOverrideRequest: BrokerLifecycleOverrideRequest?
   var pendingReleaseLeaseRequest: BrokerPendingLeaseReleaseRequest?
   var selectedPane: BrokerNavigationPane = .overview {
     didSet {
+      if selectedPane != .overview {
+        idleCleanupPreviewGeneration += 1
+        pendingIdleCleanupRequest = nil
+      }
       guard selectedPane != .simulators else {
         return
       }
@@ -597,6 +603,120 @@ final class BrokerDashboardStore {
     }
   }
 
+  func applyIdlePolicy(graceSeconds: Int) async throws {
+    guard (60 ... 86_400).contains(graceSeconds) else {
+      throw BrokerServiceCommandClientError.transportFailure("Enter a whole number of seconds from 60 through 86400.")
+    }
+    let request = BrokerCommandRequest(
+      command: "enable",
+      group: "idle",
+      options: [
+        "actorId": .string(Self.appHumanActorId),
+        "actorType": .string("human"),
+        "graceSeconds": .int(graceSeconds),
+      ]
+    )
+    try await executeMutation(
+      actionName: "idle-enable",
+      successMessage: "Automatic shutdown updated."
+    ) { [self, request] in
+      _ = try await self.commandClient.send(request)
+    }
+  }
+
+  func disableIdlePolicy() async throws {
+    let request = BrokerCommandRequest(
+      command: "disable",
+      group: "idle",
+      options: [
+        "actorId": .string(Self.appHumanActorId),
+        "actorType": .string("human"),
+      ]
+    )
+    try await executeMutation(
+      actionName: "idle-disable",
+      successMessage: "Automatic shutdown disabled."
+    ) { [self, request] in
+      _ = try await self.commandClient.send(request)
+    }
+  }
+
+  func requestIdleCleanup() {
+    guard canSendCommands, isApplyingAction == false else {
+      return
+    }
+    idleCleanupPreviewGeneration += 1
+    let previewGeneration = idleCleanupPreviewGeneration
+    isApplyingAction = true
+    Task {
+      defer { isApplyingAction = false }
+      do {
+        let response = try await commandClient.send(
+          BrokerCommandRequest(command: "cleanup", group: "idle", options: [:])
+        )
+        guard let eligibleCount = response.eligibleCount,
+              let planId = response.planId,
+              planId.isEmpty == false
+        else {
+          throw BrokerServiceCommandClientError.invalidJSONResponse
+        }
+        guard selectedPane == .overview && previewGeneration == idleCleanupPreviewGeneration else {
+          return
+        }
+        if eligibleCount == 0 {
+          pendingIdleCleanupRequest = nil
+          lastErrorMessage = nil
+          setActionMessage("No idle simulators are eligible right now.")
+          return
+        }
+        pendingIdleCleanupRequest = BrokerPendingIdleCleanupRequest(
+          eligibleCount: eligibleCount,
+          planId: planId
+        )
+        lastErrorMessage = nil
+      } catch {
+        guard selectedPane == .overview && previewGeneration == idleCleanupPreviewGeneration else {
+          return
+        }
+        lastErrorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  func confirmIdleCleanup() {
+    guard let pendingIdleCleanupRequest else {
+      return
+    }
+    self.pendingIdleCleanupRequest = nil
+    Task {
+      do {
+        try await applyConfirmedIdleCleanup(pendingIdleCleanupRequest)
+      } catch {
+        lastErrorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  private func applyConfirmedIdleCleanup(_ cleanup: BrokerPendingIdleCleanupRequest) async throws {
+    let request = BrokerCommandRequest(
+      command: "cleanup",
+      group: "idle",
+      options: [
+        "actorId": .string(Self.appHumanActorId),
+        "actorType": .string("human"),
+        "apply": .bool(true),
+        "confirmPlanId": .string(cleanup.planId),
+      ]
+    )
+    try await executeMutation(
+      actionName: "idle-cleanup",
+      successMessage: "Idle cleanup completed. Review the last result below.",
+      acceptSuccessfulRefreshRetry: true
+    ) { [self, request] in
+      _ = try await self.commandClient.send(request)
+    }
+  }
+
   func releaseLease(_ lease: BrokerLease) async throws {
     let request = BrokerCommandRequest(
       command: "release",
@@ -717,6 +837,7 @@ final class BrokerDashboardStore {
     actionName: String,
     alias: String? = nil,
     successMessage: String,
+    acceptSuccessfulRefreshRetry: Bool = false,
     operation: @escaping @Sendable () async throws -> Void
   ) async throws {
     logCommandStart(actionName: actionName, alias: alias)
@@ -727,10 +848,6 @@ final class BrokerDashboardStore {
 
     do {
       try await operation()
-      try await requireRefreshAfterMutation()
-      logCommandSuccess(actionName: actionName, alias: alias)
-      setActionMessage(successMessage)
-      lastErrorMessage = nil
     } catch let error as BrokerServiceCommandError where error.needsOverrideConfirmation {
       logCommandOverrideRequired(actionName: actionName, alias: alias, error: error)
       throw error
@@ -740,6 +857,30 @@ final class BrokerDashboardStore {
       lastErrorMessage = error.localizedDescription
       throw error
     }
+
+    do {
+      try await requireRefreshAfterMutation()
+    } catch {
+      if acceptSuccessfulRefreshRetry {
+        do {
+          try await requireRefreshAfterMutation(silent: true)
+          logCommandSuccess(actionName: actionName, alias: alias)
+          setActionMessage(successMessage)
+          lastErrorMessage = nil
+          return
+        } catch {
+          // Preserve the first post-commit refresh failure for diagnostics.
+        }
+      }
+      logCommandFailure(actionName: actionName, alias: alias, error: error)
+      lastActionMessage = nil
+      lastErrorMessage = error.localizedDescription
+      throw error
+    }
+
+    logCommandSuccess(actionName: actionName, alias: alias)
+    setActionMessage(successMessage)
+    lastErrorMessage = nil
   }
 
   private func performLocalAction(messageFactory: @escaping @Sendable () async throws -> String) async throws {
@@ -803,8 +944,8 @@ final class BrokerDashboardStore {
     }
   }
 
-  private func requireRefreshAfterMutation() async throws {
-    var outcome = await refresh()
+  private func requireRefreshAfterMutation(silent: Bool = false) async throws {
+    var outcome = await refresh(silent: silent)
     var followedGenerations: Set<Int> = []
 
     while true {

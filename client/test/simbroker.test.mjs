@@ -12,8 +12,9 @@ import {
   executeServiceCommand,
   probeService,
   serviceCommandExecutionTimeoutMs,
-  serviceStartupTimeoutMs,
   serviceCommandTimeoutMs,
+  serviceStopTimeoutMs,
+  serviceStartupTimeoutMs,
   streamServiceEvents,
 } from "../service/service-client.mjs";
 import {
@@ -107,6 +108,7 @@ function makeFixture() {
 
   return {
     hostConfigPath,
+    projectFilePath,
     repoRoot,
     root,
     simctl,
@@ -227,6 +229,60 @@ function runCliAsync(fixture, envOverrides, ...args) {
         status,
         stderr,
         stdout,
+      });
+    });
+  });
+}
+
+function runCliAsyncWithTimeout(fixture, envOverrides, timeoutMs, ...args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [
+      CLI_PATH,
+      "--host-config", fixture.hostConfigPath,
+      "--state-root", fixture.stateRoot,
+      ...args,
+    ], {
+      env: {
+        ...process.env,
+        ...fixture.simctl?.env,
+        ...envOverrides,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, timeoutMs);
+    timeout.unref?.();
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (status, signal) => {
+      clearTimeout(timeout);
+      let json = null;
+      if (stdout && timedOut === false) {
+        try {
+          json = JSON.parse(stdout);
+        } catch {
+          json = null;
+        }
+      }
+      resolve({
+        json,
+        signal,
+        status,
+        stderr,
+        stdout,
+        timedOut,
       });
     });
   });
@@ -731,6 +787,33 @@ test("capacity apply contains snapshot refresh failures after finalization", () 
   assert.equal(transactions.some((transaction) => transaction.status === "finalized"), true);
 });
 
+test("idle cleanup preview skips final app snapshot refresh", () => {
+  const fixture = makeFixture();
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  const snapshotDirectory = path.join(fixture.root, "snapshot-directory");
+  fs.mkdirSync(snapshotDirectory);
+  const paths = {
+    ...resolveBrokerPaths({
+      hostConfigPath: fixture.hostConfigPath,
+      projectFilePath: fixture.projectFilePath,
+      stateRoot: fixture.stateRoot,
+    }),
+    appSnapshotPath: snapshotDirectory,
+  };
+
+  const preview = executeBrokerCommand(paths, {
+    command: "cleanup",
+    group: "idle",
+    options: {
+      processExists: () => true,
+      simctlAdapter: fixture.simctl.adapter,
+    },
+  });
+
+  assert.equal(preview.mode, "preview");
+  assert.equal(preview.status, "no_changes");
+});
+
 test("lease acquire preserves the committed lease when snapshot refresh fails", () => {
   const fixture = makeFixture();
   assert.equal(runCli(fixture, "host", "init").status, 0);
@@ -762,6 +845,125 @@ test("lease acquire preserves the committed lease when snapshot refresh fails", 
   assert.equal(acquired.ok, true);
   assert.equal(acquired.snapshotRefresh.ok, false);
   assert.equal(fs.existsSync(path.join(paths.leasesDir, `${acquired.lease.leaseId}.json`)), true);
+});
+
+test("lease acquire preserves the committed lease when idle policy metadata is malformed", () => {
+  const fixture = makeFixture();
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  fs.writeFileSync(path.join(fixture.stateRoot, "idle-policy.json"), "{not-json\n");
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+
+  const acquired = executeBrokerCommand(paths, {
+    command: "acquire",
+    group: "lease",
+    options: {
+      actorId: "agent-idle-policy-warning",
+      actorType: "agent",
+      ownerPid: process.pid,
+      processExists: (pid) => pid === process.pid,
+      projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+      purposeId: "agent-ui-session",
+      simctlAdapter: fixture.simctl.adapter,
+    },
+  });
+
+  assert.equal(acquired.ok, true);
+  assert.equal(acquired.snapshotRefresh, undefined);
+  assert.equal(fs.existsSync(path.join(paths.leasesDir, `${acquired.lease.leaseId}.json`)), true);
+  assert.equal(readJson(paths.appSnapshotPath).idle.configured, false);
+});
+
+test("lease acquire CLI preserves committed leases when idle policy metadata is malformed", () => {
+  const fixture = makeFixture();
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  fs.writeFileSync(path.join(fixture.stateRoot, "idle-policy.json"), "{not-json\n");
+
+  const acquired = runCli(
+    fixture,
+    "lease",
+    "acquire",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--json",
+  );
+
+  assert.equal(acquired.status, 0, acquired.stderr);
+  assert.equal(acquired.json.snapshotRefresh, undefined);
+  assert.deepEqual(acquired.json.scheduler, {
+    active: false,
+    limitation: "invalid-config",
+  });
+  assert.equal(fs.existsSync(path.join(fixture.stateRoot, "leases", `${acquired.json.lease.leaseId}.json`)), true);
+});
+
+test("idle mutations surface final snapshot refresh failures", () => {
+  const fixture = makeFixture();
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  const snapshotDirectory = path.join(fixture.root, "snapshot-directory");
+  fs.mkdirSync(snapshotDirectory);
+  const paths = {
+    ...resolveBrokerPaths({
+      hostConfigPath: fixture.hostConfigPath,
+      projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+      stateRoot: fixture.stateRoot,
+    }),
+    appSnapshotPath: snapshotDirectory,
+  };
+
+  assert.throws(() => {
+    executeBrokerCommand(paths, {
+      command: "enable",
+      group: "idle",
+      options: {
+        actorId: "operator",
+        actorType: "human",
+        graceSeconds: 60,
+        processExists: () => true,
+        simctlAdapter: fixture.simctl.adapter,
+      },
+    });
+  }, (error) =>
+    error.payload?.reasonCode === "snapshot-refresh-failed"
+    && error.payload?.error === "Failed to refresh the app snapshot after the idle command committed."
+    && error.cause?.message.includes(snapshotDirectory)
+    && error.payload?.cause === undefined
+    && !JSON.stringify(error.payload).includes(snapshotDirectory));
+  assert.equal(readJson(paths.idlePolicyPath).graceSeconds, 60);
+});
+
+test("malformed idle policy does not break non-scheduler direct commands", () => {
+  const fixture = makeFixture();
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  const acquired = runCli(
+    fixture,
+    "lease",
+    "acquire",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--json",
+  );
+  assert.equal(acquired.status, 0);
+  fs.writeFileSync(path.join(fixture.stateRoot, "idle-policy.json"), "{not-json\n");
+
+  const help = runCli(fixture, "help", "--json");
+  assert.equal(help.status, 0);
+  assert.equal("scheduler" in help.json, false);
+
+  const hostStatus = runCli(fixture, "host", "status", "--json");
+  assert.equal(hostStatus.status, 0);
+  assert.equal(hostStatus.json.snapshotRefresh, undefined);
+
+  const release = runCli(fixture, "lease", "release", "--lease-id", acquired.json.lease.leaseId, "--json");
+  assert.equal(release.status, 0);
+  assert.equal(release.json.snapshotRefresh, undefined);
 });
 
 test("final snapshot refresh propagates process sampler timeouts", () => {
@@ -1101,6 +1303,53 @@ test("lease release request carries requester actor flags", () => {
   assert.equal(request.options.actorId, "operator-1");
 });
 
+test("idle command requests enforce explicit policy and confirmed cleanup shapes", () => {
+  const { flags: enableFlags } = parseArgs([
+    "--grace-seconds", "60",
+    "--actor-type", "human",
+    "--actor-id", "operator-1",
+  ]);
+  const enable = createCommandRequest({}, "idle", "enable", enableFlags);
+  assert.deepEqual(enable.options, {
+    actorId: "operator-1",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+
+  for (const value of ["59", "86401"]) {
+    const { flags: outOfRangeFlags } = parseArgs([
+      "--grace-seconds",
+      value,
+      "--actor-type",
+      "human",
+      "--actor-id",
+      "operator-1",
+    ]);
+    assert.throws(() => {
+      createCommandRequest({}, "idle", "enable", outOfRangeFlags);
+    }, (error) => error.payload?.reasonCode === "invalid-flag");
+  }
+
+  const { flags: cleanupFlags } = parseArgs([
+    "--apply",
+    "--confirm", "plan-1",
+    "--actor-type", "human",
+    "--actor-id", "operator-1",
+  ]);
+  const cleanup = createCommandRequest({}, "idle", "cleanup", cleanupFlags);
+  assert.deepEqual(cleanup.options, {
+    actorId: "operator-1",
+    actorType: "human",
+    apply: true,
+    confirmPlanId: "plan-1",
+  });
+
+  const { flags: invalidPreviewFlags } = parseArgs(["--actor-id", "operator-1"]);
+  assert.throws(() => {
+    createCommandRequest({}, "idle", "cleanup", invalidPreviewFlags);
+  }, (error) => error.payload?.reasonCode === "invalid-flag");
+});
+
 test("events watch follow rejects non-positive poll intervals", () => {
   for (const value of ["0", "-1"]) {
     const { flags } = parseArgs([
@@ -1198,12 +1447,12 @@ test("service containment timeout scales with term wait and diagnostics", () => 
   }), 905_000);
 });
 
-test("service lease acquire timeout includes reset-on-acquire budget", () => {
+test("service lease acquire timeout includes reset and boot-on-acquire budgets", () => {
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "acquire",
     group: "lease",
     options: {},
-  }), 1_185_250);
+  }), 1_425_250);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "acquire",
     group: "lease",
@@ -1212,7 +1461,51 @@ test("service lease acquire timeout includes reset-on-acquire budget", () => {
       resetLockTimeoutMilliseconds: 120_000,
       resetSettleMilliseconds: 500,
     },
-  }), 1_305_500);
+  }), 1_545_500);
+});
+
+test("service idle timeouts cover serialized state, snapshots, and bounded shutdown work", () => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "status",
+    group: "idle",
+    options: {},
+  }, { paths }), 885_000);
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "cleanup",
+    group: "idle",
+    options: { apply: true },
+  }, { paths }), 1_125_000);
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "reconcile",
+    group: "idle",
+    options: {},
+  }, { paths }), 1_125_000);
+});
+
+test("service stop timeout adds serialized command drain and idle reconciliation budgets", () => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  const idleReconciliationBudgetMilliseconds = serviceCommandTimeoutMs({
+    command: "reconcile",
+    group: "idle",
+    options: {},
+  }, { paths });
+  const activeCommandDrainTimeoutMilliseconds = idleReconciliationBudgetMilliseconds + 25_000;
+
+  assert.equal(
+    serviceStopTimeoutMs(paths, { activeCommandDrainTimeoutMilliseconds }),
+    idleReconciliationBudgetMilliseconds + activeCommandDrainTimeoutMilliseconds,
+  );
 });
 
 test("service mutation timeouts cover broker lock waits", () => {
@@ -1289,6 +1582,11 @@ test("service mutation timeouts cover broker lock waits", () => {
     options: {},
   }), 885_000);
   assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "boot",
+    group: "simulators",
+    options: {},
+  }), 1_125_000);
+  assert.equal(serviceCommandExecutionTimeoutMs({
     command: "shutdown",
     group: "simulators",
     options: {},
@@ -1363,11 +1661,57 @@ test("service command timeout budgets stale containment sampling from lease file
   assert.equal(serviceCommandTimeoutMs(request, { paths }), 945_000 + (2 * staleContainmentBudgetMs));
 });
 
-test("service startup timeout covers startup lock, snapshot process, and inventory work", () => {
+test("service startup timeout covers startup reconciliation, snapshot, and lock work", () => {
   assert.equal(
     serviceStartupTimeoutMs(),
-    (3 * SIMCTL_COMMAND_TIMEOUT_MS) + (3 * PROCESS_SAMPLER_TIMEOUT_MS) + 5_000,
+    (12 * SIMCTL_COMMAND_TIMEOUT_MS) + (4 * PROCESS_SAMPLER_TIMEOUT_MS) + 120_000 + 5_000,
   );
+});
+
+test("service startup timeout budgets stale containment from lease files", () => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  writeJson(path.join(paths.leasesDir, "stale-containment-1.json"), {
+    leaseId: "stale-containment-1",
+    runtime: {
+      commandPid: 4242,
+    },
+  });
+  writeJson(path.join(paths.leasesDir, "stale-containment-2.json"), {
+    leaseId: "stale-containment-2",
+    runtime: {
+      ownerPgid: 5252,
+    },
+  });
+  const staleContainmentBudgetMs = 2 * (
+    (STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS * PROCESS_SAMPLER_TIMEOUT_MS)
+    + DEFAULT_CONTAINMENT_TERM_WAIT_MS
+    + DEFAULT_CONTAINMENT_POST_KILL_WAIT_MS
+  );
+
+  assert.equal(
+    serviceStartupTimeoutMs({ paths }),
+    (8 * SIMCTL_COMMAND_TIMEOUT_MS)
+      + (4 * PROCESS_SAMPLER_TIMEOUT_MS)
+      + 120_000
+      + staleContainmentBudgetMs
+      + 5_000,
+  );
+});
+
+test("service start stops waiting when the spawned brokerd exits before readiness", async () => {
+  const fixture = makeFixture();
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  fs.writeFileSync(path.join(fixture.stateRoot, "idle-policy.json"), "{not-json\n");
+
+  const result = await runCliAsyncWithTimeout(fixture, {}, 3000, "service", "start");
+
+  assert.equal(result.timedOut, false, result.stderr);
+  assert.equal(result.status, 3);
+  assert.equal(result.json.reasonCode, "service-unavailable");
 });
 
 test("service probe treats request timeout as unavailable instead of missing", async (t) => {
@@ -1724,7 +2068,7 @@ test("local event follow with a limit pages bursts without dropping older unseen
           secondLeaseFile,
         ).status, 0);
       }
-      if (sleepCount >= 3) {
+      if (sleepCount >= 4) {
         abortController.abort();
       }
     },

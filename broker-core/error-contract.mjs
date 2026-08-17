@@ -56,6 +56,7 @@ const UNAVAILABLE_REASON_CODES = new Set([
 ]);
 
 const REPAIR_NEEDED_REASON_CODES = new Set([
+  "boot-on-acquire-failed",
   "reset-on-acquire-failed",
   "capacity-repair-required",
   "unhealthy-alias",
@@ -66,6 +67,9 @@ const OVERRIDE_REQUIRED_REASON_CODES = new Set([
   "capacity-human-required",
   "capacity-plan-stale",
   "human-override-required",
+  "idle-confirmation-required",
+  "idle-human-required",
+  "idle-plan-stale",
   "missing-override-reason",
   "override-alias-mismatch",
   "override-lease-mismatch",

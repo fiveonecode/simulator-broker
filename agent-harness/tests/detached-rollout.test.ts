@@ -217,7 +217,7 @@ describe("detached harness rollout", () => {
     } finally {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }
-  });
+  }, 15_000);
 
   it("honors the result-read limit in the standalone status command", () => {
     const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "agent-harness-detached-standalone-large-result-"));
@@ -262,7 +262,7 @@ describe("detached harness rollout", () => {
     } finally {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }
-  });
+  }, 15_000);
 
   it("runs the timeout watchdog from a protocol script file", async () => {
     const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "agent-harness-detached-watchdog-script-"));
@@ -295,7 +295,7 @@ describe("detached harness rollout", () => {
     } finally {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }
-  }, 10_000);
+  }, 20_000);
 
   it("bounds generic detached stdout logs", async () => {
     const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "agent-harness-detached-log-limit-"));

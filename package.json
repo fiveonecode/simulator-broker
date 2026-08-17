@@ -19,7 +19,7 @@
     "install:local": "bash ./scripts/install_local.sh",
     "package:distribution": "bash ./scripts/package_distribution.sh",
     "package:local": "bash ./scripts/package_local.sh",
-    "test": "npm run test:broker-core && npm run test:client && npm run test:harness-adoption && npm run test:app",
+    "test": "npm run verify:public-surface && npm run test:broker-core && npm run test:client && npm run test:harness-adoption && npm run test:app",
     "test:app": "bash ./scripts/test_app.sh",
     "test:app:build": "bash ./scripts/test_app.sh --build-only",
     "test:app:focus": "bash ./scripts/test_app.sh --only-testing",
@@ -27,7 +27,8 @@
     "test:client": "node --test client/test/*.test.mjs",
     "test:harness-adoption": "node --test examples/harness-adoption/test/*.test.mjs",
     "test:install-smoke": "bash ./scripts/install_smoke.sh",
-    "test:package-smoke": "bash ./scripts/package_smoke.sh"
+    "test:package-smoke": "bash ./scripts/package_smoke.sh",
+    "verify:public-surface": "node client/public-surface.mjs"
   },
   "version": "0.1.0",
   "description": "Local simulator broker and macOS operator app for coordinated iOS Simulator workflows",

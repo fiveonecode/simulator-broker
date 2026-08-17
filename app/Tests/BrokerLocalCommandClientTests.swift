@@ -116,7 +116,7 @@ final class BrokerLocalCommandClientTests: XCTestCase {
 
     XCTAssertEqual(
       runner.resolvedTimeoutNanoseconds(for: ["service", "start", "--host-config", "/tmp/host.json"]),
-      400 * 1_000_000_000
+      1605 * 1_000_000_000
     )
     XCTAssertEqual(
       runner.resolvedTimeoutNanoseconds(for: ["host", "init", "--bootstrap-config"]),
@@ -129,11 +129,34 @@ final class BrokerLocalCommandClientTests: XCTestCase {
     let tempRoot = try makeTempRoot()
     let stateRoot = tempRoot.appending(path: "state")
     let hostConfigURL = tempRoot.appending(path: "host-config.json")
+    try writeHostConfig(aliasCount: 8, to: hostConfigURL)
+    XCTAssertEqual(
+      runner.resolvedTimeoutNanoseconds(for: [
+        "service",
+        "start",
+        "--host-config",
+        hostConfigURL.path,
+        "--state-root",
+        stateRoot.path,
+      ]),
+      1845 * 1_000_000_000
+    )
     let leasesURL = stateRoot.appending(path: "leases")
     try FileManager.default.createDirectory(at: leasesURL, withIntermediateDirectories: true)
     try """
     {"leaseId":"stale-containment-1","runtime":{"commandPid":4242}}
     """.write(to: leasesURL.appending(path: "stale-containment-1.json"), atomically: true, encoding: .utf8)
+    XCTAssertEqual(
+      runner.resolvedTimeoutNanoseconds(for: [
+        "service",
+        "start",
+        "--host-config",
+        hostConfigURL.path,
+        "--state-root",
+        stateRoot.path,
+      ]),
+      1926 * 1_000_000_000
+    )
     XCTAssertEqual(
       runner.resolvedTimeoutNanoseconds(for: [
         "lease",
@@ -214,6 +237,19 @@ final class BrokerLocalCommandClientTests: XCTestCase {
     ].joined(separator: "\n").write(to: parentURL, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parentURL.path)
     return parentURL
+  }
+
+  private func writeHostConfig(aliasCount: Int, to url: URL) throws {
+    let aliases = (1 ... aliasCount)
+      .map { index in
+        """
+        {"alias":"ui-\(index)","simulatorId":"SIM-\(index)"}
+        """
+      }
+      .joined(separator: ",")
+    try """
+    {"version":1,"aliases":[\(aliases)]}
+    """.write(to: url, atomically: true, encoding: .utf8)
   }
 
   private func waitUntil(

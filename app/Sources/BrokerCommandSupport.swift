@@ -47,6 +47,13 @@ struct BrokerPendingLeaseReleaseRequest: Identifiable {
   var id: String { lease.leaseId }
 }
 
+struct BrokerPendingIdleCleanupRequest: Identifiable {
+  let eligibleCount: Int
+  let planId: String
+
+  var id: String { planId }
+}
+
 private struct BrokerDashboardStoreFocusedKey: FocusedValueKey {
   typealias Value = BrokerDashboardStore
 }

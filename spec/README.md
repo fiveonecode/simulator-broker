@@ -21,7 +21,8 @@ This repo exists to develop a reusable local simulator broker:
 | `spec/build-and-test.md` | Current setup and verification commands |
 | `spec/project-structure.md` | Folder contract for this seed repo |
 | `spec/agents.md` | Agent workflow and skill routing rules |
-| `spec/tasks/README.md` | Worker-ready implementation tasks derived from the macOS app audit |
+| `spec/tasks/README.md` | Worker-ready cross-layer and macOS audit implementation tasks |
+| `spec/tasks/public-safe-on-demand-simulator-lifecycle.md` | Cross-layer contract for deterministic warm reuse and public-safe idle shutdown |
 | `references/README.md` | Public-safe reference and example policy |
 
 ## Current project status
@@ -62,6 +63,12 @@ This repo exists to develop a reusable local simulator broker:
   `scripts/validate.sh` as the canonical full-repository validation entry point
 - implementation paths now require the `implementation` verification profile,
   while specs and harness contracts also require `spec-only`
+- lease acquisition now boots the selected simulator and deterministic selection
+  prefers a matching pin, then warm compatible capacity, then shutdown capacity,
+  with most-recent release reuse inside each tier
+- optional machine-local idle policy, scheduled reconciliation, confirmed cleanup,
+  app controls, and the `verify:public-surface` gate are implemented without a
+  shipped duration preference
 
 ## Lower-priority roadmap
 

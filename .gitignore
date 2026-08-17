@@ -1,4 +1,5 @@
 .DS_Store
+.public-safety.local
 node_modules/
 agent-harness/node_modules/
 agent-harness/artifacts/

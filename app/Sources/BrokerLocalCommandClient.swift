@@ -453,16 +453,19 @@ struct ProcessBrokerLocalCommandRunner: BrokerLocalCommandRunning {
 private enum BrokerLocalCommandTimeouts {
   private static let commandTransferWindowCount = 2
   private static let commandLauncherOverheadSeconds = 5
+  private static let defaultContainmentPostKillWaitMilliseconds = 50
+  private static let defaultContainmentTermWaitMilliseconds = 250
   private static let defaultCommandTimeoutNanoseconds: UInt64 = 30 * 1_000_000_000
+  private static let defaultLockTimeoutSeconds = 60
   private static let processSamplerInvocationsPerStateLoad = 1
   private static let processSamplerTimeoutSeconds = 10
+  private static let serviceStartHostAliasCount = 6
+  private static let serviceStartLeaseLockWaits = 2
   private static let serviceStartLockProcessSamplerInvocations = 2
-  private static let serviceStartSnapshotStateLoads = 1
-  private static let serviceStartTimeoutSeconds = (serviceStartSnapshotStateLoads * stateLoadBudgetSeconds)
-    + (serviceStartLockProcessSamplerInvocations * processSamplerTimeoutSeconds)
-    + commandLauncherOverheadSeconds
+  private static let serviceStartStateLoads = 2
   private static let simctlCommandTimeoutSeconds = 120
   private static let simctlInventoryCommandsPerStateLoad = 3
+  private static let staleContainmentProcessSamplerInvocations = 8
   private static let stateLoadBudgetSeconds = (simctlInventoryCommandsPerStateLoad * simctlCommandTimeoutSeconds)
     + (processSamplerInvocationsPerStateLoad * processSamplerTimeoutSeconds)
   private static let knownGroups = Set([
@@ -482,11 +485,15 @@ private enum BrokerLocalCommandTimeouts {
   }
 
   static func timeoutNanoseconds(for arguments: [String]) -> UInt64 {
+    let flags = flagMap(from: arguments)
     if let commandGroup = localCommandGroup(in: arguments),
        commandGroup == ("service", "start") {
-      return secondsToNanoseconds(serviceStartTimeoutSeconds + commandLauncherOverheadSeconds)
+      let paths = runtimePaths(from: flags)
+      let hostAliasCount = serviceStartHostAliasCount(from: paths)
+      return secondsToNanoseconds(
+        serviceStartTimeoutSeconds(paths: paths, hostAliasCount: hostAliasCount) + commandLauncherOverheadSeconds
+      )
     }
-    let flags = flagMap(from: arguments)
     guard let request = brokerCommandRequest(from: arguments, flags: flags) else {
       return defaultCommandTimeoutNanoseconds
     }
@@ -496,6 +503,57 @@ private enum BrokerLocalCommandTimeouts {
 
   private static func secondsToNanoseconds(_ seconds: Int) -> UInt64 {
     UInt64(max(1, seconds)) * 1_000_000_000
+  }
+
+  private static func serviceStartTimeoutSeconds(paths: BrokerRuntimePaths?, hostAliasCount: Int) -> Int {
+    (serviceStartStateLoads * stateLoadBudgetSeconds)
+      + staleContainmentBudgetSeconds(paths: paths)
+      + (serviceStartLeaseLockWaits * defaultLockTimeoutSeconds)
+      + (max(0, hostAliasCount) * simctlCommandTimeoutSeconds)
+      + (serviceStartLockProcessSamplerInvocations * processSamplerTimeoutSeconds)
+  }
+
+  private static func staleContainmentBudgetSeconds(paths: BrokerRuntimePaths?) -> Int {
+    let staleLeaseCount = staleContainmentLeaseCount(paths: paths)
+    guard staleLeaseCount > 0 else {
+      return 0
+    }
+    let budgetMilliseconds = staleLeaseCount * (
+      (staleContainmentProcessSamplerInvocations * processSamplerTimeoutSeconds * 1000)
+        + defaultContainmentTermWaitMilliseconds
+        + defaultContainmentPostKillWaitMilliseconds
+    )
+    return Int(ceil(Double(budgetMilliseconds) / 1000.0))
+  }
+
+  private static func staleContainmentLeaseCount(paths: BrokerRuntimePaths?) -> Int {
+    guard let leasesURL = paths?.stateRoot.appending(path: "leases"),
+          let leaseURLs = try? FileManager.default.contentsOfDirectory(
+            at: leasesURL,
+            includingPropertiesForKeys: nil
+          ) else {
+      return 0
+    }
+    let decoder = JSONDecoder()
+    return leaseURLs
+      .filter { $0.pathExtension == "json" }
+      .compactMap { url -> BrokerLeaseTimeoutSummary? in
+        guard let data = try? Data(contentsOf: url) else {
+          return nil
+        }
+        return try? decoder.decode(BrokerLeaseTimeoutSummary.self, from: data)
+      }
+      .count { $0.hasContainmentProcessMetadata }
+  }
+
+  private static func serviceStartHostAliasCount(from paths: BrokerRuntimePaths?) -> Int {
+    guard let paths,
+          let data = try? Data(contentsOf: paths.hostConfigURL),
+          let hostConfig = try? JSONDecoder().decode(BrokerServiceStartHostConfigTimeoutSummary.self, from: data),
+          let aliases = hostConfig.aliases else {
+      return serviceStartHostAliasCount
+    }
+    return aliases.count
   }
 
   private static func brokerCommandRequest(from arguments: [String], flags: [String: ParsedFlagValue]) -> BrokerCommandRequest? {
@@ -608,3 +666,9 @@ private enum BrokerLocalCommandTimeouts {
     }
   }
 }
+
+private struct BrokerServiceStartHostConfigTimeoutSummary: Decodable {
+  let aliases: [BrokerServiceStartHostConfigTimeoutAlias]?
+}
+
+private struct BrokerServiceStartHostConfigTimeoutAlias: Decodable {}

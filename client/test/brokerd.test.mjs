@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
-import { resolveBrokerPaths } from "../../broker-core/index.mjs";
+import { BrokerError, resolveBrokerPaths } from "../../broker-core/index.mjs";
 import {
   DEFAULT_CONTAINMENT_POST_KILL_WAIT_MS,
   DEFAULT_CONTAINMENT_TERM_WAIT_MS,
@@ -15,8 +15,11 @@ import {
   STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS,
 } from "../../broker-core/containment.mjs";
 import { createDeviceRecord, createSimctlFixture } from "../../broker-core/test/support/simctl-fixture.mjs";
-import { acquireServiceStartLock, startBrokerService } from "../service/brokerd.mjs";
-import { serviceCommandExecutionTimeoutMs } from "../service/service-client.mjs";
+import { acquireServiceStartLock, runServiceWorker, startBrokerService } from "../service/brokerd.mjs";
+import {
+  appSnapshotExecutionTimeoutMs,
+  serviceCommandExecutionTimeoutMs,
+} from "../service/service-client.mjs";
 
 const CLI_PATH = path.resolve("client/bin/simbroker.mjs");
 
@@ -371,6 +374,104 @@ test("service lifecycle routes CLI commands through brokerd and falls back after
   );
   assert.equal(release.status, 0);
   assert.equal(release.json.transport, "direct");
+});
+
+test("policy-enabled lease acquisition lazily starts brokerd and local-only reports its limitation", async (t) => {
+  const fixture = makeFixture(1);
+  t.after(async () => stopServiceIfRunning(fixture));
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+
+  const unconfigured = runCliWithEnv(fixture, { SIMBROKER_LOCAL_ONLY: "1" }, "idle", "status");
+  assert.equal(unconfigured.status, 0);
+  assert.equal(unconfigured.json.configured, false);
+  assert.deepEqual(unconfigured.json.scheduler, {
+    active: false,
+    limitation: "local-only-mode",
+  });
+
+  const enabled = runCli(
+    fixture,
+    "idle",
+    "enable",
+    "--grace-seconds",
+    "60",
+    "--actor-type",
+    "human",
+    "--actor-id",
+    "operator",
+  );
+  assert.equal(enabled.status, 0, enabled.stderr);
+  assert.equal(enabled.json.transport, "direct");
+  assert.deepEqual(enabled.json.scheduler, {
+    active: false,
+    limitation: "service-not-running",
+  });
+  const localOnlyConfigured = runCliWithEnv(fixture, { SIMBROKER_LOCAL_ONLY: "1" }, "idle", "status");
+  assert.equal(localOnlyConfigured.status, 0, localOnlyConfigured.stderr);
+  assert.equal(localOnlyConfigured.json.configured, true);
+  assert.deepEqual(localOnlyConfigured.json.scheduler, {
+    active: false,
+    limitation: "local-only-mode",
+  });
+  assert.equal(runCli(fixture, "service", "status").json.running, false);
+
+  const acquire = runCli(
+    fixture,
+    "lease",
+    "acquire",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--actor-type",
+    "agent",
+    "--actor-id",
+    "agent-lazy-start",
+    "--owner-pid",
+    String(process.pid),
+  );
+  assert.equal(acquire.status, 0, acquire.stderr);
+  assert.equal(acquire.json.transport, "service");
+  assert.deepEqual(acquire.json.scheduler, {
+    active: true,
+    limitation: null,
+  });
+  assert.equal(runCli(fixture, "service", "status").json.running, true);
+
+  const status = runCli(fixture, "idle", "status");
+  assert.equal(status.status, 0, status.stderr);
+  assert.equal(status.json.transport, "service");
+  assert.equal(status.json.scheduler.active, true);
+  assert.equal(Object.hasOwn(status.json, "servedBy"), false);
+  assert.equal(JSON.stringify(status.json).includes(fixture.root), false);
+
+  const release = runCli(fixture, "lease", "release", "--lease-id", acquire.json.lease.leaseId);
+  assert.equal(release.status, 0, release.stderr);
+  const preview = runCli(fixture, "idle", "cleanup");
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.equal(preview.json.eligibleCount, 1);
+  assert.equal(Object.hasOwn(preview.json, "servedBy"), false);
+  assert.equal(JSON.stringify(preview.json).includes("ui-1"), false);
+  assert.equal(JSON.stringify(preview.json).includes("SIM-UI-1"), false);
+  assert.equal(JSON.stringify(preview.json).includes(fixture.root), false);
+  const cleanup = runCli(
+    fixture,
+    "idle",
+    "cleanup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--actor-type",
+    "human",
+    "--actor-id",
+    "operator",
+  );
+  assert.equal(cleanup.status, 0, cleanup.stderr);
+  assert.equal(cleanup.json.shutdownCount, 1);
+  assert.equal(Object.hasOwn(cleanup.json, "servedBy"), false);
+  assert.equal(JSON.stringify(cleanup.json).includes("ui-1"), false);
+  assert.equal(JSON.stringify(cleanup.json).includes("SIM-UI-1"), false);
+  assert.equal(JSON.stringify(cleanup.json).includes(fixture.root), false);
 });
 
 test("service routes project forget through brokerd and refreshes the shared app snapshot", async (t) => {
@@ -826,6 +927,718 @@ test("brokerd publishes service metadata only after startup snapshot refresh", a
   assert.equal(fs.existsSync(paths.serviceMetadataPath), true);
 });
 
+test("brokerd workers reject clean exits that send no result", async () => {
+  await assert.rejects(
+    () => runServiceWorker({ type: "unknown-worker-type" }),
+    (error) => error instanceof BrokerError
+      && error.payload?.reasonCode === "internal-error",
+  );
+});
+
+test("brokerd reconciles immediately, every thirty seconds, refreshes snapshots, and cancels the timer", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    serviceSocketPath: path.join(fixture.root, "timer.sock"),
+    stateRoot: fixture.stateRoot,
+  });
+  const sources = [];
+  const reconcileLockWaits = [];
+  const snapshotLockWaits = [];
+  let snapshotCount = 0;
+  let intervalMilliseconds = null;
+  let timerCallback = null;
+  let timerCleared = false;
+  const timer = { unref() {} };
+  const service = await startBrokerService(paths, {
+    clearIntervalFn(value) {
+      assert.equal(value, timer);
+      timerCleared = true;
+    },
+    reconcileIdleBroker(_servicePaths, options) {
+      sources.push(options.source);
+      reconcileLockWaits.push(options.leaseMutationLockWait);
+      return { ok: true };
+    },
+    setIntervalFn(callback, milliseconds) {
+      timerCallback = callback;
+      intervalMilliseconds = milliseconds;
+      return timer;
+    },
+    writeAppSnapshotArtifact(_servicePaths, options) {
+      snapshotLockWaits.push(options.leaseMutationLockWait);
+      snapshotCount += 1;
+    },
+  });
+  t.after(async () => {
+    await service.shutdown({ exitProcess: false });
+  });
+
+  assert.deepEqual(sources, ["service-startup"]);
+  assert.deepEqual(reconcileLockWaits, [undefined]);
+  assert.deepEqual(snapshotLockWaits, [true]);
+  assert.equal(snapshotCount, 1);
+  assert.equal(intervalMilliseconds, 30_000);
+  timerCallback();
+  await waitFor(() => sources.length === 2);
+  assert.deepEqual(sources, ["service-startup", "service-timer"]);
+  assert.deepEqual(reconcileLockWaits, [undefined, false]);
+  assert.deepEqual(snapshotLockWaits, [true, true]);
+  assert.equal(snapshotCount, 2);
+
+  await service.shutdown({ exitProcess: false });
+  assert.equal(timerCleared, true);
+});
+
+test("brokerd dispatches scheduled idle reconciliation asynchronously without overlap", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    serviceSocketPath: path.join(fixture.root, "async-timer.sock"),
+    stateRoot: fixture.stateRoot,
+  });
+  let timerCallback = null;
+  const timer = { unref() {} };
+  const scheduledSources = [];
+  const scheduledResolvers = [];
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runScheduledIdleReconciliation(source) {
+      scheduledSources.push(source);
+      return new Promise((resolve) => {
+        scheduledResolvers.push(resolve);
+      });
+    },
+    setIntervalFn(callback) {
+      timerCallback = callback;
+      return timer;
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => {
+    for (const resolve of scheduledResolvers.splice(0)) {
+      resolve({ ok: true });
+    }
+    await service.shutdown({ exitProcess: false });
+  });
+
+  timerCallback();
+  timerCallback();
+  await waitFor(() => scheduledSources.length === 1);
+  assert.deepEqual(scheduledSources, ["service-timer"]);
+
+  scheduledResolvers.shift()({ ok: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  timerCallback();
+  await waitFor(() => scheduledSources.length === 2);
+  assert.deepEqual(scheduledSources, ["service-timer", "service-timer"]);
+
+  scheduledResolvers.shift()({ ok: true });
+  await service.shutdown({ exitProcess: false });
+});
+
+test("brokerd waits for active scheduled idle reconciliation during shutdown", async () => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    serviceSocketPath: path.join(fixture.root, "sw.sock"),
+    stateRoot: fixture.stateRoot,
+  });
+  let timerCallback = null;
+  const timer = { unref() {} };
+  const scheduledResolvers = [];
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runScheduledIdleReconciliation() {
+      return new Promise((resolve) => {
+        scheduledResolvers.push(resolve);
+      });
+    },
+    setIntervalFn(callback) {
+      timerCallback = callback;
+      return timer;
+    },
+    writeAppSnapshotArtifact() {},
+  });
+
+  timerCallback();
+  let shutdownResolved = false;
+  const shutdownPromise = service.shutdown({ exitProcess: false }).then(() => {
+    shutdownResolved = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(shutdownResolved, false);
+
+  scheduledResolvers.shift()({ ok: true });
+  await shutdownPromise;
+  assert.equal(shutdownResolved, true);
+});
+
+test("brokerd serializes command workers", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  const resolvers = [];
+  const startedCommands = [];
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker(request) {
+      startedCommands.push(request.command);
+      return new Promise((resolve) => {
+        resolvers.push(() => resolve({
+          command: request.command,
+          group: request.group,
+        }));
+      });
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => service.shutdown({ exitProcess: false }));
+
+  const firstRequest = requestService(fixture, {
+    body: { command: "global", group: "help", type: "command" },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await waitFor(() => startedCommands.length === 1);
+  const secondRequest = requestService(fixture, {
+    body: { command: "host", group: "help", type: "command" },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(startedCommands, ["global"]);
+
+  resolvers.shift()();
+  await waitFor(() => startedCommands.length === 2);
+  resolvers.shift()();
+
+  const [firstResponse, secondResponse] = await Promise.all([
+    firstRequest,
+    secondRequest,
+  ]);
+  assert.equal(firstResponse.statusCode, 200);
+  assert.equal(secondResponse.statusCode, 200);
+  assert.deepEqual(startedCommands, ["global", "host"]);
+});
+
+test("brokerd serializes scheduled idle reconciliation behind active command workers", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  let timerCallback = null;
+  const timer = { unref() {} };
+  let resolveCommand = null;
+  const events = [];
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker(request) {
+      events.push(`command:${request.command}`);
+      return new Promise((resolve) => {
+        resolveCommand = () => resolve({
+          command: request.command,
+          group: request.group,
+        });
+      });
+    },
+    runScheduledIdleReconciliation(source) {
+      events.push(`reconcile:${source}`);
+      return { ok: true };
+    },
+    setIntervalFn(callback) {
+      timerCallback = callback;
+      return timer;
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => service.shutdown({ exitProcess: false }));
+
+  const request = requestService(fixture, {
+    body: { command: "global", group: "help", type: "command" },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await waitFor(() => resolveCommand !== null);
+  timerCallback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["command:global"]);
+
+  resolveCommand();
+  const response = await request;
+  await waitFor(() => events.includes("reconcile:service-timer"));
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(events, ["command:global", "reconcile:service-timer"]);
+});
+
+test("brokerd revalidates queued command expiry before worker dispatch", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  const originalDateNow = Date.now;
+  let nowMilliseconds = 1_000_000;
+  const resolvers = [];
+  const startedCommands = [];
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker(request) {
+      startedCommands.push(request.command);
+      return new Promise((resolve) => {
+        resolvers.push(() => resolve({
+          command: request.command,
+          group: request.group,
+        }));
+      });
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  Date.now = () => nowMilliseconds;
+  t.after(async () => {
+    Date.now = originalDateNow;
+    await service.shutdown({ exitProcess: false });
+  });
+
+  const firstRequest = requestService(fixture, {
+    body: { command: "global", group: "help", type: "command" },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await waitFor(() => startedCommands.length === 1);
+  const secondRequest = requestService(fixture, {
+    body: {
+      clientCommandExecutionTimeoutMilliseconds: 25_000,
+      clientCommandQueueTimeoutMilliseconds: 1_000,
+      clientRequestStartedAtMilliseconds: nowMilliseconds,
+      command: "host",
+      group: "help",
+      options: {},
+      type: "command",
+    },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(startedCommands, ["global"]);
+
+  nowMilliseconds += 1_001;
+  resolvers.shift()();
+  const [firstResponse, secondResponse] = await Promise.all([
+    firstRequest,
+    secondRequest,
+  ]);
+
+  assert.equal(firstResponse.statusCode, 200);
+  assert.equal(secondResponse.statusCode, 409);
+  assert.equal(secondResponse.json.reasonCode, "service-command-expired");
+  assert.deepEqual(startedCommands, ["global"]);
+});
+
+test("brokerd waits for active command workers during shutdown", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  let resolveCommand = null;
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker(request) {
+      return new Promise((resolve) => {
+        resolveCommand = () => resolve({
+          command: request.command,
+          group: request.group,
+        });
+      });
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => service.shutdown({ exitProcess: false }));
+
+  const request = requestService(fixture, {
+    body: { command: "global", group: "help", type: "command" },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await waitFor(() => resolveCommand !== null);
+
+  let shutdownResolved = false;
+  const shutdownPromise = service.shutdown({ exitProcess: false }).then(() => {
+    shutdownResolved = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(shutdownResolved, false);
+
+  resolveCommand();
+  const response = await request;
+  await shutdownPromise;
+  assert.equal(response.statusCode, 200);
+  assert.equal(shutdownResolved, true);
+});
+
+test("brokerd waits for active app snapshot workers during shutdown", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  let resolveSnapshot = null;
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runAppSnapshotWorker() {
+      return new Promise((resolve) => {
+        resolveSnapshot = () => resolve({
+          generatedAt: "2026-01-01T00:00:00.000Z",
+        });
+      });
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => service.shutdown({ exitProcess: false }));
+
+  const request = requestServiceJson(fixture, "/v1/app/snapshot?eventLimit=10");
+  await waitFor(() => resolveSnapshot !== null);
+
+  let shutdownResolved = false;
+  const shutdownPromise = service.shutdown({ exitProcess: false }).then(() => {
+    shutdownResolved = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(shutdownResolved, false);
+
+  resolveSnapshot();
+  const response = await request;
+  await shutdownPromise;
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json.ok, true);
+  assert.equal(response.json.generatedAt, "2026-01-01T00:00:00.000Z");
+  assert.equal(shutdownResolved, true);
+});
+
+test("service stop reports active command drain timeout budget", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  let resolveCommand = null;
+  let service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker(request) {
+      return new Promise((resolve) => {
+        resolveCommand = () => resolve({
+          command: request.command,
+          group: request.group,
+        });
+      });
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => {
+    resolveCommand?.();
+    if (service !== null) {
+      await service.shutdown({ exitProcess: false });
+    }
+  });
+
+  const commandRequest = requestService(fixture, {
+    body: {
+      clientCommandExecutionTimeoutMilliseconds: 123_456,
+      clientCommandQueueTimeoutMilliseconds: 60_000,
+      clientRequestStartedAtMilliseconds: Date.now(),
+      command: "global",
+      group: "help",
+      options: {},
+      type: "command",
+    },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await waitFor(() => resolveCommand !== null);
+
+  const stop = await requestService(fixture, {
+    body: {},
+    method: "POST",
+    requestPath: "/v1/service/stop",
+  });
+  assert.equal(stop.statusCode, 200);
+  assert.equal(stop.json.ok, true);
+  assert.ok(stop.json.activeCommandDrainTimeoutMilliseconds > 100_000);
+  assert.ok(stop.json.activeCommandDrainTimeoutMilliseconds <= 123_456);
+
+  resolveCommand();
+  const commandResponse = await commandRequest;
+  assert.equal(commandResponse.statusCode, 200);
+  await waitFor(() => !fs.existsSync(paths.serviceMetadataPath));
+  service = null;
+});
+
+test("service stop reports active snapshot drain timeout budget", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  const resolveSnapshots = [];
+  let service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runAppSnapshotWorker() {
+      return new Promise((resolve) => {
+        resolveSnapshots.push(() => resolve({
+          generatedAt: "2026-01-01T00:00:00.000Z",
+        }));
+      });
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => {
+    for (const resolveSnapshot of resolveSnapshots) {
+      resolveSnapshot();
+    }
+    if (service !== null) {
+      await service.shutdown({ exitProcess: false });
+    }
+  });
+
+  const firstSnapshotRequest = requestServiceJson(fixture, "/v1/app/snapshot?eventLimit=10");
+  const secondSnapshotRequest = requestServiceJson(fixture, "/v1/app/snapshot?eventLimit=10");
+  await waitFor(() => resolveSnapshots.length === 2);
+
+  const stop = await requestService(fixture, {
+    body: {},
+    method: "POST",
+    requestPath: "/v1/service/stop",
+  });
+  assert.equal(stop.statusCode, 200);
+  assert.equal(stop.json.ok, true);
+  assert.ok(stop.json.activeCommandDrainTimeoutMilliseconds > appSnapshotExecutionTimeoutMs());
+
+  for (const resolveSnapshot of resolveSnapshots) {
+    resolveSnapshot();
+  }
+  assert.equal((await firstSnapshotRequest).statusCode, 200);
+  assert.equal((await secondSnapshotRequest).statusCode, 200);
+  await waitFor(() => !fs.existsSync(paths.serviceMetadataPath));
+  service = null;
+});
+
+test("service stop closes command admission before acknowledging shutdown", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  let workerStarts = 0;
+  let holdImmediate = false;
+  const heldImmediateCallbacks = [];
+  const originalSetImmediate = global.setImmediate;
+  global.setImmediate = (callback, ...args) => {
+    if (holdImmediate) {
+      heldImmediateCallbacks.push(() => callback(...args));
+      return {
+        hasRef: () => false,
+        ref() {
+          return this;
+        },
+        unref() {
+          return this;
+        },
+      };
+    }
+    return originalSetImmediate(callback, ...args);
+  };
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker() {
+      workerStarts += 1;
+      return { ok: true };
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => {
+    holdImmediate = false;
+    global.setImmediate = originalSetImmediate;
+    for (const callback of heldImmediateCallbacks.splice(0)) {
+      callback();
+    }
+    await service.shutdown({ exitProcess: false });
+  });
+
+  const metadata = readJson(paths.serviceMetadataPath);
+  const body = JSON.stringify({
+    command: "host",
+    group: "help",
+    options: {},
+    type: "command",
+  });
+  let request = null;
+  const responsePromise = new Promise((resolve, reject) => {
+    request = http.request({
+      headers: {
+        "content-length": Buffer.byteLength(body),
+        "content-type": "application/json",
+      },
+      method: "POST",
+      path: "/v1/command",
+      socketPath: metadata.socketPath,
+    }, (response) => {
+      let responseBody = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        responseBody += chunk;
+      });
+      response.on("end", () => {
+        resolve({
+          json: JSON.parse(responseBody),
+          statusCode: response.statusCode ?? 0,
+        });
+      });
+    });
+    request.on("error", reject);
+    request.write(body.slice(0, 8));
+  });
+
+  holdImmediate = true;
+  const stop = await requestService(fixture, {
+    body: {},
+    method: "POST",
+    requestPath: "/v1/service/stop",
+  });
+  assert.equal(stop.statusCode, 200);
+  assert.equal(stop.json.ok, true);
+  assert.equal(heldImmediateCallbacks.length, 1);
+
+  request.end(body.slice(8));
+  const response = await responsePromise;
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.json.reasonCode, "service-unavailable");
+  assert.equal(workerStarts, 0);
+
+  holdImmediate = false;
+  for (const callback of heldImmediateCallbacks.splice(0)) {
+    callback();
+  }
+  await waitFor(() => !fs.existsSync(paths.serviceMetadataPath));
+});
+
+test("brokerd rejects late command worker admission during shutdown", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    stateRoot: fixture.stateRoot,
+  });
+  let timerCallback = null;
+  const timer = { unref() {} };
+  const scheduledResolvers = [];
+  let workerStarts = 0;
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker() {
+      workerStarts += 1;
+      return { ok: true };
+    },
+    runScheduledIdleReconciliation() {
+      return new Promise((resolve) => {
+        scheduledResolvers.push(resolve);
+      });
+    },
+    setIntervalFn(callback) {
+      timerCallback = callback;
+      return timer;
+    },
+    writeAppSnapshotArtifact() {},
+  });
+  t.after(async () => {
+    for (const resolve of scheduledResolvers.splice(0)) {
+      resolve({ ok: true });
+    }
+    await service.shutdown({ exitProcess: false });
+  });
+
+  timerCallback();
+  await waitFor(() => scheduledResolvers.length === 1);
+
+  const metadata = readJson(paths.serviceMetadataPath);
+  const body = JSON.stringify({
+    command: "host",
+    group: "help",
+    options: {},
+    type: "command",
+  });
+  let request = null;
+  const responsePromise = new Promise((resolve, reject) => {
+    request = http.request({
+      headers: {
+        "content-length": Buffer.byteLength(body),
+        "content-type": "application/json",
+      },
+      method: "POST",
+      path: "/v1/command",
+      socketPath: metadata.socketPath,
+    }, (response) => {
+      let responseBody = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        responseBody += chunk;
+      });
+      response.on("end", () => {
+        resolve({
+          json: JSON.parse(responseBody),
+          statusCode: response.statusCode ?? 0,
+        });
+      });
+    });
+    request.on("error", reject);
+    request.write(body.slice(0, 8));
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  const shutdownPromise = service.shutdown({ exitProcess: false });
+  request.end(body.slice(8));
+  const response = await responsePromise;
+  scheduledResolvers.shift()({ ok: true });
+  await shutdownPromise;
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.json.reasonCode, "service-unavailable");
+  assert.equal(workerStarts, 0);
+});
+
 test("service startup lock waits while another stale-lock reclaimer is active", () => {
   const root = makeTempDir();
   const paths = resolveBrokerPaths({
@@ -967,6 +1780,49 @@ test("service rejects expired queued commands before command dispatch", async (t
   assert.equal(rejected.json.exitCode, 3);
   assert.equal(rejected.json.reasonCode, "service-command-expired");
   assert.equal(rejected.json.ok, false);
+});
+
+test("service command lock waits stay off the brokerd event loop", async (t) => {
+  const fixture = makeFixture();
+  t.after(async () => stopServiceIfRunning(fixture));
+
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  assert.equal(runCli(fixture, "service", "start").status, 0);
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  fs.mkdirSync(paths.leaseLockDir, { recursive: true });
+  writeJson(paths.leaseLockOwnerPath, {
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+  });
+
+  const blockedCommand = requestService(fixture, {
+    body: {
+      command: "release",
+      group: "lease",
+      options: {
+        leaseId: "missing-lease",
+        leaseLockTimeoutMilliseconds: 1000,
+      },
+      type: "command",
+    },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const status = await Promise.race([
+    requestServiceJson(fixture, "/v1/service/status"),
+    new Promise((resolve) => setTimeout(() => resolve(null), 250)),
+  ]);
+
+  assert.equal(status?.statusCode, 200);
+  assert.equal(status?.json?.ok, true);
+  const blockedResult = await blockedCommand;
+  assert.equal(blockedResult.statusCode, 409);
+  assert.equal(blockedResult.json.reasonCode, "alias-busy");
 });
 
 test("service validates expected identity before stop dispatch", async (t) => {
@@ -1639,4 +2495,83 @@ test("service-backed project validation maps malformed project JSON to invalid c
   assert.equal(result.status, 2);
   assert.equal(result.json.reasonCode, "invalid-config");
   assert.equal(result.json.exitCode, 2);
+});
+
+test("service-backed mutations keep committed work when idle policy is malformed", async (t) => {
+  const fixture = makeFixture();
+  t.after(async () => stopServiceIfRunning(fixture));
+
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  const acquired = runCli(
+    fixture,
+    "lease",
+    "acquire",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--actor-id",
+    "agent-app-service",
+    "--actor-type",
+    "agent",
+    "--owner-pid",
+    String(process.pid),
+  );
+  assert.equal(acquired.status, 0);
+  assert.equal(runCli(fixture, "service", "start").status, 0);
+  fs.writeFileSync(path.join(fixture.stateRoot, "idle-policy.json"), "{not-json\n");
+
+  const release = await requestService(fixture, {
+    body: {
+      command: "release",
+      group: "lease",
+      options: {
+        actorId: "simulator-broker-app",
+        actorType: "human",
+        leaseId: acquired.json.lease.leaseId,
+      },
+      type: "command",
+    },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+
+  assert.equal(release.statusCode, 200);
+  assert.equal(release.json.ok, true);
+  assert.equal(release.json.snapshotRefresh, undefined);
+  assert.equal(fs.existsSync(path.join(fixture.stateRoot, "leases", `${acquired.json.lease.leaseId}.json`)), false);
+});
+
+test("service-backed lease acquire preserves committed leases when idle policy metadata is malformed", async (t) => {
+  const fixture = makeFixture();
+  t.after(async () => stopServiceIfRunning(fixture));
+
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  assert.equal(runCli(fixture, "service", "start").status, 0);
+  fs.writeFileSync(path.join(fixture.stateRoot, "idle-policy.json"), "{not-json\n");
+
+  const acquired = runCli(
+    fixture,
+    "lease",
+    "acquire",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--actor-id",
+    "agent-app-service",
+    "--actor-type",
+    "agent",
+    "--owner-pid",
+    String(process.pid),
+  );
+
+  assert.equal(acquired.status, 0, acquired.stderr);
+  assert.equal(acquired.json.transport, "service");
+  assert.equal(acquired.json.snapshotRefresh, undefined);
+  assert.deepEqual(acquired.json.scheduler, {
+    active: false,
+    limitation: "invalid-config",
+  });
+  assert.equal(fs.existsSync(path.join(fixture.stateRoot, "leases", `${acquired.json.lease.leaseId}.json`)), true);
 });

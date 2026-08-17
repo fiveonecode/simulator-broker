@@ -44,3 +44,6 @@ schemes:
     test:
       targets:
         - name: SimulatorBrokerAppTests
+      environmentVariables:
+        SIMBROKER_HOST_CONFIG: "$(SIMBROKER_TEST_HOST_CONFIG)"
+        SIMBROKER_STATE_ROOT: "$(SIMBROKER_TEST_STATE_ROOT)"

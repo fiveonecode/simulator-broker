@@ -20,6 +20,9 @@ A first extracted implementation slice now exists:
 - direct and service-backed capacity coverage for public-safe check output,
   deterministic reconcile preview, exact human-confirmed additive apply,
   rollback, committed recovery, idempotency, and audit events
+- deterministic warm-reuse, boot-on-acquire, idle-policy boundary, exclusion,
+  stale-recovery, lock-race, scheduler, confirmed-cleanup, and failure coverage
+- tracked-text public-surface scanning with an ignored local denylist extension
 - app-side operator controls for pin create and clear, lease release, and lifecycle actions over the shared broker authority
 - app launch-time fixture overrides through `--state-root`, `--host-config`, optional `--cli-path`, plus direct pane/detail targeting for deterministic screenshot and smoke scenarios
 - broker-owned state artifacts are restricted to the current user, and lease, containment, pin, and lifecycle mutations share the broker mutation authority whether invoked directly, through the service, or from the app
@@ -148,12 +151,20 @@ npm run test:app:focus -- SimulatorBrokerAppTests/BrokerSnapshotLoaderTests --re
 npm run test:broker-core
 npm run test:client
 npm run test:harness-adoption
+npm run verify:public-surface
 node client/bin/simbroker.mjs lease --help
 node client/bin/simbroker.mjs host --help
 node client/bin/simbroker.mjs capacity --help
+node client/bin/simbroker.mjs idle --help
 node client/bin/simbroker.mjs capacity check --repo-root <repo> [--purpose <purpose>] --json
 node client/bin/simbroker.mjs capacity reconcile --repo-root <repo> [--purpose <purpose>] --json
 node client/bin/simbroker.mjs capacity reconcile --repo-root <repo> [--purpose <purpose>] --apply --confirm <plan-id> --actor-type human --actor-id <operator-id> --json
+node client/bin/simbroker.mjs idle status --json
+node client/bin/simbroker.mjs idle enable --grace-seconds <60-86400> --actor-type human --actor-id <operator-id> --json
+node client/bin/simbroker.mjs idle disable --actor-type human --actor-id <operator-id> --json
+node client/bin/simbroker.mjs idle reconcile --json
+node client/bin/simbroker.mjs idle cleanup --json
+node client/bin/simbroker.mjs idle cleanup --apply --confirm <plan-id> --actor-type human --actor-id <operator-id> --json
 bash scripts/install_local.sh
 bash scripts/install_distribution.sh --payload-root <payload-root>
 bash scripts/package_distribution.sh --team-id <team-id> --signing-identity '<identity>'
@@ -186,6 +197,11 @@ npm run agent:complete -- --session-dir "$HOME/.codex/agent-harness/simulator-br
   `spec-only`; mixed tasks must pass both profiles.
 - `WORKFLOW.md` invokes `./scripts/validate.sh` for normal Symphony validation.
   The validator runs `npm test` plus the canonical diff-integrity check.
+- `npm test` begins with `verify:public-surface`. Public fixtures must use
+  temporary broker roots and synthetic identifiers; tests must never read from
+  or write to the default broker state root.
+- `scripts/package_distribution.sh` runs the same public-surface check before
+  building or signing a release candidate.
 - `npm run agent:complete -- --session-dir <dir>` is the close-out gate; it fails unless the required verification profiles passed against the current task-tree fingerprint and any blocking obligations are satisfied or the session is explicitly reported blocked.
 - Every meaningful task commit must use a structured git message with `Why:`, `Changed:`, `Verification:`, `Affected:`, `Refs:`, and `Session:` sections. Commit messages are durable public output: use repo-relative paths, GitHub URLs, commit SHAs, and public task artifact labels such as `task-sessions/<session-name>` instead of machine-local or parent-relative paths. `agent:complete` rejects detected local-path forms in every new commit touching task paths.
 - `agent:complete` enforces a clean close-out: no new uncommitted task changes, no malformed task commit messages, no changed paths outside selected manifest path constraints, and no leftover untracked junk outside allowlisted local artifact paths.
@@ -216,8 +232,19 @@ Add stronger profiles next for:
   no-changes idempotency, verified pre-commit rollback, recovery-required
   journal blocking, and committed transaction recovery through fixture-backed
   `simctl`
-- `npm run test:client` proves service lifecycle, concurrent clients, startup readiness before service metadata publication, restart safety, malformed service response handling, expected service identity validation for command dispatch and stop dispatch, NDJSON event streaming including stop with an active follower, service-backed lifecycle-control flows against the fixture-backed `simctl` boundary, stable direct plus service-backed exit-code behavior, useful `lease --help` / `host --help` / `capacity --help` output, and direct/service capacity plan parity
-- `npm run test:app` proves the XcodeGen project builds and the app decodes snapshots, filters pin candidates, bounds local CLI subprocesses, preserves refresh diagnostics after successful mutations whose snapshot reload fails, and routes broker-command errors correctly
+- `npm run test:broker-core` also proves most-recent-release reuse for UI and
+  build capacity, concurrent standby expansion, boot-on-acquire rollback,
+  grace-boundary eligibility, all safety exclusions, stale grace restart,
+  mutation-lock serialization, shutdown failure repair state, and confirmed
+  count-only cleanup
+- `npm run test:client` proves service lifecycle, concurrent clients, startup readiness before service metadata publication, restart safety, malformed service response handling, expected service identity validation for command dispatch and stop dispatch, NDJSON event streaming including stop with an active follower, service-backed lifecycle-control flows and boot readiness budgets against the fixture-backed `simctl` boundary, stable direct plus service-backed exit-code behavior, useful command help, direct/service capacity and idle parity, lazy daemon start, local-only scheduler limitation, immediate startup reconciliation, 30-second timer wiring, and snapshot refresh
+- `npm run test:app` proves the XcodeGen project builds and the app decodes snapshots, filters pin candidates, bounds local CLI subprocesses, preserves refresh diagnostics after successful mutations whose snapshot reload fails, routes broker-command errors correctly, and drives Automatic shutdown apply, disable, preview, confirmation, cleanup, and refresh flows
+- the generated app test scheme receives a per-run temporary state root and
+  host-config path from `scripts/test_app.sh`; the XCTest host never launches
+  against the default broker state root
+- `npm run verify:public-surface` proves the tracked public text has no current
+  home path or prohibited local broker artifact and applies optional rules from
+  ignored `.public-safety.local` without printing matched values
 - `npm run test:app:build` isolates compile-time failures with the same XcodeGen and derived-data settings used by the full suite
 - `npm run test:app:focus -- <filter>` reruns one named XCTest scope and writes a stable `xcresult` bundle under `artifacts/app-tests/` unless the caller overrides the path explicitly
 - `./script/build_and_run.sh` is the canonical local macOS app run loop, stops only the app instance launched from the current checkout's built app path, and `./script/build_and_run.sh --verify` proves that built app launches as a foreground `.app`

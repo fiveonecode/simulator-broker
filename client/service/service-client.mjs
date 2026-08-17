@@ -22,8 +22,9 @@ const SIMCTL_INVENTORY_COMMANDS_PER_STATE_LOAD = 3;
 const PROCESS_SAMPLER_INVOCATIONS_PER_STATE_LOAD = 1;
 const SERVICE_STARTUP_LAUNCHER_OVERHEAD_MS = 5_000;
 const SERVICE_STARTUP_LOCK_PROCESS_SAMPLER_INVOCATIONS = 2;
-const SERVICE_STARTUP_SNAPSHOT_STATE_LOADS = 1;
-const LEASE_ACQUIRE_RESET_SIMCTL_COMMANDS = 2;
+const SERVICE_STARTUP_STATE_LOADS = 2;
+const SERVICE_STARTUP_LEASE_LOCK_WAITS = 2;
+const LEASE_ACQUIRE_SIMCTL_COMMANDS = 4;
 const CAPACITY_APPLY_PLAN_EVALUATIONS = 2;
 const CAPACITY_APPLY_FINALIZATION_STATE_LOADS = 1;
 const CAPACITY_APPLY_FINAL_SNAPSHOT_STATE_LOADS = 1;
@@ -36,7 +37,7 @@ const HOST_BOOTSTRAP_REPLACEMENT_STATE_LOADS = 1;
 const HOST_BOOTSTRAP_RETIREMENT_STATE_LOADS = 1;
 const HOST_BOOTSTRAP_SIMCTL_COMMANDS_PER_ALIAS = SIMCTL_INVENTORY_COMMANDS_PER_STATE_LOAD + 2;
 const SIMULATOR_LIFECYCLE_SIMCTL_COMMANDS = {
-  boot: 1,
+  boot: 2,
   erase: 2,
   repair: 10,
   shutdown: 1,
@@ -129,6 +130,11 @@ function hostBootstrapRetirementCountFromPaths(paths) {
     }
   }
   return simulatorIds.size;
+}
+
+function hostAliasCountFromPaths(paths, fallback = HOST_BOOTSTRAP_ALIAS_COUNT) {
+  const hostConfig = readJsonIfPresent(paths?.hostConfigPath);
+  return Array.isArray(hostConfig?.aliases) ? hostConfig.aliases.length : fallback;
 }
 
 function selectedCapacityPurposeCountFromPaths(paths, request) {
@@ -254,7 +260,7 @@ function serviceCommandUsesSerializedStateReadLock(request) {
 
 function leaseAcquireResetSimctlBudgetMs(request) {
   return request?.group === "lease" && request?.command === "acquire"
-    ? LEASE_ACQUIRE_RESET_SIMCTL_COMMANDS * SIMCTL_COMMAND_TIMEOUT_MS
+    ? LEASE_ACQUIRE_SIMCTL_COMMANDS * SIMCTL_COMMAND_TIMEOUT_MS
     : 0;
 }
 
@@ -268,7 +274,19 @@ function serviceCommandUsesLeaseMutationLock(request) {
   if (request?.group === "simulators") {
     return ["boot", "erase", "repair", "shutdown"].includes(request?.command);
   }
+  if (request?.group === "idle") {
+    return true;
+  }
   return false;
+}
+
+function idleShutdownSimctlBudgetMs(request, options = {}) {
+  if (request?.group !== "idle"
+    || !["cleanup", "reconcile"].includes(request?.command)
+    || (request.command === "cleanup" && request?.options?.apply !== true)) {
+    return 0;
+  }
+  return hostAliasCountFromPaths(options.paths) * SIMCTL_COMMAND_TIMEOUT_MS;
 }
 
 function simulatorLifecycleSimctlBudgetMs(request, options = {}) {
@@ -449,6 +467,13 @@ export function serviceCommandExecutionTimeoutMs(request, options = {}) {
       + stateLoadBudgetForRequestMs
       + simulatorLifecycleSimctlBudgetMs(request, options);
   }
+  if (request?.group === "idle") {
+    return DEFAULT_COMMAND_TIMEOUT_MS
+      + leaseLockTimeoutMs(request)
+      + snapshotLockBudgetMs
+      + stateLoadBudgetForRequestMs
+      + idleShutdownSimctlBudgetMs(request, options);
+  }
   if (serviceCommandUsesLeaseMutationLock(request)) {
     return DEFAULT_COMMAND_TIMEOUT_MS
       + leaseLockTimeoutMs(request)
@@ -465,8 +490,33 @@ export function serviceCommandTimeoutMs(request, options = {}) {
   return serviceCommandExecutionTimeoutMs(request, options) + commandQueueTimeoutMs(request);
 }
 
-export function serviceStartupTimeoutMs() {
-  return stateLoadBudgetMs(SERVICE_STARTUP_SNAPSHOT_STATE_LOADS)
+export function appSnapshotExecutionTimeoutMs(options = {}) {
+  if (options.timeoutMs !== undefined) {
+    return options.timeoutMs;
+  }
+  return DEFAULT_COMMAND_TIMEOUT_MS
+    + positiveDurationMs(options.leaseLockTimeoutMilliseconds, DEFAULT_LOCK_TIMEOUT_MS)
+    + stateLoadBudgetMs(1);
+}
+
+export function serviceStopTimeoutMs(paths, response = {}) {
+  return serviceCommandTimeoutMs({
+    command: "reconcile",
+    group: "idle",
+    options: {},
+  }, { paths }) + (response?.activeCommandDrainTimeoutMilliseconds ?? 0);
+}
+
+export function serviceStartupTimeoutMs(options = {}) {
+  const startupIdleReconcileRequest = {
+    command: "reconcile",
+    group: "idle",
+    options: {},
+  };
+  return stateLoadBudgetMs(SERVICE_STARTUP_STATE_LOADS)
+    + staleContainmentBudgetMs(startupIdleReconcileRequest, options, 1)
+    + (SERVICE_STARTUP_LEASE_LOCK_WAITS * DEFAULT_LOCK_TIMEOUT_MS)
+    + (hostAliasCountFromPaths(options.paths) * SIMCTL_COMMAND_TIMEOUT_MS)
     + (SERVICE_STARTUP_LOCK_PROCESS_SAMPLER_INVOCATIONS * PROCESS_SAMPLER_TIMEOUT_MS)
     + SERVICE_STARTUP_LAUNCHER_OVERHEAD_MS;
 }

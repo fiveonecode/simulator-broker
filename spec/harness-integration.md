@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/implementation-plan.md`, `spec/global-simulator-broker.md`, `spec/agents.md`, `spec/build-and-test.md`
 
 > **Document ID:** `GSB-HARNESS-001`
-> **Version:** `0.4.0`
-> **Last Updated:** `2026-07-20`
+> **Version:** `0.4.1`
+> **Last Updated:** `2026-08-10`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 
@@ -199,7 +199,8 @@ This is the canonical harness flow for local scripts, agent sessions, and CI.
    then apply that exact plan with `--apply --confirm <plan-id> --actor-type
    human --actor-id <operator-id>`.
 4. Acquire a lease by purpose.
-5. Read simulator metadata from the lease artifact.
+5. Read simulator metadata from the lease artifact. Successful acquisition
+   means the selected simulator has already been booted by the broker.
 6. Run simulator-dependent work.
 7. Register downstream process metadata.
 8. Monitor memory ceilings when configured.
@@ -404,4 +405,5 @@ The harness-awareness phase is complete only when:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.4.1 | 2026-08-10 | Clarified that successful acquisition returns a broker-booted simulator. |
 | 0.4.0 | 2026-07-20 | Added capacity check and operator-confirmed reconcile guidance for simulator-dependent harness preflights. |

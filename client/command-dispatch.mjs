@@ -9,17 +9,22 @@ import {
   bootSimulatorBroker,
   checkCapacityBroker,
   clearPinBroker,
+  cleanupIdleBroker,
   createPinBroker,
+  disableIdlePolicyBroker,
   doctorBroker,
+  enableIdlePolicyBroker,
   eraseSimulatorBroker,
   explainLeaseBroker,
   forgetKnownProjectBroker,
   hostStatusBroker,
   initBroker,
   initProjectBroker,
+  idleStatusBroker,
   listSimulatorsBroker,
   containLeaseBroker,
   readEventsBroker,
+  reconcileIdleBroker,
   registerLeaseProcessBroker,
   reconcileCapacityBroker,
   repairSimulatorBroker,
@@ -104,6 +109,21 @@ function requirePositiveIntegerFlag(flags, key) {
   }
   if (parsed <= 0) {
     throw new BrokerError(`Flag --${key} must be a positive integer.`, {
+      reasonCode: "invalid-flag",
+    });
+  }
+  return parsed;
+}
+
+function requireBoundedIntegerFlag(flags, key, minimum, maximum) {
+  const parsed = parseIntegerFlag(flags, key);
+  if (parsed === null) {
+    throw new BrokerError(`Missing required flag --${key}.`, {
+      reasonCode: "missing-flag",
+    });
+  }
+  if (parsed < minimum || parsed > maximum) {
+    throw new BrokerError(`Flag --${key} must be an integer from ${minimum} through ${maximum}.`, {
       reasonCode: "invalid-flag",
     });
   }
@@ -372,6 +392,57 @@ function capacityOptions(paths, flags, { applyAllowed = false } = {}) {
   };
 }
 
+function idleHumanOptions(flags) {
+  return {
+    actorId: requireFlag(flags, "actor-id"),
+    actorType: requireFlag(flags, "actor-type"),
+  };
+}
+
+function idleEnableOptions(flags) {
+  rejectUnknownFlags(flags, new Set([
+    "actor-id",
+    "actor-type",
+    "grace-seconds",
+    ...commonRequestFlags(),
+  ]));
+  return {
+    ...idleHumanOptions(flags),
+    graceSeconds: requireBoundedIntegerFlag(flags, "grace-seconds", 60, 86_400),
+  };
+}
+
+function idleDisableOptions(flags) {
+  rejectUnknownFlags(flags, new Set([
+    "actor-id",
+    "actor-type",
+    ...commonRequestFlags(),
+  ]));
+  return idleHumanOptions(flags);
+}
+
+function idleCleanupOptions(flags) {
+  rejectUnknownFlags(flags, new Set([
+    "actor-id",
+    "actor-type",
+    "apply",
+    "confirm",
+    ...commonRequestFlags(),
+  ]));
+  const apply = parseBooleanFlag(flags, "apply");
+  if (!apply && (flags.has("confirm") || flags.has("actor-id") || flags.has("actor-type"))) {
+    throw new BrokerError("Idle cleanup confirmation and actor flags require --apply.", {
+      reasonCode: "invalid-flag",
+    });
+  }
+  return {
+    actorId: flagValue(flags, "actor-id"),
+    actorType: flagValue(flags, "actor-type"),
+    apply,
+    confirmPlanId: flagValue(flags, "confirm"),
+  };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -386,6 +457,18 @@ function helpPayload(group) {
       ],
       group: "capacity",
       usage: "simbroker capacity <command>",
+    },
+    idle: {
+      commands: [
+        "idle status",
+        "idle enable --grace-seconds <60-86400> --actor-type human --actor-id <operator-id>",
+        "idle disable --actor-type human --actor-id <operator-id>",
+        "idle reconcile",
+        "idle cleanup",
+        "idle cleanup --apply --confirm <plan-id> --actor-type human --actor-id <operator-id>",
+      ],
+      group: "idle",
+      usage: "simbroker idle <command>",
     },
     host: {
       commands: [
@@ -426,6 +509,7 @@ function helpPayload(group) {
         "project",
         "lease",
         "capacity",
+        "idle",
         "events",
         "pin",
         "simulators",
@@ -460,6 +544,7 @@ export function createCommandRequest(paths, group, command, flags) {
     case "project:":
     case "lease:":
     case "capacity:":
+    case "idle:":
       return {
         group: "help",
         command: group,
@@ -539,6 +624,43 @@ export function createCommandRequest(paths, group, command, flags) {
         group: "capacity",
         command: "reconcile",
         options: capacityOptions(paths, flags, { applyAllowed: true }),
+        type: "command",
+      };
+    case "idle:status":
+      rejectUnknownFlags(flags, new Set(commonRequestFlags()));
+      return {
+        group: "idle",
+        command: "status",
+        options: {},
+        type: "command",
+      };
+    case "idle:enable":
+      return {
+        group: "idle",
+        command: "enable",
+        options: idleEnableOptions(flags),
+        type: "command",
+      };
+    case "idle:disable":
+      return {
+        group: "idle",
+        command: "disable",
+        options: idleDisableOptions(flags),
+        type: "command",
+      };
+    case "idle:reconcile":
+      rejectUnknownFlags(flags, new Set(commonRequestFlags()));
+      return {
+        group: "idle",
+        command: "reconcile",
+        options: {},
+        type: "command",
+      };
+    case "idle:cleanup":
+      return {
+        group: "idle",
+        command: "cleanup",
+        options: idleCleanupOptions(flags),
         type: "command",
       };
     case "simulators:list":
@@ -857,6 +979,19 @@ function contractSnapshotRefreshError(error) {
   return null;
 }
 
+function isIdlePolicyConfigError(error) {
+  return error instanceof BrokerError
+    && error.payload?.reasonCode === "invalid-config"
+    && (error.payload?.field === "idle-policy.graceSeconds"
+      || error.message.startsWith("Idle policy")
+      || error.message.startsWith("idle-policy"));
+}
+
+function commandNeedsIdlePolicyMetadata(request) {
+  return request.group === "idle"
+    || (request.group === "app" && request.command === "snapshot");
+}
+
 export function executeBrokerCommand(paths, request) {
   const options = request.options ?? {};
   let payload = null;
@@ -867,6 +1002,7 @@ export function executeBrokerCommand(paths, request) {
     case "help:project":
     case "help:lease":
     case "help:capacity":
+    case "help:idle":
       return helpPayload(request.command);
     case "doctor:status":
       payload = doctorBroker(paths, options);
@@ -894,6 +1030,21 @@ export function executeBrokerCommand(paths, request) {
       break;
     case "capacity:reconcile":
       payload = reconcileCapacityBroker(paths, options);
+      break;
+    case "idle:status":
+      payload = idleStatusBroker(paths, options);
+      break;
+    case "idle:enable":
+      payload = enableIdlePolicyBroker(paths, options);
+      break;
+    case "idle:disable":
+      payload = disableIdlePolicyBroker(paths, options);
+      break;
+    case "idle:reconcile":
+      payload = reconcileIdleBroker(paths, options);
+      break;
+    case "idle:cleanup":
+      payload = cleanupIdleBroker(paths, options);
       break;
     case "simulators:list":
       payload = listSimulatorsBroker(paths, options);
@@ -961,20 +1112,41 @@ export function executeBrokerCommand(paths, request) {
     snapshotOptions.skipLeaseIds = [snapshotLeaseId];
   }
   const isReadOnlyCapacityCommand = request.group === "capacity" && options.apply !== true;
-  if (!isReadOnlyCapacityCommand) {
+  const isIdleCleanupPreview = request.group === "idle" && request.command === "cleanup" && options.apply !== true;
+  if (!isReadOnlyCapacityCommand && !isIdleCleanupPreview) {
     try {
       writeAppSnapshotArtifactUnderMutationLock(paths, snapshotOptions);
     } catch (error) {
+      if (request.group === "idle") {
+        const contractError = contractSnapshotRefreshError(error);
+        if (contractError) {
+          throw contractError;
+        }
+        const snapshotError = new BrokerError("Failed to refresh the app snapshot after the idle command committed.", {
+          reasonCode: "snapshot-refresh-failed",
+        });
+        Object.defineProperty(snapshotError, "cause", {
+          configurable: true,
+          value: error,
+          writable: true,
+        });
+        throw snapshotError;
+      }
       const contractError = contractSnapshotRefreshError(error);
-      if (contractError) {
+      if (contractError && (commandNeedsIdlePolicyMetadata(request) || !isIdlePolicyConfigError(contractError))) {
         throw contractError;
+      }
+      const snapshotRefresh = {
+        error: error?.message ?? String(error),
+        ok: false,
+      };
+      if (contractError?.payload?.reasonCode || typeof contractError?.reasonCode === "string") {
+        snapshotRefresh.reasonCode = contractError.payload?.reasonCode ?? contractError.reasonCode;
+        snapshotRefresh.exitCode = contractError.payload?.exitCode ?? contractError.exitCode;
       }
       payload = {
         ...payload,
-        snapshotRefresh: {
-          error: error?.message ?? String(error),
-          ok: false,
-        },
+        snapshotRefresh,
       };
     }
   }

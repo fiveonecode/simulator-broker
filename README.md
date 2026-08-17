@@ -16,6 +16,12 @@ Current status:
 - direct and service-backed broker failures now expose stable exit codes for invalid requests, unavailable capacity, repair-needed aliases, override-required flows, and internal failures
 - `host init --bootstrap-config` now provisions real simulator devices, including dual iPhone UI aliases (`ui-1`, `ui-2`), a second dedicated `build-fast` alias for overlapping build-test demand, and records their actual IDs and runtime versions in host config
 - `erase-on-acquire` leases now run behind a dedicated reset lock and roll back cleanly if reset fails before a lease is handed out
+- lease acquisition prefers a matching pin, then compatible warm capacity, then
+  shutdown capacity; the most recently released alias wins inside each tier and
+  the broker boots it before returning success
+- optional Automatic shutdown is configured only through broker commands, has
+  no source-defined duration, preserves every registered alias as standby, and
+  excludes pins, leases, manual aliases, and unhealthy devices
 - a macOS operator app now exists under `app/` with Overview, Simulators, Projects, and Events screens plus broker-backed actions for pinning, release, and lifecycle control
 - the macOS app overview, empty-state, simulator-detail, destructive-confirmation, and override-required remediation flows now have captured operator-facing evidence; the app also supports alternate broker roots with `--state-root`, `--host-config`, optional `--cli-path`, and direct deep-link review targeting
 - the broker now publishes a canonical `app-snapshot.json` read model under the broker state root for the app and smoke tooling
@@ -28,6 +34,8 @@ Current status:
 - repo capacity can now be diagnosed with `simbroker capacity check`; missing
   broker-managed capacity can be previewed with non-mutating `capacity
   reconcile` and applied only with exact human confirmation of the current plan
+- idle policy can be inspected and reconciled with `simbroker idle`; one-time
+  cleanup uses a count-only preview followed by exact human confirmation
 - broker-aware sample consumer repo artifacts now cover manual human, interactive agent, unattended agent, and CI patterns under `examples/harness-adoption/`
 - a guide-aligned `broker-harness-adoption` skill lives under `.agents/skills/broker-harness-adoption/`
 - the repo is ready for continued implementation on top of the active specs
@@ -129,6 +137,7 @@ npm run package:distribution
 
 ```bash
 npm test
+npm run verify:public-surface
 npm run test:install-smoke
 npm run test:app
 npm run test:client
@@ -138,6 +147,12 @@ node client/bin/simbroker.mjs app snapshot
 node client/bin/simbroker.mjs capacity check --repo-root "$PWD" --purpose agent-ui-session --json
 node client/bin/simbroker.mjs capacity reconcile --repo-root "$PWD" --purpose agent-ui-session --json
 node client/bin/simbroker.mjs capacity reconcile --repo-root "$PWD" --purpose agent-ui-session --apply --confirm <plan-id> --actor-type human --actor-id <operator-id> --json
+node client/bin/simbroker.mjs idle status --json
+node client/bin/simbroker.mjs idle enable --grace-seconds <60-86400> --actor-type human --actor-id <operator-id> --json
+node client/bin/simbroker.mjs idle disable --actor-type human --actor-id <operator-id> --json
+node client/bin/simbroker.mjs idle reconcile --json
+node client/bin/simbroker.mjs idle cleanup --json
+node client/bin/simbroker.mjs idle cleanup --apply --confirm <plan-id> --actor-type human --actor-id <operator-id> --json
 node client/bin/simbroker.mjs pin create --repo-root "$PWD" --purpose manual-testing --alias manual-1
 node client/bin/simbroker.mjs lease release --lease-file /tmp/simbroker-lease.json
 node client/bin/simbroker.mjs simulators boot --alias ui-1
@@ -146,6 +161,13 @@ npm run agent:catalog -- --format md
 npm run agent:context -- --paths spec/README.md --session-dir "$HOME/.codex/agent-harness/simulator-broker-app/bootstrap"
 npm run agent:verify -- --profile spec-only --paths spec/README.md --session-dir "$HOME/.codex/agent-harness/simulator-broker-app/bootstrap"
 ```
+
+Automatic shutdown is unconfigured on a fresh install. Choose a valid duration
+explicitly in the app or CLI; do not create or edit broker state files by hand.
+
+For an additional machine-local public-safety check, create an ignored
+`.public-safety.local` with one private name, alias, or path per line. The
+scanner reports matching rule numbers without printing the private values.
 
 ## Security
 
@@ -165,4 +187,5 @@ Contributor setup, verification, and PR expectations are documented in
 - [spec/architecture.md](spec/architecture.md)
 - [spec/implementation-plan.md](spec/implementation-plan.md)
 - [spec/harness-integration.md](spec/harness-integration.md)
+- [spec/tasks/public-safe-on-demand-simulator-lifecycle.md](spec/tasks/public-safe-on-demand-simulator-lifecycle.md)
 - [references/README.md](references/README.md)

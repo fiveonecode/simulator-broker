@@ -15,6 +15,8 @@ Current implementation:
 - XCTest coverage under `app/Tests/`
 - runtime data source is the broker-owned `app-snapshot.json` artifact under the broker state root
 - broker mutations are sent through the local `brokerd` Unix socket so the app shares the same authority as the CLI
+- Overview includes Automatic shutdown status, explicit duration entry,
+  Apply/Disable actions, and count-confirmed cleanup over broker transport
 - local-debug packaging stays available through `scripts/package_local.sh`
 - Release distribution packaging now lives in `scripts/package_distribution.sh` and writes an explicit readiness summary instead of implying shipping readiness
 
@@ -44,6 +46,8 @@ npm run package:distribution
 If you already have the repo checkout on the target machine, prefer `npm run install:local` plus `source "$HOME/Library/Application Support/SimulatorBroker/install/env.sh"` over `npm run package:local`.
 
 `bash scripts/test_app.sh` writes stable result bundles under `artifacts/app-tests/` by default and prints the exact `xcodebuild` command it executes, so focused reruns can be collected into a task session without reconstructing the command by hand.
+Each run also gives the XCTest host a fresh temporary broker state root and
+host-config path instead of touching the default local broker installation.
 
 The Codex app `Run` action is expected to point at `./script/build_and_run.sh`.
 
@@ -57,7 +61,12 @@ When the local service is running, the app can:
 - create and clear pins
 - release active leases
 - request `boot`, `shutdown`, `erase`, and `repair`
+- configure or disable Automatic shutdown with an explicitly entered valid duration
+- preview a count and confirm one-time cleanup of currently idle automated simulators
 - surface broker override-required errors and ask the human for confirmation details
+
+Automatic shutdown is unconfigured initially, so the duration field is blank.
+The app never writes host configuration, policy, or state files directly.
 
 The current local install flow copies the built app bundle to `~/Applications/Simulator Broker.app` by default.
 

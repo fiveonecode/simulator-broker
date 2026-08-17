@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/global-simulator-broker.md`, `spec/architecture.md`, `spec/harness-integration.md`, `spec/build-and-test.md`, `spec/project-structure.md`
 
 > **Document ID:** `GSB-PLAN-001`
-> **Version:** `0.8.7`
-> **Last Updated:** `2026-04-10`
+> **Version:** `0.9.0`
+> **Last Updated:** `2026-08-10`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -37,7 +37,8 @@ This plan intentionally does not include any single-repo migration work. It focu
 
 Implemented now:
 
-- file-backed `broker-core` for host and repo validation, registry state, leases, pins, events, fairness, and stale recovery
+- file-backed `broker-core` for host and repo validation, registry state, leases,
+  pins, events, deterministic warm reuse, and stale recovery
 - `simbroker` CLI with repo-root discovery, JSON payloads, deterministic lease-file emission, event inspection, and pin management
 - `brokerd` local authority with same-user Unix-socket transport, service lifecycle commands, and CLI auto-routing when the service is running
 - broker-mediated lifecycle controls for `boot`, `shutdown`, `erase`, and `repair`, including human override validation and audit events
@@ -63,6 +64,10 @@ Implemented now:
 - automated Node tests plus manual CLI smoke artifacts for the repo-integration path
 - broker-aware sample consumer repo artifacts and harness smoke tests under `examples/harness-adoption/`
 - initial `broker-harness-adoption` skill scaffold under `.agents/skills/`
+- boot-on-acquire plus matching-pin, warm, then shutdown selection using the
+  most recently released alias within each tier
+- opt-in machine-local idle shutdown, `brokerd` scheduling, count-confirmed
+  cleanup, macOS app controls, and tracked-text public-safety verification
 
 Still pending:
 
@@ -203,7 +208,9 @@ Required behavior:
 Requirement semantics:
 
 - requirements filter the candidate aliases before lease ranking begins
-- when multiple aliases satisfy the same requirements, the broker uses its normal fairness and health rules to choose among them
+- when multiple aliases satisfy the same requirements, the broker filters by
+  health and uses its single matching-pin, warm, then shutdown order with most
+  recent release first inside a tier
 - a requirement mismatch must fail with a structured explanation of the unsatisfied fields and the closest available alternatives
 - host inventory remains authoritative; repo requirements narrow selection but do not create aliases or bypass host policy
 
@@ -218,7 +225,8 @@ Validation and matching rules:
 - `iosVersion: "18"` matches any installed iOS `18.x` runtime
 - `iosVersion: "18.2"` matches only iOS `18.2`
 - device type names such as `iPhone 16` are not allowed in repo config v1
-- if no `requires` block is present, selection is driven only by capability, fairness, health, and pin state
+- if no `requires` block is present, selection is driven only by capability,
+  health, lease and pin state, power state, and most recent release time
 
 Illustrative shape:
 
@@ -322,11 +330,17 @@ Required command families:
 - `simbroker events watch`
 - `simbroker pin create`
 - `simbroker pin clear`
+- `simbroker idle status`
+- `simbroker idle enable`
+- `simbroker idle disable`
+- `simbroker idle reconcile`
+- `simbroker idle cleanup`
 
 Required CLI properties:
 
 - every mutating and status command supports `--json`
 - `lease acquire` supports `--repo-root`, `--project-file`, `--purpose`, `--actor-type`, `--actor-id`, `--job-id`, `--job-kind`, `--session-dir`, and `--lease-file`
+- successful `lease acquire` returns only after the selected simulator is booted
 - `events watch` supports a streaming machine-readable mode such as JSON lines
 - denial payloads and validation failures must include a stable reason code, current holder details when relevant, and suggested next actions
 - every CLI error payload includes `reasonCode` and `exitCode`
@@ -363,6 +377,7 @@ Required app actions by the end-state:
 - create and clear pins
 - release active leases
 - boot, shutdown, erase, or repair simulators subject to confirmation and policy
+- configure or disable Automatic shutdown and run count-confirmed idle cleanup
 - filter by project, purpose, actor type, and health
 
 ### 4.6 Broker-mediated lifecycle control
@@ -439,7 +454,7 @@ Required rules:
 | Surface | Role in the plan |
 |---|---|
 | `spec/` | source of truth for contracts, implementation order, and verification gates |
-| `broker-core/` | deterministic state model, fairness algorithm, liveness, reset coordination, schema validation, event generation |
+| `broker-core/` | deterministic state model, warm-reuse ordering, liveness, reset/boot coordination, idle reconciliation, schema validation, event generation |
 | `client/` | CLI surface, repo integration helpers, stable JSON contract, local service client, and the first broker service target |
 | `app/` | macOS visibility and operator actions built on the same broker authority |
 | `examples/harness-adoption/` | public consumer-repo fixture for broker-aware harness integration |
@@ -745,6 +760,45 @@ Current implementation slice:
 - `client/service/brokerd.mjs` maps broker failures into stable HTTP status classes instead of flattening all broker errors to `400`
 - `client/test/simbroker.test.mjs` and `client/test/brokerd.test.mjs` now assert the published failure contract
 
+### Phase 9 — Public-safe on-demand simulator lifecycle
+
+Status:
+
+- implemented
+
+Goal:
+
+- retain all registered aliases as normally shutdown standby capacity while
+  making low-concurrency work reuse only the warm simulator capacity it needs
+
+Deliverables:
+
+- one deterministic selection order with no legacy rotation path
+- boot-on-acquire and repair-needed rollback on boot failure
+- absent-by-default state-root idle policy with an explicit human duration
+- immediate and 30-second `brokerd` reconciliation plus lazy service start
+- public CLI/API and macOS Overview controls for status, policy, and confirmed cleanup
+- snapshot/event summaries that do not disclose local simulator identifiers
+- `verify:public-surface` in the normal test and release gate
+
+Verification:
+
+- core tests for warm reuse, concurrency, eligibility exclusions, stale recovery,
+  lock races, boundary timing, shutdown failure, and confirmed cleanup
+- direct/service client tests for parser parity, lazy daemon behavior, service
+  restart, scheduler execution, privacy, and snapshot updates
+- macOS tests for explicit duration, apply/disable, preview confirmation, cleanup,
+  and refresh behavior
+- public-surface scanner tests using temporary roots and synthetic values
+
+Exit criteria:
+
+- sequential demand reuses one warm alias per compatible workload while
+  concurrent demand can use additional retained standby aliases
+- automated aliases shut down only after an operator-configured grace period
+- pins, live leases, manual aliases, unhealthy aliases, and external devices are untouched
+- no local duration, identity, alias, simulator ID, or state root ships in public source
+
 ## 7. Cross-cutting verification strategy
 
 Each implementation phase must add or strengthen deterministic verification profiles.
@@ -757,6 +811,7 @@ Required verification categories:
 - multi-process integration tests across sample repos
 - app runtime and screenshot evidence
 - clean-machine install and onboarding smoke tests
+- public-surface text scanning and temporary-root fixture enforcement
 
 Expected profile growth beyond `spec-only`:
 
@@ -775,4 +830,8 @@ Expected profile growth beyond `spec-only`:
 - AI agents may request repair but may not force-override another live holder
 - drift detection is moderate: validate on broker startup, lease boundaries, broker-mediated actions, and normal status refreshes rather than continuous heavy polling
 - only `repair-needed` and `repairing` block new leases; `state-drift` remains observable but non-blocking
+- lease selection has one order only: matching pin, compatible booted alias,
+  compatible shutdown alias, with most recently released first inside each tier
+- acquisition returns only after the selected simulator is booted
+- idle policy is absent by default and has no migration or legacy-selection mode
 - there are no remaining product-level open questions in this plan

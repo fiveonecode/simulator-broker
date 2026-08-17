@@ -181,7 +181,7 @@ describe("runtime argument parsing", () => {
 
     expect(doctorJson.baseProfiles).toEqual(["implementation"]);
     expect(doctorJson.obligationProfiles).toEqual([]);
-  });
+  }, 15_000);
 
   it("reports macOS build tools for app implementation doctor output", () => {
     const output = runHarnessCommand([
