@@ -287,8 +287,133 @@ function hostInitOptions(flags) {
   };
 }
 
-export function format(payload) {
-  return `${JSON.stringify(payload, null, 2)}\n`;
+export function format(payload, options = {}) {
+  if (options.json === true || !shouldFormatAsText(payload)) {
+    return `${JSON.stringify(payload, null, 2)}\n`;
+  }
+  if (isHelpPayload(payload)) {
+    return formatHelpText(payload);
+  }
+  return formatDoctorText(payload);
+}
+
+function isHelpPayload(payload) {
+  return payload != null
+    && typeof payload.usage === "string"
+    && Array.isArray(payload.commands)
+    && typeof payload.group === "string";
+}
+
+function isDoctorPayload(payload) {
+  return payload != null
+    && typeof payload.ok === "boolean"
+    && Array.isArray(payload.issues)
+    && typeof payload.hostConfigPath === "string"
+    && typeof payload.stateRoot === "string";
+}
+
+function shouldFormatAsText(payload) {
+  return isHelpPayload(payload) || isDoctorPayload(payload);
+}
+
+function formatHelpText(payload) {
+  const lines = [
+    "Simulator Broker",
+    "",
+    `Usage: ${payload.usage}`,
+    "",
+  ];
+
+  if (payload.group === "global") {
+    lines.push("Command groups:");
+    for (const command of payload.commands) {
+      lines.push(`  ${command}`);
+    }
+    lines.push(
+      "",
+      "Use `simbroker <group> --help` for the commands in a group.",
+      "Use `simbroker doctor` to check this Mac.",
+    );
+  } else {
+    lines.push("Commands:");
+    for (const command of payload.commands) {
+      lines.push(`  ${command}`);
+    }
+  }
+
+  lines.push(
+    "",
+    "Pass --json for machine-readable output.",
+    "",
+  );
+  return `${lines.join("\n")}`;
+}
+
+function formatDoctorIssue(issue) {
+  if (issue == null || typeof issue !== "object") {
+    return "- Unexpected doctor issue. Re-run with --json for details.";
+  }
+
+  if (issue.reasonCode === "missing-registry") {
+    return [
+      "- Registry: missing.",
+      "  Next: run `simbroker host init --bootstrap-config` if this Mac is not set up yet.",
+    ].join("\n");
+  }
+
+  if (issue.reasonCode === "alias-unhealthy") {
+    const alias = typeof issue.alias === "string" ? issue.alias : "unknown";
+    const health = typeof issue.health === "string" ? issue.health : "unhealthy";
+    return [
+      `- Alias ${alias}: ${health}.`,
+      `  Next: inspect with \`simbroker host status\`, then repair with \`simbroker simulators repair --alias ${alias}\` if needed.`,
+    ].join("\n");
+  }
+
+  if (typeof issue.error === "string" && issue.error.trim() !== "") {
+    const reason = typeof issue.reasonCode === "string" ? ` (${issue.reasonCode})` : "";
+    return `- ${issue.error}${reason}`;
+  }
+
+  if (typeof issue.reasonCode === "string") {
+    return `- ${issue.reasonCode}. Re-run \`simbroker doctor --json\` for details.`;
+  }
+
+  return "- Unexpected doctor issue. Re-run with --json for details.";
+}
+
+function formatDoctorText(payload) {
+  const lines = [
+    "Simulator Broker doctor",
+    "",
+    `Status: ${payload.ok ? "healthy" : "needs attention"}`,
+    `Host config: ${payload.hostConfigPath}`,
+    `State root: ${payload.stateRoot}`,
+    "",
+    "Checklist:",
+  ];
+
+  if (payload.issues.length === 0) {
+    lines.push(
+      "- Host config: ok",
+      "- Registry: ok",
+      "- Alias health: ok",
+      "",
+      "No issues found.",
+      "Next: run `simbroker host status` or `simbroker project init` in a repo.",
+    );
+  } else {
+    for (const issue of payload.issues) {
+      lines.push(formatDoctorIssue(issue));
+    }
+    lines.push(
+      "",
+      "Pass --json for the machine-readable issue list.",
+    );
+  }
+
+  lines.push("");
+  return `${lines.join("\n")}`;
 }
 
 export function eventFilters(flags) {
@@ -514,6 +639,7 @@ function helpPayload(group) {
         "pin",
         "simulators",
         "service",
+        "doctor",
       ],
       group: "global",
       usage: "simbroker <group> <command> [flags]",

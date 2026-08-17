@@ -36,6 +36,9 @@ There is no Homebrew formula, npm package, or GitHub Release yet. Building the
 app from this checkout is the current install path. `~/.local/bin` must be on
 `PATH`, or the `source .../env.sh` step is required in each new shell.
 
+`simbroker` help and `simbroker doctor` print human-readable text by default.
+Pass `--json` for machine-readable payloads.
+
 If the app shows **Set Up This Mac**, click **Complete first-time setup**.
 That creates a starter simulator pool. The CLI equivalent is
 `simbroker host init --bootstrap-config`, which also creates real simulator

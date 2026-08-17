@@ -3,7 +3,8 @@
 Related: [README](../README.md), [Concepts](concepts.md), [Current capabilities](status.md), [CONTRIBUTING](../CONTRIBUTING.md)
 
 This page is the newcomer install and first-run guide. Specs under `spec/` remain
-the implementation contract.
+the implementation contract. `simbroker` help and `simbroker doctor` print
+human-readable text by default; pass `--json` for machine-readable payloads.
 
 ## Prerequisites
 
