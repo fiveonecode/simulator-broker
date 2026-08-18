@@ -16,6 +16,9 @@ downloadable CLI tarball.
 - Public Node test workflow on GitHub-hosted Ubuntu for
   `verify:public-surface`, `test:broker-core`, `test:client`, and
   `test:harness-adoption`. That job does not run the macOS app suite.
+  Snapshot tests inject the fixture `simctl` adapter so the suite does not
+  call host `xcrun`. The default public-surface scan skips identical index
+  blobs on a clean worktree, and the job budget is 30 minutes.
 - `scripts/package_cli.sh` (`npm run package:cli`) builds a versioned CLI
   tarball without XcodeGen or an app build.
 - Tag-driven GitHub Release workflow that attaches the CLI tarball and its

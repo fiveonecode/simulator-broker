@@ -1,5 +1,7 @@
-# Public Node test surface. This job is intentionally cheap: Ubuntu, no
-# npm install (the repo has no runtime dependencies), and no macOS app suite.
+# Public Node test surface. Ubuntu, no npm install (the repo has no runtime
+# dependencies), and no macOS app suite. timeout-minutes is 30 because a
+# prior 20-minute budget was consumed by per-file git cat-file in
+# verify:public-surface on a clean checkout.
 name: Node tests
 
 on:
@@ -18,7 +20,7 @@ jobs:
   node:
     name: broker-core client harness-adoption public-surface
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

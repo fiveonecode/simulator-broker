@@ -39,7 +39,10 @@ A first extracted implementation slice now exists:
   tarball without XcodeGen or an app build
 - public GitHub-hosted Ubuntu CI runs `verify:public-surface`,
   `test:broker-core`, `test:client`, and `test:harness-adoption`; it does not
-  run `test:app`
+  run `test:app`. The job budget is 30 minutes. Broker tests that build an
+  app snapshot must inject the fixture `simctl` adapter. The default
+  public-surface scan reads index blobs only for dirty or missing worktree
+  files so a clean checkout does not spawn one `git cat-file` per file.
 - tagged versions such as `v0.1.0-alpha.1` attach the CLI tarball to a GitHub
   Release through `.github/workflows/release.yml`
 - local-debug portable bundle support through a zip bundle plus package-smoke verification of the bundled install path and installed-app launch proof
@@ -288,7 +291,7 @@ Add stronger profiles next for:
 - the installer prints the installed CLI path, app path when an app was installed, env helper path, any current-shell PATH warning, PATH persist result, and the next command (`command -v simbroker` after persist, or `source "<env-helper>"` when persist is skipped)
 - `bash scripts/install_local.sh --cli-only` installs the CLI runtime without invoking `xcodegen` or `xcodebuild` and without requiring an app bundle
 - `npm run package:cli` writes `artifacts/cli/simulator-broker-<version>-cli.tar.gz` plus a SHA-256 checksum and does not invoke XcodeGen or `xcodebuild`
-- `.github/workflows/ci.yml` runs the public Node suites on `ubuntu-latest` and does not run `npm run test:app`
+- `.github/workflows/ci.yml` runs the public Node suites on `ubuntu-latest` with a 30-minute budget and does not run `npm run test:app`
 - `host init --bootstrap-config` writes a warning that real Simulator devices will be created before it calls `simctl` create
 - `npm run test:install-smoke` proves a fresh-machine-style install can bootstrap host config, scaffold a repo, start the service, acquire a lease, generate an app snapshot from the installed CLI, launch the installed app bundle against the smoke fixture, assert the `SimulatorBrokerApp` process stays alive, restore any preexisting default install metadata including symlink target contents, and clean up only the simulators provisioned by the smoke run afterward
 - `npm run package:distribution` builds the app in `Release`, requires operator-supplied `SIMBROKER_DISTRIBUTION_TEAM_ID` plus `SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY`, optionally consumes `SIMBROKER_NOTARYTOOL_PROFILE`, and writes a machine-readable readiness summary under `artifacts/distribution/`

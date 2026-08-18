@@ -153,6 +153,7 @@ test("public CI runs the Node suites on Ubuntu and skips the macOS app suite", (
   const ci = readRepoFile(".github/workflows/ci.yml");
 
   assert.ok(ci.includes("runs-on: ubuntu-latest"));
+  assert.match(ci, /timeout-minutes:\s*([3-9]\d|\d{3,})/);
   assert.ok(ci.includes("npm run verify:public-surface"));
   assert.ok(ci.includes("npm run test:broker-core"));
   assert.ok(ci.includes("npm run test:client"));
