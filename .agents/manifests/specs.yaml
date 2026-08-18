@@ -1,6 +1,8 @@
 id: specs
 globs:
+  - .github/workflows/**
   - .gitignore
+  - CHANGELOG.md
   - CODE_OF_CONDUCT.md
   - CONTRIBUTING.md
   - LICENSE
@@ -11,6 +13,7 @@ globs:
   - examples/**/.simulator-broker/*.json
   - spec/**
   - references/**
+  - scripts/package_cli.sh
 owner: spec-steward
 required_skills:
   - harness-engineering
@@ -24,7 +27,9 @@ primary_specs:
 verification_profile: spec-only
 commit_required: true
 allowed_paths:
+  - .github/workflows/**
   - .gitignore
+  - CHANGELOG.md
   - CODE_OF_CONDUCT.md
   - CONTRIBUTING.md
   - LICENSE
@@ -35,6 +40,7 @@ allowed_paths:
   - examples/**/.simulator-broker/*.json
   - spec/**
   - references/**
+  - scripts/package_cli.sh
 forbidden_paths: []
 required_evidence:
   - structured-git-commit

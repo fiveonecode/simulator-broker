@@ -9350,7 +9350,7 @@ test("events and app snapshots honor a zero event limit", () => {
   });
 
   assert.equal(readEventsBroker(resolvedPaths, { limit: 0 }).events.length, 0);
-  assert.equal(appSnapshotBroker(resolvedPaths, { eventLimit: 0 }).recentEvents.length, 0);
+  assert.equal(appSnapshotBroker(resolvedPaths, runtimeOptions(paths, { eventLimit: 0 })).recentEvents.length, 0);
 });
 
 test("app snapshot reuses one process sample for active lease checks", () => {
@@ -9379,13 +9379,13 @@ test("app snapshot reuses one process sample for active lease checks", () => {
   const liveSampler = liveProcessSampler({ command: "node broker-core.test.mjs", pid: process.pid });
   let sampleCount = 0;
 
-  const snapshot = appSnapshotBroker(resolvedPaths, {
+  const snapshot = appSnapshotBroker(resolvedPaths, runtimeOptions(paths, {
     processExists: (pid) => pid === process.pid,
     processSampler: () => {
       sampleCount += 1;
       return liveSampler();
     },
-  });
+  }));
 
   assert.equal(snapshot.activeLeases.length, 2);
   assert.equal(sampleCount, 1);
@@ -9422,7 +9422,7 @@ test("app snapshot reads only a bounded event tail for recent events", (t) => {
     return originalReadFileSync.call(this, target, ...args);
   };
 
-  const snapshot = appSnapshotBroker(resolvedPaths, { eventLimit: 3 });
+  const snapshot = appSnapshotBroker(resolvedPaths, runtimeOptions(paths, { eventLimit: 3 }));
 
   assert.deepEqual(snapshot.recentEvents.map((event) => event.eventId), [
     "event-119",
@@ -9661,7 +9661,7 @@ test("broker-owned state files are restricted to the current user", () => {
     purposeId: "agent-ui-session",
     simctlAdapter: paths.simctl.adapter,
   });
-  writeAppSnapshotArtifact(resolvedPaths);
+  writeAppSnapshotArtifact(resolvedPaths, runtimeOptions(paths));
 
   const statePaths = [
     resolvedPaths.stateRoot,

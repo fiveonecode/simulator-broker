@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -105,7 +107,9 @@ test("CONTRIBUTING keeps a labeled maintainer harness track", () => {
 
 test("README links newcomer docs and embeds a real screenshot file", () => {
   const readme = readRepoFile("README.md");
-  const imageMatch = /!\[.*?]\((.*?)\)/.exec(readme);
+  const imageMatch = [...readme.matchAll(/!\[.*?]\((.*?)\)/g)]
+    .map((match) => match[1])
+    .find((image) => image.endsWith(".png") && !/^https?:\/\//.test(image));
 
   assert.ok(imageMatch, "README must embed a screenshot image");
   assert.ok(readme.includes("[Getting started](docs/getting-started.md)"));
@@ -113,7 +117,7 @@ test("README links newcomer docs and embeds a real screenshot file", () => {
   assert.equal(fs.existsSync(path.join(repoRoot, "docs/getting-started.md")), true);
   assert.equal(fs.existsSync(path.join(repoRoot, "docs/concepts.md")), true);
 
-  const relativeImage = imageMatch[1];
+  const relativeImage = imageMatch;
   const imagePath = path.join(repoRoot, relativeImage);
   assert.equal(fs.existsSync(imagePath), true, `missing screenshot ${relativeImage}`);
 
@@ -124,4 +128,76 @@ test("README links newcomer docs and embeds a real screenshot file", () => {
     [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
     "screenshot must be a PNG",
   );
+});
+
+test("README advertises GitHub Releases and the public Node CI badge", () => {
+  const readme = readRepoFile("README.md");
+
+  assert.ok(readme.includes("actions/workflows/ci.yml/badge.svg"));
+  assert.ok(readme.includes("github.com/fiveonecode/simulator-broker/releases"));
+  assert.ok(readme.includes("./bin/simbroker --help"));
+  assert.equal(readme.includes("or GitHub Release yet"), false);
+  assert.ok(readme.includes("There is no Homebrew formula or npm package yet."));
+});
+
+test("CHANGELOG and package.json name the Alpha version", () => {
+  const changelog = readRepoFile("CHANGELOG.md");
+  const packageJson = JSON.parse(readRepoFile("package.json"));
+
+  assert.equal(packageJson.version, "0.1.0-alpha.1");
+  assert.ok(changelog.includes("## [0.1.0-alpha.1]"));
+  assert.ok(changelog.includes("scripts/package_cli.sh"));
+});
+
+test("public CI runs the Node suites on Ubuntu and skips the macOS app suite", () => {
+  const ci = readRepoFile(".github/workflows/ci.yml");
+
+  assert.ok(ci.includes("runs-on: ubuntu-latest"));
+  assert.match(ci, /timeout-minutes:\s*([3-9]\d|\d{3,})/);
+  assert.ok(ci.includes("npm run verify:public-surface"));
+  assert.ok(ci.includes("npm run test:broker-core"));
+  assert.ok(ci.includes("npm run test:client"));
+  assert.ok(ci.includes("npm run test:harness-adoption"));
+  assert.equal(ci.includes("test:app"), false);
+  assert.equal(ci.includes("macos-latest"), false);
+  assert.equal(/\n\s+run:\s*npm install\b/.test(ci), false);
+  assert.equal(/\n\s+run:\s*npm ci\b/.test(ci), false);
+});
+
+test("release workflow packages the CLI tarball on version tags", () => {
+  const release = readRepoFile(".github/workflows/release.yml");
+
+  assert.ok(release.includes("tags:"));
+  assert.ok(release.includes("npm run package:cli"));
+  assert.ok(release.includes("gh release create"));
+  assert.ok(release.includes("--prerelease"));
+  assert.equal(release.includes("test:app"), false);
+});
+
+test("package_cli.sh writes a runnable CLI tarball without tests or the app", () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-cli-"));
+  const result = spawnSync("bash", [path.join(repoRoot, "scripts/package_cli.sh"), "--output-dir", outputDir], {
+    encoding: "utf8",
+    cwd: repoRoot,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const tarball = path.join(outputDir, "simulator-broker-0.1.0-alpha.1-cli.tar.gz");
+  const checksum = `${tarball}.sha256`;
+  assert.equal(fs.existsSync(tarball), true, result.stdout);
+  assert.equal(fs.existsSync(checksum), true, result.stdout);
+
+  const extractDir = path.join(outputDir, "extract");
+  fs.mkdirSync(extractDir);
+  const extract = spawnSync("tar", ["-xzf", tarball, "-C", extractDir], { encoding: "utf8" });
+  assert.equal(extract.status, 0, extract.stderr);
+
+  const root = path.join(extractDir, "simulator-broker-0.1.0-alpha.1-cli");
+  const help = spawnSync(path.join(root, "bin/simbroker"), ["--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0, help.stderr);
+  assert.ok(help.stdout.includes("simbroker") || help.stderr.includes("simbroker"));
+  assert.equal(fs.existsSync(path.join(root, "broker-core/test")), false);
+  assert.equal(fs.existsSync(path.join(root, "client/test")), false);
+  assert.equal(fs.existsSync(path.join(root, "app")), false);
+  assert.equal(fs.existsSync(path.join(root, "LICENSE")), true);
 });

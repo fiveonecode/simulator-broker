@@ -8,6 +8,8 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
 - `.codex/environments/` — Codex environment bootstrap and Run actions
 - `WORKFLOW.md` — public-safe repo-owned Symphony execution, validation,
   protected-path, and handoff contract
+- `CHANGELOG.md` — published version history for tagged releases
+- `.github/workflows/` — public Node test CI and tag-driven CLI release
 - `spec/` — active source of truth, including worker-ready task specs under `spec/tasks/`
 - `docs/` — public newcomer docs (getting started, concepts, status) and the
   README screenshot; not source of truth
@@ -19,8 +21,9 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
 - `script/` — canonical app run-loop entrypoints and shared macOS build preflight helpers such as `build_and_run.sh`
 - `scripts/` — repo-owned helper scripts including the canonical
   `validate.sh` full-repository gate, app generation, repo-local install,
-  CLI-only install (`install_local.sh --cli-only`), distribution install,
-  portable package creation, smoke verification, and harness bootstrap
+  CLI-only install (`install_local.sh --cli-only`), CLI tarball packaging
+  (`package_cli.sh`), distribution install, portable package creation, smoke
+  verification, and harness bootstrap
 
 ## Important rule
 

@@ -1,0 +1,60 @@
+# Publish the Alpha CLI tarball when a version tag is pushed.
+# After merge, create the matching tag (example: v0.1.0-alpha.1).
+# This workflow does not build or attach the macOS app.
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: attach CLI tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Require tag to match package.json
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [[ "${GITHUB_REF_NAME}" != "$expected" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package.json (${expected})." >&2
+            exit 1
+          fi
+
+      - name: Public Node test surface
+        run: |
+          npm run verify:public-surface
+          npm run test:broker-core
+          npm run test:client
+          npm run test:harness-adoption
+
+      - name: Package CLI tarball
+        run: npm run package:cli
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          asset="artifacts/cli/simulator-broker-${version}-cli.tar.gz"
+          checksum="${asset}.sha256"
+          prerelease_args=()
+          if [[ "$version" == *alpha* || "$version" == *beta* || "$version" == *rc* ]]; then
+            prerelease_args+=(--prerelease)
+          fi
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "Simulator Broker ${GITHUB_REF_NAME}" \
+            --notes "Alpha CLI tarball. Extract it and run \`./bin/simbroker --help\`. Node.js 20 or newer is required. macOS and Xcode are still required to create and run iOS Simulators. This release is not a Homebrew formula, notarized app, or npm package. See CHANGELOG.md." \
+            "${prerelease_args[@]}" \
+            "$asset" \
+            "$checksum"

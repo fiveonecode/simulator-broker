@@ -4,9 +4,9 @@ covers_scenarios: []
 covers_boundaries: []
 commands:
   - id: spec-diff-check
-    run: git diff --check -- WORKFLOW.md AGENTS.md CLAUDE.md README.md LICENSE SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md docs spec .agents agent-harness package.json package-lock.json .gitignore .codex script scripts references app broker-core client && git diff --cached --check -- WORKFLOW.md AGENTS.md CLAUDE.md README.md LICENSE SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md docs spec .agents agent-harness package.json package-lock.json .gitignore .codex script scripts references app broker-core client
+    run: git diff --check -- WORKFLOW.md AGENTS.md CLAUDE.md README.md LICENSE SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md CHANGELOG.md docs spec .agents agent-harness package.json package-lock.json .gitignore .github .codex script scripts references app broker-core client && git diff --cached --check -- WORKFLOW.md AGENTS.md CLAUDE.md README.md LICENSE SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md CHANGELOG.md docs spec .agents agent-harness package.json package-lock.json .gitignore .github .codex script scripts references app broker-core client
   - id: public-front-door-check
-    run: node --test docs/test/front-door.test.mjs
+    run: node --test docs/test/*.test.mjs
   - id: instruction-parity-check
     run: cmp -s AGENTS.md CLAUDE.md || { echo "AGENTS.md and CLAUDE.md must stay identical." >&2; exit 1; }
 required_artifacts:

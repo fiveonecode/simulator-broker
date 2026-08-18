@@ -28,6 +28,12 @@ simbroker --help
 This copies `broker-core`, `client`, and `package.json` into the install prefix
 and writes a `simbroker` wrapper. It does not run XcodeGen or build the app.
 
+To install from a tagged Alpha without cloning, download
+`simulator-broker-<version>-cli.tar.gz` from
+[GitHub Releases](https://github.com/fiveonecode/simulator-broker/releases),
+extract it, and run `./bin/simbroker --help`. That archive is the Node CLI
+only.
+
 - If Homebrew is present and `$(brew --prefix)/bin` is writable, the wrapper
   is installed there so a new login shell already has it on `PATH`.
 - Otherwise the wrapper is installed to `~/.local/bin` and the installer
@@ -135,7 +141,8 @@ SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY='Developer ID Application: Example (TEAM
 npm run package:distribution
 ```
 
-No signed build is published on GitHub Releases yet.
+GitHub Releases attach the Alpha CLI tarball. A signed, notarized app is not
+published there yet.
 
 ## What to read next
 

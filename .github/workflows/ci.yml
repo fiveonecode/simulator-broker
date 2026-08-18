@@ -1,0 +1,41 @@
+# Public Node test surface. Ubuntu, no npm install (the repo has no runtime
+# dependencies), and no macOS app suite. timeout-minutes is 30 because a
+# prior 20-minute budget was consumed by per-file git cat-file in
+# verify:public-surface on a clean checkout.
+name: Node tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: broker-core client harness-adoption public-surface
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Public-surface scan
+        run: npm run verify:public-surface
+
+      - name: broker-core tests
+        run: npm run test:broker-core
+
+      - name: client tests
+        run: npm run test:client
+
+      - name: harness-adoption tests
+        run: npm run test:harness-adoption

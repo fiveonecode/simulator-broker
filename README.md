@@ -4,6 +4,7 @@ A local control plane so humans, AI agents, and CI jobs can share iOS Simulators
 on one Mac without stealing devices from each other.
 
 **Status:** Alpha · macOS only · Xcode required
+[![Node tests](https://github.com/fiveonecode/simulator-broker/actions/workflows/ci.yml/badge.svg)](https://github.com/fiveonecode/simulator-broker/actions/workflows/ci.yml)
 
 Simulator Broker leases simulator aliases by *purpose* (for example
 `agent-ui-session` or `manual-testing`) instead of hard-coding UDIDs. A local
@@ -37,8 +38,15 @@ Otherwise the installer writes `~/.local/bin/simbroker` and one guarded
 login-shell PATH line. Open a new terminal if this shell still cannot resolve
 `simbroker`. `source .../env.sh` remains a fallback.
 
-Xcode is still required to create and run iOS Simulators. There is no Homebrew
-formula, npm package, or GitHub Release yet.
+To try a tagged build without cloning, download
+`simulator-broker-<version>-cli.tar.gz` from
+[Releases](https://github.com/fiveonecode/simulator-broker/releases), extract
+it, and run `./bin/simbroker --help`. Node.js 20+ is still required.
+
+Xcode is still required to create and run iOS Simulators. Alpha CLI tarballs
+are attached to
+[GitHub Releases](https://github.com/fiveonecode/simulator-broker/releases).
+There is no Homebrew formula or npm package yet.
 
 `simbroker` help and `simbroker doctor` print human-readable text by default.
 Pass `--json` for machine-readable payloads.

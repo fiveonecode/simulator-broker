@@ -79,6 +79,24 @@ function defaultCandidateFiles(root) {
   return output.split("\0").filter(Boolean);
 }
 
+// Clean checkouts match the index, so skip per-file `git cat-file`. A prior
+// Ubuntu CI run spent 17 minutes spawning one process per tracked file.
+function dirtyWorktreeFiles(root) {
+  try {
+    const output = execGit([
+      "diff-files",
+      "-z",
+      "--name-only",
+    ], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    return new Set(output.split("\0").filter(Boolean));
+  } catch {
+    return null;
+  }
+}
+
 function defaultCandidateIndexModes(root) {
   const output = execGit([
     "ls-files",
@@ -318,6 +336,7 @@ export function scanPublicSurface({
   const candidateFiles = files ?? defaultCandidateFiles(resolvedRoot);
   const scanIndexBlobs = files === undefined;
   const indexModes = scanIndexBlobs ? defaultCandidateIndexModes(resolvedRoot) : new Map();
+  const dirtyFiles = scanIndexBlobs ? dirtyWorktreeFiles(resolvedRoot) : new Set();
   const resolvedDenylistPath = denylistPath ?? path.join(resolvedRoot, LOCAL_DENYLIST_NAME);
   const denylistRules = localDenylistRules(resolvedDenylistPath);
   const builtInRules = [
@@ -421,6 +440,7 @@ export function scanPublicSurface({
     if (!absoluteFile.startsWith(`${resolvedRoot}${path.sep}`)) {
       continue;
     }
+    let worktreeMissing = false;
     try {
       const fileStats = fs.lstatSync(absoluteFile);
       if (fileStats.isSymbolicLink()) {
@@ -438,8 +458,9 @@ export function scanPublicSurface({
       if (error?.code !== "ENOENT") {
         throw error;
       }
+      worktreeMissing = true;
     }
-    if (scanIndexBlobs) {
+    if (scanIndexBlobs && (dirtyFiles === null || dirtyFiles.has(relativeFile) || worktreeMissing)) {
       scanText(normalizedRelativeFile, indexBlobContent(resolvedRoot, relativeFile));
     }
   }
