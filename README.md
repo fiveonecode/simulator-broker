@@ -63,8 +63,9 @@ npm run build:app
 `install:local` builds the Debug app, installs the CLI, and copies
 `Simulator Broker.app` to `~/Applications`.
 
-Contributor setup, verification, and pull-request expectations are in
-[CONTRIBUTING.md](CONTRIBUTING.md).
+Contributor setup is in [CONTRIBUTING.md](CONTRIBUTING.md). A small public
+patch uses Node.js 20 and the Node test suites. Maintainers and agent runs
+keep the `agent:context` / `agent:verify` / `agent:complete` track.
 
 ## Five-minute hello world
 

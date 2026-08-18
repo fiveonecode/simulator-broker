@@ -5,6 +5,8 @@ Related: [README](../README.md), [Concepts](concepts.md), [Current capabilities]
 This page is the newcomer install and first-run guide. Specs under `spec/` remain
 the implementation contract. `simbroker` help and `simbroker doctor` print
 human-readable text by default; pass `--json` for machine-readable payloads.
+A small public patch follows the public-patches track in
+[CONTRIBUTING.md](../CONTRIBUTING.md); it does not require the agent harness.
 
 ## Prerequisites
 

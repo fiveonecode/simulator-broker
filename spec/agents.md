@@ -5,6 +5,12 @@ Related: `spec/README.md`, `spec/harness-integration.md`, `spec/build-and-test.m
 
 This file defines the intended agent workflow for the bootstrap phase of this repo.
 
+`CONTRIBUTING.md` publishes two tracks. Public patches use Node.js 20 and the
+Node test suites (`test:broker-core`, `test:client`, `test:harness-adoption`,
+or `npm test`) and do not require `agent:context` or a task session directory.
+Maintainers and agent runs still use `agent:context` / `agent:verify` /
+`agent:complete`. Harness enforcement in this repository is unchanged.
+
 ## Current routing
 
 - `harness-contract` exclusively owns `WORKFLOW.md`, `.agents/`, agent
