@@ -77,6 +77,13 @@ The public front door is `README.md` plus `docs/getting-started.md`,
 `docs/concepts.md`, and `docs/status.md`. Those pages are newcomer guidance.
 This file remains the contributor and verification contract.
 
+`CONTRIBUTING.md` splits public patches from maintainer and agent runs. A
+public patch names Node.js 20 and the Node test suites and does not require
+`agent:context` or a Codex session directory. The maintainer track still
+documents `agent:context`, `agent:verify`, and `agent:complete`. Harness
+enforcement (`agent:complete` structured commits, selected profiles, and
+session artifacts) is unchanged.
+
 ## Contributor onboarding contract
 
 Use the repo-local contributor flow when the engineer already has this checkout on the target Mac.

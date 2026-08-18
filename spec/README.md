@@ -53,6 +53,7 @@ This repo exists to develop a reusable local simulator broker:
 - app unit tests and the local XcodeGen-driven build/test flow now support build-only reruns, focused `-only-testing` filters, and stable `xcresult` output for runtime triage
 - local install, local-debug portable packaging, Release distribution packaging, and onboarding flows now exist through `install_local.sh`, `install_local.sh --cli-only`, `package_local.sh`, `package_distribution.sh`, `test:install-smoke`, `test:package-smoke`, `host init --bootstrap-config`, and `project init`
 - the published onboarding docs now distinguish CLI-only install, repo-local contributor app+CLI install, local-debug portable bundling, and signed distribution packaging; a new login shell should resolve `simbroker` after install without sourcing `env.sh`
+- `CONTRIBUTING.md` publishes a public-patch track (Node.js 20 and the Node test suites, no harness session) and a labeled maintainer/agent harness track; `agent:complete` enforcement is unchanged
 - `host init --bootstrap-config` warns that it creates real Simulator devices before provisioning them
 - broker-aware sample consumer repo artifacts now cover manual human, interactive agent, unattended agent build-and-test, and CI patterns under `examples/harness-adoption/`
 - broker-aware build/test leases now support downstream process registration, memory ceiling containment, evidence bundles, and forced-abort cleanup for detached simulator-like processes
