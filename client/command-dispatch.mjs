@@ -266,7 +266,7 @@ function parseBooleanFlag(flags, key, { defaultValue = false } = {}) {
   });
 }
 
-function hostInitOptions(flags) {
+export function hostInitOptions(flags) {
   rejectUnknownFlags(flags, new Set([
     "bootstrap-config",
     "force",
@@ -347,6 +347,12 @@ function formatHelpText(payload) {
     lines.push("Commands:");
     for (const command of payload.commands) {
       lines.push(`  ${command}`);
+    }
+    if (Array.isArray(payload.notes) && payload.notes.length > 0) {
+      lines.push("", "Notes:");
+      for (const note of payload.notes) {
+        lines.push(`  ${note}`);
+      }
     }
   }
 
@@ -608,6 +614,9 @@ function helpPayload(group) {
       commands: [
         "host init [--bootstrap-config] [--host-id <id>] [--ios-version <version>]",
         "host status",
+      ],
+      notes: [
+        "host init --bootstrap-config creates real iOS Simulator devices on this Mac.",
       ],
       group: "host",
       usage: "simbroker host <command>",

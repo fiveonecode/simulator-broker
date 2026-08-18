@@ -18,6 +18,8 @@ import { createDeviceIndex, resolveSimctlAdapter } from "./simctl.mjs";
 export const DEFAULT_HOST_CONFIG_PATH = path.join(os.homedir(), "Library/Application Support/SimulatorBroker/host-config.json");
 export const DEFAULT_STATE_ROOT = path.join(os.homedir(), "Library/Application Support/SimulatorBroker/state");
 export const DEFAULT_PROJECT_FILE = ".simulator-broker/project.json";
+export const HOST_BOOTSTRAP_DEVICE_WARNING =
+  "Warning: host init --bootstrap-config creates real iOS Simulator devices on this Mac.";
 
 const HOST_CONFIG_VERSION = 1;
 const KNOWN_PROJECTS_VERSION = 1;
@@ -1267,6 +1269,12 @@ function buildProvisionedStarterHostConfig(options = {}) {
       plannedSimulatorNames,
     });
     throw error;
+  }
+}
+
+function emitHostBootstrapWarning(options = {}) {
+  if (typeof options.writeBootstrapWarning === "function") {
+    options.writeBootstrapWarning(HOST_BOOTSTRAP_DEVICE_WARNING);
   }
 }
 
@@ -3610,6 +3618,7 @@ export function initBroker(paths, options = {}) {
           previousHostConfig = readHostConfigOrThrow(paths);
           assertHostConfigCanBeReplaced(paths, options, timestamp);
         }
+        emitHostBootstrapWarning(options);
         const provisioned = buildProvisionedStarterHostConfig({
           hostId: options.hostId,
           iosVersion: options.iosVersion,
@@ -3673,6 +3682,7 @@ export function initBroker(paths, options = {}) {
     initializedAt: timestamp,
     ok: true,
     stateRoot: paths.stateRoot,
+    ...(hostConfigCreated ? { bootstrapWarning: HOST_BOOTSTRAP_DEVICE_WARNING } : {}),
   };
 }
 

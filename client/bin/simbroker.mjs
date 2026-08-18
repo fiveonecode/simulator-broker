@@ -7,12 +7,13 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { BROKER_EXIT_CODES, INTERNAL_ERROR_REASON_CODE, resolveBrokerExitCode } from "../../broker-core/error-contract.mjs";
-import { BrokerError, idlePolicyConfiguredBroker, resolveBrokerPaths } from "../../broker-core/index.mjs";
+import { BrokerError, HOST_BOOTSTRAP_DEVICE_WARNING, idlePolicyConfiguredBroker, resolveBrokerPaths } from "../../broker-core/index.mjs";
 import {
   createCommandRequest,
   executeBrokerCommand,
   flagValue,
   format,
+  hostInitOptions,
   parseArgs,
   streamEventsLocal,
 } from "../command-dispatch.mjs";
@@ -575,6 +576,16 @@ async function main() {
   if (flags.has("help") || group === "help" || command === "help") {
     const request = createCommandRequest(paths, group, command, flags);
     return runServiceAwareRequest(paths, request);
+  }
+
+  if (group === "host" && command === "init") {
+    const initOptions = hostInitOptions(flags);
+    if (initOptions.bootstrapConfig === true) {
+      const configExists = fs.existsSync(paths.hostConfigPath);
+      if (configExists === false || initOptions.force === true) {
+        process.stderr.write(`${HOST_BOOTSTRAP_DEVICE_WARNING}\n`);
+      }
+    }
   }
 
   switch (`${group ?? ""}:${command ?? ""}`) {

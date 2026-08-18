@@ -23,35 +23,45 @@ If you only ever use one simulator by hand, you may not need this yet.
 
 ## Use it
 
-From a clone, with Xcode, XcodeGen, and Node.js 20+ on `PATH`:
+From a clone, with Node.js 20+ on `PATH`:
 
 ```bash
-npm run install:local
-source "$HOME/Library/Application Support/SimulatorBroker/install/env.sh"
+bash scripts/install_local.sh --cli-only
 command -v simbroker
-open "$HOME/Applications/Simulator Broker.app"
+simbroker --help
 ```
 
-There is no Homebrew formula, npm package, or GitHub Release yet. Building the
-app from this checkout is the current install path. `~/.local/bin` must be on
-`PATH`, or the `source .../env.sh` step is required in each new shell.
+That copies the CLI runtime only. It does not run XcodeGen or build the macOS
+app. If Homebrew is installed, `simbroker` lands in `$(brew --prefix)/bin`.
+Otherwise the installer writes `~/.local/bin/simbroker` and one guarded
+login-shell PATH line. Open a new terminal if this shell still cannot resolve
+`simbroker`. `source .../env.sh` remains a fallback.
+
+Xcode is still required to create and run iOS Simulators. There is no Homebrew
+formula, npm package, or GitHub Release yet.
 
 `simbroker` help and `simbroker doctor` print human-readable text by default.
 Pass `--json` for machine-readable payloads.
 
-If the app shows **Set Up This Mac**, click **Complete first-time setup**.
-That creates a starter simulator pool. The CLI equivalent is
-`simbroker host init --bootstrap-config`, which also creates real simulator
-devices.
+First-run host setup is `simbroker host init --bootstrap-config`. It prints a
+warning and then creates real Simulator devices. Do not run it casually on a
+machine whose simulator inventory you cannot afford to change.
+
+To install the operator app as well, use the contributor command in
+[Develop it](#develop-it).
 
 ## Develop it
 
-Same prerequisites. Then:
+Same Node.js requirement, plus Xcode and XcodeGen, then:
 
 ```bash
+npm run install:local
 npm test
 npm run build:app
 ```
+
+`install:local` builds the Debug app, installs the CLI, and copies
+`Simulator Broker.app` to `~/Applications`.
 
 Contributor setup, verification, and pull-request expectations are in
 [CONTRIBUTING.md](CONTRIBUTING.md).

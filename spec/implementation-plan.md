@@ -668,11 +668,12 @@ Exit criteria:
 Current implementation slice:
 
 - `scripts/install_local.sh` builds the macOS app, stages a payload, and installs through a generic distribution installer
+- `scripts/install_local.sh --cli-only` stages only the Node runtime and installs the CLI without XcodeGen or an app build
 - `scripts/package_local.sh` produces a portable zip bundle with a bundled `install.sh` that has no repo-root assumptions at install time
-- `scripts/install_distribution.sh` performs the shared payload install logic used by both repo-local and packaged installs
+- `scripts/install_distribution.sh` performs the shared payload install logic used by both repo-local and packaged installs, including optional `--cli-only` and `--profile` PATH persistence
 - `scripts/install_smoke.sh` verifies both repo-local and packaged install paths, host bootstrap, repo scaffolding, service start, lease acquire, app snapshot generation from the installed CLI, and cleanup of provisioned simulators
 - `scripts/package_smoke.sh` packages the product and then runs the bundled install path through the full smoke flow
-- `simbroker host init --bootstrap-config` writes a starter host config when a machine-local config does not exist yet
+- `simbroker host init --bootstrap-config` warns that it creates real Simulator devices, then writes a starter host config when a machine-local config does not exist yet
 - `simbroker project init` scaffolds `.simulator-broker/project.json` for a fresh consumer repo
 - the sample harness adoption kit now covers manual human, interactive agent, unattended agent build-test, and CI patterns, and the broker-harness-adoption skill/checklist follow the same guide
 

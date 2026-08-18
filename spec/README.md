@@ -51,8 +51,9 @@ This repo exists to develop a reusable local simulator broker:
 - the app now classifies first-run setup state, can bootstrap host config plus start `brokerd` through the installed CLI, and shows repo onboarding guidance when the machine is ready but no repo has registered yet
 - the macOS app now emits unified `Logger` telemetry for app lifecycle, refresh, setup, and broker command action boundaries, and `./script/build_and_run.sh --telemetry` surfaces those events for local triage
 - app unit tests and the local XcodeGen-driven build/test flow now support build-only reruns, focused `-only-testing` filters, and stable `xcresult` output for runtime triage
-- local install, local-debug portable packaging, Release distribution packaging, and onboarding flows now exist through `install_local.sh`, `package_local.sh`, `package_distribution.sh`, `test:install-smoke`, `test:package-smoke`, `host init --bootstrap-config`, and `project init`
-- the published onboarding docs now distinguish repo-local contributor install, local-debug portable bundling, and signed distribution packaging, and they explicitly require sourcing the installed env helper before repo onboarding commands are used
+- local install, local-debug portable packaging, Release distribution packaging, and onboarding flows now exist through `install_local.sh`, `install_local.sh --cli-only`, `package_local.sh`, `package_distribution.sh`, `test:install-smoke`, `test:package-smoke`, `host init --bootstrap-config`, and `project init`
+- the published onboarding docs now distinguish CLI-only install, repo-local contributor app+CLI install, local-debug portable bundling, and signed distribution packaging; a new login shell should resolve `simbroker` after install without sourcing `env.sh`
+- `host init --bootstrap-config` warns that it creates real Simulator devices before provisioning them
 - broker-aware sample consumer repo artifacts now cover manual human, interactive agent, unattended agent build-and-test, and CI patterns under `examples/harness-adoption/`
 - broker-aware build/test leases now support downstream process registration, memory ceiling containment, evidence bundles, and forced-abort cleanup for detached simulator-like processes
 - broker capacity commands now support public-safe `capacity check`,

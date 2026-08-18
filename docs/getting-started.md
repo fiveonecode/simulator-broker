@@ -9,28 +9,42 @@ human-readable text by default; pass `--json` for machine-readable payloads.
 ## Prerequisites
 
 - macOS with Xcode and iOS Simulator support installed
-- `xcodegen` on `PATH` (example: `brew install xcodegen`)
 - Node.js 20 or newer on `PATH`
+- `xcodegen` on `PATH` only if you install the macOS app (example: `brew install xcodegen`)
 
-Repo-owned macOS entrypoints fail fast when `xcodegen` or `xcodebuild` is
-missing or unusable.
+Repo-owned macOS app entrypoints fail fast when `xcodegen` or `xcodebuild` is
+missing or unusable. The CLI-only installer does not call them.
 
-## Install from this checkout
+## Install the CLI from this checkout
+
+```bash
+bash scripts/install_local.sh --cli-only
+command -v simbroker
+simbroker --help
+```
+
+This copies `broker-core`, `client`, and `package.json` into the install prefix
+and writes a `simbroker` wrapper. It does not run XcodeGen or build the app.
+
+- If Homebrew is present and `$(brew --prefix)/bin` is writable, the wrapper
+  is installed there so a new login shell already has it on `PATH`.
+- Otherwise the wrapper is installed to `~/.local/bin` and the installer
+  appends one guarded PATH snippet to your login profile (`~/.zprofile` on
+  zsh). The snippet is idempotent.
+- `source "$HOME/Library/Application Support/SimulatorBroker/install/env.sh"`
+  remains a fallback for the current shell.
+
+## Install the app from this checkout
 
 ```bash
 npm run install:local
-source "$HOME/Library/Application Support/SimulatorBroker/install/env.sh"
 command -v simbroker
 open "$HOME/Applications/Simulator Broker.app"
 ```
 
-The installer builds the Debug app, copies the CLI runtime under
-`~/Library/Application Support/SimulatorBroker/install`, writes
-`~/.local/bin/simbroker`, and copies `Simulator Broker.app` to
-`~/Applications`.
-
-If `command -v simbroker` fails in a new terminal, `~/.local/bin` is not on
-`PATH`. Source `env.sh` again, or add `~/.local/bin` to your shell profile.
+That path builds the Debug app, copies the CLI runtime, writes `simbroker`,
+and copies `Simulator Broker.app` to `~/Applications`. It also persists PATH
+the same way as the CLI-only installer.
 
 ## First-run host setup
 
@@ -40,7 +54,7 @@ The app is the preferred first-run surface.
 2. If it shows **Set Up This Mac**, click **Complete first-time setup**.
 3. Wait until the dashboard shows the broker is ready.
 
-CLI fallback, which creates real simulator devices:
+CLI fallback, which prints a warning and then creates real simulator devices:
 
 ```bash
 simbroker host init --bootstrap-config
@@ -76,7 +90,8 @@ Do not take the broker offline while it has an active lease.
 1. Check `simbroker host status --json` for active leases.
 2. Stop the service with `simbroker service stop`.
 3. Quit `Simulator Broker.app`.
-4. Run `npm run install:local` and reload `env.sh`.
+4. Re-run `bash scripts/install_local.sh --cli-only` or `npm run install:local`.
+   Open a new login shell if `command -v simbroker` fails.
 5. Run `simbroker service start` and reopen the app.
 
 The installer preserves host config and broker state.
