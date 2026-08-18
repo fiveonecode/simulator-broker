@@ -35,6 +35,13 @@ A first extracted implementation slice now exists:
 - CLI-only install through `bash scripts/install_local.sh --cli-only`, which copies the Node runtime and writes `simbroker` without XcodeGen or an app build
 - PATH persistence after install: Homebrew prefix bin when that is the install location, otherwise one guarded login-profile snippet for the default `~/.local/bin` location; `--profile` overrides the profile path so tests never edit the operator login rc
 - `host init --bootstrap-config` prints an honest warning that it creates real iOS Simulator devices before those devices are created
+- `scripts/package_cli.sh` packages the Node CLI runtime into a versioned
+  tarball without XcodeGen or an app build
+- public GitHub-hosted Ubuntu CI runs `verify:public-surface`,
+  `test:broker-core`, `test:client`, and `test:harness-adoption`; it does not
+  run `test:app`
+- tagged versions such as `v0.1.0-alpha.1` attach the CLI tarball to a GitHub
+  Release through `.github/workflows/release.yml`
 - local-debug portable bundle support through a zip bundle plus package-smoke verification of the bundled install path and installed-app launch proof
 - a separate Release distribution packaging path that requires operator-supplied signing inputs, runs `codesign` plus `spctl`, optionally notarizes with `notarytool`, and writes a readiness summary JSON
 - executable `agent-harness/` changes now route through the implementation
@@ -199,6 +206,7 @@ bash scripts/package_distribution.sh --team-id <team-id> --signing-identity '<id
 bash scripts/package_local.sh
 bash scripts/install_smoke.sh
 bash scripts/package_smoke.sh
+npm run package:cli
 npm run package:distribution
 npm run package:local
 npm run test:package-smoke
@@ -279,6 +287,8 @@ Add stronger profiles next for:
 - `./script/build_and_run.sh --telemetry` proves the app emits filterable `AppLifecycle` and `Refresh` unified logs during a live run, while `bash scripts/test_app.sh` exercises `Setup` and `Commands` events in focused app tests
 - the installer prints the installed CLI path, app path when an app was installed, env helper path, any current-shell PATH warning, PATH persist result, and the next command (`command -v simbroker` after persist, or `source "<env-helper>"` when persist is skipped)
 - `bash scripts/install_local.sh --cli-only` installs the CLI runtime without invoking `xcodegen` or `xcodebuild` and without requiring an app bundle
+- `npm run package:cli` writes `artifacts/cli/simulator-broker-<version>-cli.tar.gz` plus a SHA-256 checksum and does not invoke XcodeGen or `xcodebuild`
+- `.github/workflows/ci.yml` runs the public Node suites on `ubuntu-latest` and does not run `npm run test:app`
 - `host init --bootstrap-config` writes a warning that real Simulator devices will be created before it calls `simctl` create
 - `npm run test:install-smoke` proves a fresh-machine-style install can bootstrap host config, scaffold a repo, start the service, acquire a lease, generate an app snapshot from the installed CLI, launch the installed app bundle against the smoke fixture, assert the `SimulatorBrokerApp` process stays alive, restore any preexisting default install metadata including symlink target contents, and clean up only the simulators provisioned by the smoke run afterward
 - `npm run package:distribution` builds the app in `Release`, requires operator-supplied `SIMBROKER_DISTRIBUTION_TEAM_ID` plus `SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY`, optionally consumes `SIMBROKER_NOTARYTOOL_PROFILE`, and writes a machine-readable readiness summary under `artifacts/distribution/`

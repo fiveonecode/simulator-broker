@@ -30,7 +30,8 @@ npm run test:harness-adoption
 ```
 
 App work also needs XcodeGen and `npm run test:app`. The full suite is
-`npm test`.
+`npm test`. The same Node suites run on GitHub-hosted Ubuntu CI. That job
+does not run `npm run test:app`.
 
 You do not need to run `agent:context`, `agent:verify`, or `agent:complete`,
 and you do not need to create a task session directory.

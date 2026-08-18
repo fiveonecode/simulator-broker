@@ -24,6 +24,9 @@ This Alpha already includes:
 - app-driven first-run setup and per-repo onboarding commands
 - CLI-only install through `bash scripts/install_local.sh --cli-only`, plus
   the contributor app+CLI path `npm run install:local`
+- tagged Alpha CLI tarball through `npm run package:cli` and GitHub Releases
+- public Node test CI on GitHub-hosted Ubuntu for broker-core, client,
+  harness-adoption, and public-surface checks
 - local-debug packaging through `npm run package:local`
 - signed distribution packaging through `npm run package:distribution`
 - `simbroker project init` for `.simulator-broker/project.json`
@@ -59,7 +62,5 @@ node client/bin/simbroker.mjs simulators boot --alias ui-1
 
 ## Lower-priority public follow-through
 
-- human-readable CLI help (JSON is still the default output)
-- CLI-only install that does not build the app
-- Homebrew, npm, and GitHub Releases
-- public test CI and issue templates
+- Homebrew formula, notarized app, and npm package
+- issue templates and starter issues

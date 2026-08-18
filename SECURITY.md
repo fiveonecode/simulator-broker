@@ -2,9 +2,10 @@
 
 ## Supported Versions
 
-Security fixes are considered for the current `main` branch. Tagged release
-support will be documented here when this project starts publishing versioned
-binary or package releases.
+Security fixes are considered for the current `main` branch and for the latest
+tagged Alpha (`0.1.0-alpha.1`). Older Alpha tags are not supported. The
+published artifact is the CLI tarball on GitHub Releases, not a Homebrew
+formula, notarized app, or npm package.
 
 ## Reporting A Vulnerability
 
