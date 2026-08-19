@@ -82,10 +82,14 @@ test("README Use it orders Homebrew CLI, cask, host setup, then hello world", ()
   );
 
   assert.ok(hello.includes("simbroker capacity check --purpose agent-ui-session --json"));
+  assert.ok(hello.includes("purposes[].status"));
+  assert.ok(hello.includes("needs_attention"));
   assert.ok(/unavailable/.test(hello));
   assert.ok(/repair_needed/.test(hello));
+  assert.ok(hello.includes("simbroker capacity reconcile --json"));
   assert.ok(hello.includes("simbroker doctor"));
-  assert.ok(hello.includes("simbroker simulators repair"));
+  assert.ok(hello.includes("simbroker simulators repair --alias <alias>"));
+  assert.equal(hello.includes("simbroker simulators repair\n"), false);
   assert.ok(hello.includes("simbroker lease acquire"));
   assert.ok(
     /host config/i.test(hello) && (/first-run/i.test(hello) || /after/i.test(hello)),
@@ -94,8 +98,10 @@ test("README Use it orders Homebrew CLI, cask, host setup, then hello world", ()
 
   const gettingHello = headingSection(gettingStarted, "Hello world");
   assert.ok(gettingHello.includes("simbroker capacity check --purpose agent-ui-session --json"));
+  assert.ok(gettingHello.includes("purposes[].status"));
+  assert.ok(gettingHello.includes("simbroker capacity reconcile --json"));
   assert.ok(gettingHello.includes("simbroker doctor"));
-  assert.ok(gettingHello.includes("simbroker simulators repair"));
+  assert.ok(gettingHello.includes("simbroker simulators repair --alias <alias>"));
   assert.ok(/unavailable/.test(gettingHello));
   assert.ok(/repair_needed/.test(gettingHello));
 });

@@ -26,8 +26,10 @@ This Alpha already includes:
   / **Complete first-time setup** (or `host init --bootstrap-config` and
   `service start`). Homebrew does not create simulators. Hello world runs
   only after a host config exists and after `capacity check` for
-  `agent-ui-session`; stop on `unavailable` or `repair_needed` and use
-  `doctor` / `simulators repair`
+  `agent-ui-session`. Read `purposes[].status`, not the top-level
+  `status`. Stop on `unavailable` and preview with `capacity reconcile`.
+  Stop on `repair_needed` and use `doctor` plus
+  `simulators repair --alias <alias>`
 - CLI-only install through `bash scripts/install_local.sh --cli-only`, plus
   the contributor app+CLI path `npm run install:local`
 - tagged Alpha CLI tarball through `npm run package:cli` and GitHub Releases

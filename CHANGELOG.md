@@ -12,9 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Public first-run order is Homebrew CLI, Homebrew cask, then **Set Up This
   Mac** / **Complete first-time setup** (or `host init --bootstrap-config`
   and `service start`). Hello world runs only after a host config exists
-  and after `capacity check --purpose agent-ui-session`; stop on
-  `unavailable` or `repair_needed` and use `doctor` / `simulators repair`.
-  Homebrew does not create simulators.
+  and after `capacity check --purpose agent-ui-session`. Read
+  `purposes[].status`, not the top-level `status`. Stop on `unavailable`
+  and preview with `capacity reconcile`. Stop on `repair_needed` and use
+  `doctor` plus `simulators repair --alias <alias>`. Homebrew does not
+  create simulators.
 - The app **Finish Local Broker Installation** copy leads with
   `brew install fiveonecode/simulator-broker/simbroker` and **Refresh**.
 - `host init --bootstrap-config` `runtime-not-found` errors name

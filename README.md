@@ -122,11 +122,17 @@ simbroker project validate
 simbroker capacity check --purpose agent-ui-session --json
 ```
 
-If that check is `unavailable` or `repair_needed`, stop. Run
-`simbroker doctor` and `simbroker simulators repair` instead of acquiring
-a lease.
+Read `purposes[].status` (and `summary` counts), not the top-level
+`status`. Top-level `status` is only `ready` or `needs_attention`.
 
-If the purpose is available:
+If `purposes[].status` is `unavailable`, stop. Preview missing capacity
+with `simbroker capacity reconcile --json`. Do not acquire a lease.
+
+If `purposes[].status` is `repair_needed`, stop. Run `simbroker doctor`,
+then `simbroker simulators repair --alias <alias>` for the alias doctor
+names. Do not acquire a lease.
+
+If `purposes[].status` is `available`:
 
 ```bash
 simbroker lease acquire --purpose agent-ui-session --lease-file /tmp/simbroker-hello-lease.json
