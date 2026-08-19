@@ -5,6 +5,7 @@ agent-harness/node_modules/
 agent-harness/artifacts/
 artifacts/
 .symphony/
+.cursor/
 .tmp/
 npm-debug.log*
 DerivedData/
