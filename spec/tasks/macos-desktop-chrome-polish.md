@@ -52,7 +52,7 @@ These findings are tightly related and should be implemented as one cohesive pol
 
 1. Launch the app with the deterministic fixture:
    ```bash
-   session_dir="$HOME/.codex/agent-harness/simulator-broker-app/desktop-chrome-polish-repro"
+   session_dir="${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker-app/desktop-chrome-polish-repro"
    fixture_root="$session_dir/runtime-fixture"
    state_root="$fixture_root/state"
    host_config="$fixture_root/host-config.json"
