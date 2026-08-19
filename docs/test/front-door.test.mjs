@@ -190,12 +190,20 @@ test("issue forms cover install failure, bug, and feature and state Alpha limits
   assert.ok(bug.includes("name: Bug"));
   assert.ok(feature.includes("name: Feature"));
   assert.ok(install.includes("install_local.sh --cli-only"));
+  assert.ok(install.includes("brew install fiveonecode/simulator-broker/simbroker"));
+  assert.ok(install.includes("npm install -g"));
+  assert.ok(install.includes("simbroker-0.1.0-alpha.1.tgz"));
   assert.ok(bug.includes("labels:"));
   assert.ok(feature.includes("enhancement"));
   for (const body of [install, bug, feature, config]) {
     assert.ok(body.includes("Alpha"), "community forms must say Alpha");
     assert.ok(body.includes("macOS"), "community forms must say macOS");
     assert.ok(body.includes("Xcode"), "community forms must say Xcode");
+    assert.equal(
+      body.replace(/\s+/g, " ").includes("There is no Homebrew formula, notarized app, or npm package yet."),
+      false,
+      "issue forms must not claim Homebrew/npm do not exist",
+    );
   }
 });
 
