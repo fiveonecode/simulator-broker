@@ -10,6 +10,9 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
   protected-path, and handoff contract
 - `CHANGELOG.md` — published version history for tagged releases
 - `.github/workflows/` — public Node test CI and tag-driven CLI release
+- `.github/ISSUE_TEMPLATE/` — install-failure, bug, and feature issue forms
+- `.github/pull_request_template.md` — public-patch PR checklist; no harness
+  session required
 - `spec/` — active source of truth, including worker-ready task specs under `spec/tasks/`
 - `docs/` — public newcomer docs (getting started, concepts, status) and the
   README screenshot; not source of truth

@@ -2,6 +2,11 @@
 
 Thanks for taking the time to improve Simulator Broker.
 
+This project is **Alpha**, **macOS-only**, and needs **Xcode** to create or run
+iOS Simulators. Report install failures, bugs, and feature requests with the
+[issue forms](https://github.com/fiveonecode/simulator-broker/issues/new/choose).
+Look at issues labeled `good first issue` if you want a bounded starter task.
+
 This page has two tracks:
 
 1. **Public patches** — Node.js 20 and the Node test suites. You do not need
@@ -37,6 +42,9 @@ You do not need to run `agent:context`, `agent:verify`, or `agent:complete`,
 and you do not need to create a task session directory.
 
 ### Pull requests
+
+The pull-request template is a short public-patch checklist. It does not ask
+for a harness session directory.
 
 - Keep changes focused and reviewable.
 - Include tests or explain why a deterministic test is not available.

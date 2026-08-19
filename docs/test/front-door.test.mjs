@@ -37,6 +37,7 @@ test("README first screen is a product front door, not an implementation changel
   assert.ok(screen.includes("Alpha"));
   assert.ok(screen.includes("macOS"));
   assert.ok(screen.includes("Xcode"));
+  assert.ok(screen.includes("> **Alpha.**"), "README first screen must use a visible Alpha banner");
   assert.equal(
     screen.includes("a first extracted file-backed `broker-core` slice exists"),
     false,
@@ -172,6 +173,57 @@ test("release workflow packages the CLI tarball on version tags", () => {
   assert.ok(release.includes("gh release create"));
   assert.ok(release.includes("--prerelease"));
   assert.equal(release.includes("test:app"), false);
+});
+
+test("issue forms cover install failure, bug, and feature and state Alpha limits", () => {
+  const config = readRepoFile(".github/ISSUE_TEMPLATE/config.yml");
+  const install = readRepoFile(".github/ISSUE_TEMPLATE/install-failure.yml");
+  const bug = readRepoFile(".github/ISSUE_TEMPLATE/bug.yml");
+  const feature = readRepoFile(".github/ISSUE_TEMPLATE/feature.yml");
+
+  assert.ok(config.includes("blank_issues_enabled: false"));
+  assert.ok(config.includes("security/advisories"));
+  assert.ok(install.includes("name: Install failure"));
+  assert.ok(bug.includes("name: Bug"));
+  assert.ok(feature.includes("name: Feature"));
+  assert.ok(install.includes("install_local.sh --cli-only"));
+  assert.ok(bug.includes("labels:"));
+  assert.ok(feature.includes("enhancement"));
+  for (const body of [install, bug, feature, config]) {
+    assert.ok(body.includes("Alpha"), "community forms must say Alpha");
+    assert.ok(body.includes("macOS"), "community forms must say macOS");
+    assert.ok(body.includes("Xcode"), "community forms must say Xcode");
+  }
+});
+
+test("PR template is a public-patch checklist and does not require the harness", () => {
+  const template = readRepoFile(".github/pull_request_template.md");
+
+  assert.ok(template.includes("npm run test:broker-core"));
+  assert.ok(template.includes("npm run test:client"));
+  assert.ok(template.includes("npm run test:harness-adoption"));
+  assert.ok(template.includes("Alpha"));
+  assert.ok(template.includes("macOS"));
+  assert.ok(template.includes("Xcode"));
+  assert.equal(template.includes("agent:context"), false);
+  assert.equal(template.includes("agent:verify"), false);
+  assert.equal(template.includes("agent:complete"), false);
+  assert.equal(template.includes("session-dir"), false);
+  assert.equal(template.includes("$HOME/.codex"), false);
+});
+
+test("status and contributing point strangers at issue forms, not later-sequence work", () => {
+  const status = readRepoFile("docs/status.md");
+  const contributing = readRepoFile("CONTRIBUTING.md");
+  const gettingStarted = readRepoFile("docs/getting-started.md");
+  const readme = readRepoFile("README.md");
+
+  assert.ok(status.includes("GitHub issue forms"));
+  assert.equal(status.includes("issue templates and starter issues"), false);
+  assert.ok(contributing.includes("issues/new/choose"));
+  assert.ok(contributing.includes("good first issue"));
+  assert.ok(gettingStarted.includes("Report a problem"));
+  assert.ok(readme.includes("issues/new/choose"));
 });
 
 test("package_cli.sh writes a runnable CLI tarball without tests or the app", () => {

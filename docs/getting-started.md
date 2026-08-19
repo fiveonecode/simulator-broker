@@ -8,6 +8,10 @@ human-readable text by default; pass `--json` for machine-readable payloads.
 A small public patch follows the public-patches track in
 [CONTRIBUTING.md](../CONTRIBUTING.md); it does not require the agent harness.
 
+> **Alpha.** macOS only. Xcode is required to create or run iOS Simulators.
+> Interfaces can change. There is no Homebrew formula, notarized app, or npm
+> package yet.
+
 ## Prerequisites
 
 - macOS with Xcode and iOS Simulator support installed
@@ -143,6 +147,12 @@ npm run package:distribution
 
 GitHub Releases attach the Alpha CLI tarball. A signed, notarized app is not
 published there yet.
+
+## Report a problem
+
+Use the GitHub issue forms. Pick **Install failure**, **Bug**, or **Feature**.
+Do not paste credentials, private home paths, or live lease files. Security
+reports go through [SECURITY.md](../SECURITY.md), not a public issue.
 
 ## What to read next
 

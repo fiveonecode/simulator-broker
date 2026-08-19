@@ -55,6 +55,8 @@ This repo exists to develop a reusable local simulator broker:
 - the published onboarding docs now distinguish CLI-only install, repo-local contributor app+CLI install, local-debug portable bundling, and signed distribution packaging; a new login shell should resolve `simbroker` after install without sourcing `env.sh`
 - `CONTRIBUTING.md` publishes a public-patch track (Node.js 20 and the Node test suites, no harness session) and a labeled maintainer/agent harness track; `agent:complete` enforcement is unchanged
 - tagged Alpha `0.1.0-alpha.1` publishes a CLI tarball from `scripts/package_cli.sh` and runs the Node test surface on GitHub-hosted Ubuntu CI; the macOS app suite is not on that job
+- GitHub issue forms cover install failure, bug, and feature; the pull-request
+  template is a public-patch checklist and does not require a harness session
 - `host init --bootstrap-config` warns that it creates real Simulator devices before provisioning them
 - broker-aware sample consumer repo artifacts now cover manual human, interactive agent, unattended agent build-and-test, and CI patterns under `examples/harness-adoption/`
 - broker-aware build/test leases now support downstream process registration, memory ceiling containment, evidence bundles, and forced-abort cleanup for detached simulator-like processes
