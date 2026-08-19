@@ -37,6 +37,12 @@ A first extracted implementation slice now exists:
 - `host init --bootstrap-config` prints an honest warning that it creates real iOS Simulator devices before those devices are created
 - `scripts/package_cli.sh` packages the Node CLI runtime into a versioned
   tarball without XcodeGen or an app build
+- `Formula/simbroker.rb` installs that GitHub Release tarball through Homebrew
+- `scripts/package_npm.sh` (`npm run package:npm`) packs `packages/simbroker`
+  with a `bin` field; the repo-root package stays `private`
+- `Casks/simulator-broker.rb` installs `Simulator Broker.app` from
+  `Simulator-Broker-<version>.zip` on GitHub Releases (signed/notarized app
+  shape from `package_distribution.sh`, not `package:local`)
 - public GitHub-hosted Ubuntu CI runs `verify:public-surface`,
   `test:broker-core`, `test:client`, and `test:harness-adoption`; it does not
   run `test:app`. The job budget is 30 minutes. Broker tests that build an

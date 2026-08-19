@@ -18,6 +18,7 @@
     "build:app": "bash ./scripts/generate_app_project.sh && xcodebuild -project ./app/SimulatorBrokerApp.xcodeproj -scheme SimulatorBrokerApp -derivedDataPath ./DerivedData/SimulatorBrokerApp -destination 'platform=macOS' build",
     "install:local": "bash ./scripts/install_local.sh",
     "package:cli": "bash ./scripts/package_cli.sh",
+    "package:npm": "bash ./scripts/package_npm.sh",
     "package:distribution": "bash ./scripts/package_distribution.sh",
     "package:local": "bash ./scripts/package_local.sh",
     "test": "npm run verify:public-surface && npm run test:broker-core && npm run test:client && npm run test:harness-adoption && npm run test:app",

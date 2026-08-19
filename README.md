@@ -4,8 +4,9 @@ A local control plane so humans, AI agents, and CI jobs can share iOS Simulators
 on one Mac without stealing devices from each other.
 
 > **Alpha.** macOS only. Xcode is required to create or run iOS Simulators.
-> Interfaces can change. There is no Homebrew formula, notarized app, or npm
-> package yet.
+> Interfaces can change. Install the CLI with Homebrew or the `simbroker`
+> npm package. A signed, notarized operator app is not attached to this
+> Alpha release yet.
 
 [![Node tests](https://github.com/fiveonecode/simulator-broker/actions/workflows/ci.yml/badge.svg)](https://github.com/fiveonecode/simulator-broker/actions/workflows/ci.yml)
 
@@ -27,7 +28,19 @@ If you only ever use one simulator by hand, you may not need this yet.
 
 ## Use it
 
-From a clone, with Node.js 20+ on `PATH`:
+One-line CLI install on macOS, with Node.js 20+ still required at runtime:
+
+```bash
+brew install fiveonecode/simulator-broker/simbroker
+simbroker --help
+```
+
+```bash
+npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.1/simbroker-0.1.0-alpha.1.tgz
+simbroker --help
+```
+
+From a clone:
 
 ```bash
 bash scripts/install_local.sh --cli-only
@@ -35,21 +48,22 @@ command -v simbroker
 simbroker --help
 ```
 
-That copies the CLI runtime only. It does not run XcodeGen or build the macOS
-app. If Homebrew is installed, `simbroker` lands in `$(brew --prefix)/bin`.
-Otherwise the installer writes `~/.local/bin/simbroker` and one guarded
-login-shell PATH line. Open a new terminal if this shell still cannot resolve
-`simbroker`. `source .../env.sh` remains a fallback.
+The clone installer copies the CLI runtime only. It does not run XcodeGen or
+build the macOS app. If Homebrew is installed, `simbroker` lands in
+`$(brew --prefix)/bin`. Otherwise the installer writes `~/.local/bin/simbroker`
+and one guarded login-shell PATH line. Open a new terminal if this shell still
+cannot resolve `simbroker`. `source .../env.sh` remains a fallback.
 
-To try a tagged build without cloning, download
-`simulator-broker-<version>-cli.tar.gz` from
-[Releases](https://github.com/fiveonecode/simulator-broker/releases), extract
-it, and run `./bin/simbroker --help`. Node.js 20+ is still required.
+The Homebrew cask `fiveonecode/simulator-broker/simulator-broker` installs
+`Simulator Broker.app` from the signed, notarized GitHub Release zip
+`Simulator-Broker-<version>.zip`. That zip is not attached to the current
+Alpha release. Produce it with `npm run package:distribution` after Developer
+ID signing and notarytool notarization.
 
 Xcode is still required to create and run iOS Simulators. Alpha CLI tarballs
 are attached to
 [GitHub Releases](https://github.com/fiveonecode/simulator-broker/releases).
-There is no Homebrew formula or npm package yet.
+Extract a tarball and run `./bin/simbroker --help`.
 
 `simbroker` help and `simbroker doctor` print human-readable text by default.
 Pass `--json` for machine-readable payloads.

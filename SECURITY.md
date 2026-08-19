@@ -4,8 +4,10 @@
 
 Security fixes are considered for the current `main` branch and for the latest
 tagged Alpha (`0.1.0-alpha.1`). Older Alpha tags are not supported. The
-published artifact is the CLI tarball on GitHub Releases, not a Homebrew
-formula, notarized app, or npm package.
+published CLI artifacts are the GitHub Release tarball, the Homebrew
+formula that installs that tarball, and the packable `simbroker` npm
+package. A signed, notarized operator app zip is not attached to this
+Alpha release.
 
 ## Reporting A Vulnerability
 

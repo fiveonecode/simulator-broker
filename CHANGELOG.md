@@ -5,6 +5,18 @@ All notable changes to Simulator Broker are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Homebrew formula `Formula/simbroker.rb` installs the Alpha CLI tarball
+  (`brew install fiveonecode/simulator-broker/simbroker`).
+- Homebrew cask `Casks/simulator-broker.rb` installs `Simulator Broker.app`
+  from the signed, notarized GitHub Release zip `Simulator-Broker-<version>.zip`
+  when that zip is attached.
+- Packable npm CLI `packages/simbroker` (`npm run package:npm`) with a `bin`
+  field. The repo-root package stays private.
+
 ## [0.1.0-alpha.1] - 2026-08-18
 
 First tagged Alpha. The CLI, local `brokerd` service, and macOS operator app

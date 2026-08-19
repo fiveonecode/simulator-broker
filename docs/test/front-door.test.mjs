@@ -138,7 +138,10 @@ test("README advertises GitHub Releases and the public Node CI badge", () => {
   assert.ok(readme.includes("github.com/fiveonecode/simulator-broker/releases"));
   assert.ok(readme.includes("./bin/simbroker --help"));
   assert.equal(readme.includes("or GitHub Release yet"), false);
-  assert.ok(readme.includes("There is no Homebrew formula or npm package yet."));
+  assert.equal(readme.includes("There is no Homebrew formula or npm package yet."), false);
+  assert.ok(readme.includes("brew install fiveonecode/simulator-broker/simbroker"));
+  assert.ok(readme.includes("npm install -g"));
+  assert.ok(readme.includes("simbroker-0.1.0-alpha.1.tgz"));
 });
 
 test("CHANGELOG and package.json name the Alpha version", () => {
@@ -224,6 +227,71 @@ test("status and contributing point strangers at issue forms, not later-sequence
   assert.ok(contributing.includes("good first issue"));
   assert.ok(gettingStarted.includes("Report a problem"));
   assert.ok(readme.includes("issues/new/choose"));
+});
+
+test("Homebrew formula points at the Alpha CLI tarball and the cask names a notarized app zip", () => {
+  const formula = readRepoFile("Formula/simbroker.rb");
+  const cask = readRepoFile("Casks/simulator-broker.rb");
+  const checksum = formula.match(/sha256 "([a-f0-9]{64})"/);
+  const url = formula.match(/url "([^"]+)"/);
+
+  assert.ok(formula.includes("class Simbroker < Formula"));
+  assert.ok(url, "formula must have a url");
+  assert.equal(
+    url[1],
+    "https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.1/simulator-broker-0.1.0-alpha.1-cli.tar.gz",
+  );
+  assert.ok(checksum, "formula must pin a sha256");
+  assert.equal(checksum[1], "699695bc65a5bcb25b9c9b5d01494fcc3f25a40dcc90b8b5bf1ec61ea87a8522");
+  assert.ok(formula.includes('shell_output("#{bin}/simbroker --help")'));
+  assert.equal(formula.includes("package:local"), false);
+
+  assert.ok(cask.includes('cask "simulator-broker"'));
+  assert.ok(cask.includes("releases/download/v#{version}/Simulator-Broker-#{version}.zip"));
+  assert.ok(cask.includes('app "Simulator Broker.app"'));
+  assert.equal(cask.includes("package:local"), false);
+  assert.equal(cask.includes("package_local"), false);
+  assert.ok(cask.includes("package:distribution") || cask.includes("package_distribution"));
+});
+
+test("root package stays private and package_npm.sh packs a runnable simbroker bin", () => {
+  const rootPackage = JSON.parse(readRepoFile("package.json"));
+  const cliPackage = JSON.parse(readRepoFile("packages/simbroker/package.json"));
+
+  assert.equal(rootPackage.private, true);
+  assert.equal(rootPackage.bin, undefined);
+  assert.equal(cliPackage.name, "simbroker");
+  assert.equal(cliPackage.private, false);
+  assert.equal(cliPackage.bin.simbroker, "bin/simbroker.js");
+  assert.equal(cliPackage.version, rootPackage.version);
+  assert.ok(rootPackage.scripts["package:npm"].includes("package_npm.sh"));
+
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-npm-"));
+  const pack = spawnSync("bash", [path.join(repoRoot, "scripts/package_npm.sh"), "--output-dir", outputDir], {
+    encoding: "utf8",
+    cwd: repoRoot,
+  });
+  assert.equal(pack.status, 0, pack.stderr + pack.stdout);
+
+  const tarball = path.join(outputDir, "simbroker-0.1.0-alpha.1.tgz");
+  assert.equal(fs.existsSync(tarball), true, pack.stdout);
+
+  const installDir = path.join(outputDir, "prefix");
+  fs.mkdirSync(installDir);
+  const install = spawnSync("npm", ["install", "--global", "--prefix", installDir, tarball], {
+    encoding: "utf8",
+    cwd: outputDir,
+  });
+  assert.equal(install.status, 0, install.stderr + install.stdout);
+
+  const installedBin = path.join(installDir, "bin/simbroker");
+  const help = spawnSync(installedBin, ["--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0, help.stderr);
+  const helpText = `${help.stdout}${help.stderr}`;
+  assert.ok(helpText.includes("simbroker"));
+  assert.equal(helpText.trim().startsWith("{"), false, "help must not be JSON-only");
+  assert.equal(fs.existsSync(path.join(installDir, "lib/node_modules/simbroker/broker-core/test")), false);
+  assert.equal(fs.existsSync(path.join(installDir, "lib/node_modules/simbroker/client/test")), false);
 });
 
 test("package_cli.sh writes a runnable CLI tarball without tests or the app", () => {
