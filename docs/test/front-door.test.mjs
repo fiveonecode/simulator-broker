@@ -174,9 +174,16 @@ test("release workflow packages the CLI tarball on version tags", () => {
 
   assert.ok(release.includes("tags:"));
   assert.ok(release.includes("npm run package:cli"));
+  assert.ok(release.includes("npm run package:npm"));
+  assert.ok(release.includes("artifacts/npm/simbroker-${version}.tgz"));
   assert.ok(release.includes("gh release create"));
   assert.ok(release.includes("--prerelease"));
   assert.equal(release.includes("test:app"), false);
+  assert.equal(
+    release.replace(/\s+/g, " ").includes("This release is not a Homebrew formula, notarized app, or npm package."),
+    false,
+    "future release notes must not deny Homebrew and npm",
+  );
 });
 
 test("issue forms cover install failure, bug, and feature and state Alpha limits", () => {
@@ -238,11 +245,12 @@ test("status and contributing point strangers at issue forms, not later-sequence
   assert.ok(readme.includes("issues/new/choose"));
 });
 
-test("Homebrew one-liner is documented against the homebrew-simulator-broker tap", async () => {
+test("Homebrew one-liner is documented against the homebrew-simulator-broker tap", () => {
   const readme = readRepoFile("README.md");
   const gettingStarted = readRepoFile("docs/getting-started.md");
   const structure = readRepoFile("spec/project-structure.md");
   const changelog = readRepoFile("CHANGELOG.md");
+  const syncScript = readRepoFile("scripts/sync_homebrew_tap.sh");
 
   for (const body of [readme, gettingStarted, structure, changelog]) {
     assert.ok(
@@ -255,22 +263,10 @@ test("Homebrew one-liner is documented against the homebrew-simulator-broker tap
     );
   }
 
-  const repoResponse = await fetch("https://api.github.com/repos/fiveonecode/homebrew-simulator-broker", {
-    headers: { "User-Agent": "simulator-broker-front-door-test" },
-  });
-  assert.equal(
-    repoResponse.status,
-    200,
-    "fiveonecode/homebrew-simulator-broker must exist for the brew one-liner",
-  );
-  const formulaResponse = await fetch(
-    "https://raw.githubusercontent.com/fiveonecode/homebrew-simulator-broker/main/Formula/simbroker.rb",
-    { headers: { "User-Agent": "simulator-broker-front-door-test" } },
-  );
-  assert.equal(formulaResponse.status, 200, "tap must publish Formula/simbroker.rb on main");
-  const formula = await formulaResponse.text();
-  assert.ok(formula.includes("class Simbroker"));
-  assert.ok(formula.includes("simulator-broker-0.1.0-alpha.1-cli.tar.gz"));
+  assert.ok(syncScript.includes("--check-remote"));
+  assert.ok(syncScript.includes("cmp -s"));
+  assert.ok(syncScript.includes("--max-time"));
+  assert.ok(syncScript.includes("Formula/simbroker.rb"));
 });
 
 test("sync_homebrew_tap.sh copies Formula and Casks into a tap checkout", () => {

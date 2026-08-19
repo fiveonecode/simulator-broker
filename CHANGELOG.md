@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the signed, notarized GitHub Release zip `Simulator-Broker-<version>.zip`
   when that zip is attached.
 - Packable npm CLI `packages/simbroker` (`npm run package:npm`) with a `bin`
-  field. The repo-root package stays private.
+  field. The repo-root package stays private. Tag-driven
+  `.github/workflows/release.yml` attaches that tarball and no longer
+  claims the release is not a Homebrew formula or npm package.
 
 ## [0.1.0-alpha.1] - 2026-08-18
 
