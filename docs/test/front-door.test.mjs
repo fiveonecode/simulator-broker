@@ -140,9 +140,11 @@ test("README advertises GitHub Releases and the public Node CI badge", () => {
   assert.equal(readme.includes("or GitHub Release yet"), false);
   assert.equal(readme.includes("There is no Homebrew formula or npm package yet."), false);
   assert.ok(readme.includes("brew install fiveonecode/simulator-broker/simbroker"));
+  assert.ok(readme.includes("brew install --cask fiveonecode/simulator-broker/simulator-broker"));
   assert.ok(readme.includes("homebrew-simulator-broker"));
   assert.ok(readme.includes("npm install -g"));
   assert.ok(readme.includes("simbroker-0.1.0-alpha.1.tgz"));
+  assert.equal(readme.includes("is not attached"), false);
 });
 
 test("CHANGELOG and package.json name the Alpha version", () => {
@@ -306,9 +308,14 @@ test("Homebrew formula points at the Alpha CLI tarball and the cask names a nota
   assert.ok(cask.includes('cask "simulator-broker"'));
   assert.ok(cask.includes("releases/download/v#{version}/Simulator-Broker-#{version}.zip"));
   assert.ok(cask.includes('app "Simulator Broker.app"'));
+  const caskChecksum = cask.match(/sha256 "([a-f0-9]{64})"/);
+  assert.ok(caskChecksum, "cask must pin a sha256");
+  assert.equal(caskChecksum[1], "5e19d128bf8061d5e18812c092e8a3b8e5f4514ff42bc233baa643fb0f075f70");
+  assert.equal(cask.includes("sha256 :no_check"), false);
   assert.equal(cask.includes("package:local"), false);
   assert.equal(cask.includes("package_local"), false);
   assert.ok(cask.includes("package:distribution") || cask.includes("package_distribution"));
+  assert.equal(cask.includes("not this zip"), false);
 });
 
 test("root package stays private and package_npm.sh packs a runnable simbroker bin", () => {

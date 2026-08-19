@@ -10,8 +10,7 @@ A small public patch follows the public-patches track in
 
 > **Alpha.** macOS only. Xcode is required to create or run iOS Simulators.
 > Interfaces can change. Install the CLI with Homebrew or the `simbroker`
-> npm package. A signed, notarized operator app is not attached to this
-> Alpha release yet.
+> npm package. Install the operator app with the Homebrew cask.
 
 ## Prerequisites
 
@@ -171,12 +170,12 @@ SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY='Developer ID Application: Example (TEAM
 npm run package:distribution
 ```
 
-GitHub Releases attach the Alpha CLI tarball. The Homebrew cask
+GitHub Releases attach the Alpha CLI tarball and the signed, notarized
+`Simulator-Broker-<version>.zip`. The Homebrew cask
 `fiveonecode/simulator-broker/simulator-broker` installs
-`Simulator Broker.app` from `Simulator-Broker-<version>.zip` on that
-release. Produce the zip with `npm run package:distribution` after Developer
-ID signing and notarytool notarization. The current Alpha release does not
-attach that zip.
+`Simulator Broker.app` from that zip. Reproduce the zip from
+`payload/app/Simulator Broker.app` after `npm run package:distribution`
+and Developer ID notarization.
 
 ## Report a problem
 

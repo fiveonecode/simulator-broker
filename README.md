@@ -5,8 +5,7 @@ on one Mac without stealing devices from each other.
 
 > **Alpha.** macOS only. Xcode is required to create or run iOS Simulators.
 > Interfaces can change. Install the CLI with Homebrew or the `simbroker`
-> npm package. A signed, notarized operator app is not attached to this
-> Alpha release yet.
+> npm package. Install the operator app with the Homebrew cask.
 
 [![Node tests](https://github.com/fiveonecode/simulator-broker/actions/workflows/ci.yml/badge.svg)](https://github.com/fiveonecode/simulator-broker/actions/workflows/ci.yml)
 
@@ -59,16 +58,18 @@ build the macOS app. If Homebrew is installed, `simbroker` lands in
 and one guarded login-shell PATH line. Open a new terminal if this shell still
 cannot resolve `simbroker`. `source .../env.sh` remains a fallback.
 
-The Homebrew cask `fiveonecode/simulator-broker/simulator-broker` installs
-`Simulator Broker.app` from the signed, notarized GitHub Release zip
-`Simulator-Broker-<version>.zip`. That zip is not attached to the current
-Alpha release. Produce it with `npm run package:distribution` after Developer
-ID signing and notarytool notarization.
+The Homebrew cask installs the signed, notarized operator app:
+
+```bash
+brew install --cask fiveonecode/simulator-broker/simulator-broker
+```
+
+That cask downloads `Simulator-Broker-<version>.zip` from
+[GitHub Releases](https://github.com/fiveonecode/simulator-broker/releases).
 
 Xcode is still required to create and run iOS Simulators. Alpha CLI tarballs
-are attached to
-[GitHub Releases](https://github.com/fiveonecode/simulator-broker/releases).
-Extract a tarball and run `./bin/simbroker --help`.
+are also attached to those releases. Extract a tarball and run
+`./bin/simbroker --help`.
 
 `simbroker` help and `simbroker doctor` print human-readable text by default.
 Pass `--json` for machine-readable payloads.
