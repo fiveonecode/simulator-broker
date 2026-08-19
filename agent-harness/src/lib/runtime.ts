@@ -104,12 +104,7 @@ export function shellQuoteForPlatform(value: string, platform: NodeJS.Platform =
 
 export function getAgentHome(): string {
   return process.env.AGENT_HOME
-    ?? process.env.CODEX_HOME
     ?? path.join(os.homedir(), ".agents");
-}
-
-export function getCodexHome(): string {
-  return getAgentHome();
 }
 
 type WindowsProcessIdentity = {

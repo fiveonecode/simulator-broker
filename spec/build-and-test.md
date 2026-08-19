@@ -242,7 +242,7 @@ npm run agent:complete -- --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harn
 ## Verification obligations
 
 - `npm run agent:context -- --paths <files> --session-dir <dir>` is the routing and obligation source of truth for a task.
-- Task session dirs live under `${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker-app/`; `CODEX_HOME` remains a compatibility parent for legacy session roots.
+- Task session dirs live under `${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker-app/`; `AGENT_HOME` is the only session-root override.
 - Implementation-owned paths require the `implementation` profile, which runs
   the complete `npm test` suite plus the `agent-harness` TypeScript build and
   Vitest suite. Specs, manifests, and harness contract paths require
