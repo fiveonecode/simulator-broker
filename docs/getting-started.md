@@ -8,6 +8,11 @@ human-readable text by default; pass `--json` for machine-readable payloads.
 A small public patch follows the public-patches track in
 [CONTRIBUTING.md](../CONTRIBUTING.md); it does not require the agent harness.
 
+> **Alpha.** macOS only. Xcode is required to create or run iOS Simulators.
+> Interfaces can change. Install the CLI with Homebrew or the `simbroker`
+> npm package. A signed, notarized operator app is not attached to this
+> Alpha release yet.
+
 ## Prerequisites
 
 - macOS with Xcode and iOS Simulator support installed
@@ -16,6 +21,31 @@ A small public patch follows the public-patches track in
 
 Repo-owned macOS app entrypoints fail fast when `xcodegen` or `xcodebuild` is
 missing or unusable. The CLI-only installer does not call them.
+
+## Install the CLI with Homebrew
+
+```bash
+brew install fiveonecode/simulator-broker/simbroker
+command -v simbroker
+simbroker --help
+```
+
+That formula installs the tagged Alpha CLI tarball from GitHub Releases.
+Homebrew clones
+[`fiveonecode/homebrew-simulator-broker`](https://github.com/fiveonecode/homebrew-simulator-broker)
+for the tap name `fiveonecode/simulator-broker`. `Formula/` and `Casks/`
+in this repository stay the source of truth.
+
+## Install the CLI with npm
+
+```bash
+npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.1/simbroker-0.1.0-alpha.1.tgz
+command -v simbroker
+simbroker --help
+```
+
+From a clone, `npm run package:npm` writes the same tarball. The repo-root
+package stays private.
 
 ## Install the CLI from this checkout
 
@@ -141,8 +171,18 @@ SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY='Developer ID Application: Example (TEAM
 npm run package:distribution
 ```
 
-GitHub Releases attach the Alpha CLI tarball. A signed, notarized app is not
-published there yet.
+GitHub Releases attach the Alpha CLI tarball. The Homebrew cask
+`fiveonecode/simulator-broker/simulator-broker` installs
+`Simulator Broker.app` from `Simulator-Broker-<version>.zip` on that
+release. Produce the zip with `npm run package:distribution` after Developer
+ID signing and notarytool notarization. The current Alpha release does not
+attach that zip.
+
+## Report a problem
+
+Use the GitHub issue forms. Pick **Install failure**, **Bug**, or **Feature**.
+Do not paste credentials, private home paths, or live lease files. Security
+reports go through [SECURITY.md](../SECURITY.md), not a public issue.
 
 ## What to read next
 

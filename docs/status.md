@@ -27,6 +27,14 @@ This Alpha already includes:
 - tagged Alpha CLI tarball through `npm run package:cli` and GitHub Releases
 - public Node test CI on GitHub-hosted Ubuntu for broker-core, client,
   harness-adoption, and public-surface checks
+- GitHub issue forms for install failure, bug, and feature, plus a light PR
+  template that does not require a harness session
+- Homebrew formula `fiveonecode/simulator-broker/simbroker` for the Alpha CLI
+  tarball. Homebrew clones `fiveonecode/homebrew-simulator-broker` for that
+  tap name; `Formula/` and `Casks/` in this repository stay the source of
+  truth. Packable `simbroker` npm CLI (`npm run package:npm`), and a
+  Homebrew cask that installs `Simulator Broker.app` from the signed,
+  notarized GitHub Release zip when that zip is attached
 - local-debug packaging through `npm run package:local`
 - signed distribution packaging through `npm run package:distribution`
 - `simbroker project init` for `.simulator-broker/project.json`
@@ -62,5 +70,5 @@ node client/bin/simbroker.mjs simulators boot --alias ui-1
 
 ## Lower-priority public follow-through
 
-- Homebrew formula, notarized app, and npm package
-- issue templates and starter issues
+- Attach a signed, notarized `Simulator-Broker-<version>.zip` to GitHub
+  Releases so the Homebrew cask has a downloadable app artifact

@@ -1,0 +1,87 @@
+name: Install failure
+description: The CLI, tarball, or local installer did not work on this Mac.
+title: "[Install]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Simulator Broker is **Alpha**, **macOS-only**, and needs **Xcode** to
+        create or run iOS Simulators. Install the CLI with
+        `brew install fiveonecode/simulator-broker/simbroker` or
+        `npm install -g` of the `simbroker-0.1.0-alpha.1.tgz` from GitHub
+        Releases. A signed, notarized operator app zip is not attached to
+        this Alpha release.
+
+        Do not paste credentials, private home paths, customer data, or
+        live lease files. Redact logs first. Security reports go through
+        [GitHub Security Advisories](https://github.com/fiveonecode/simulator-broker/security/advisories/new),
+        not a public issue.
+  - type: dropdown
+    id: install-path
+    attributes:
+      label: What install path did you use?
+      options:
+        - Homebrew (`brew install fiveonecode/simulator-broker/simbroker`)
+        - npm (`npm install -g` of `simbroker-0.1.0-alpha.1.tgz` from GitHub Releases)
+        - CLI-only (`bash scripts/install_local.sh --cli-only`)
+        - Contributor app + CLI (`npm run install:local`)
+        - Alpha CLI tarball from GitHub Releases
+        - Other (describe below)
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command that failed
+      description: Paste the exact command. Do not include private paths.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: Expected versus actual
+      description: What should have happened, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "15.6"
+    validations:
+      required: true
+  - type: input
+    id: xcode
+    attributes:
+      label: Xcode version
+      placeholder: "16.4"
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      placeholder: "20.19.0"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs
+      description: Paste only the relevant output. Strip home directories and secrets.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before submitting
+      options:
+        - label: I understand this is Alpha, macOS-only, and requires Xcode.
+          required: true
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I removed credentials, private paths, and customer data from this report.
+          required: true

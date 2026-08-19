@@ -1,0 +1,74 @@
+name: Bug
+description: Something already documented does not behave as specified.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Simulator Broker is **Alpha**, **macOS-only**, and needs **Xcode** to
+        create or run iOS Simulators. Interfaces can change.
+
+        Use the install-failure form if `simbroker` never became usable.
+        Do not paste credentials, private home paths, customer data, or
+        live lease files.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Which command, app pane, or script misbehaved?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `simbroker …`
+        2. …
+        3. See the error
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Tagged Alpha such as 0.1.0-alpha.1, or a short commit SHA.
+      placeholder: 0.1.0-alpha.1
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: macOS, Xcode, and Node.js versions. No private paths.
+      value: |
+        - macOS:
+        - Xcode:
+        - Node.js:
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before submitting
+      options:
+        - label: I understand this is Alpha, macOS-only, and requires Xcode.
+          required: true
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I removed credentials, private paths, and customer data from this report.
+          required: true

@@ -1,0 +1,30 @@
+{
+  "name": "simbroker",
+  "version": "0.1.0-alpha.1",
+  "private": false,
+  "description": "CLI for the local iOS Simulator control plane",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "simbroker": "bin/simbroker.js"
+  },
+  "files": [
+    "bin",
+    "broker-core",
+    "client",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fiveonecode/simulator-broker.git",
+    "directory": "packages/simbroker"
+  },
+  "bugs": {
+    "url": "https://github.com/fiveonecode/simulator-broker/issues"
+  },
+  "homepage": "https://github.com/fiveonecode/simulator-broker#readme"
+}

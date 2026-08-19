@@ -1,5 +1,7 @@
 id: specs
 globs:
+  - .github/ISSUE_TEMPLATE/**
+  - .github/pull_request_template.md
   - .github/workflows/**
   - .gitignore
   - CHANGELOG.md
@@ -13,7 +15,12 @@ globs:
   - examples/**/.simulator-broker/*.json
   - spec/**
   - references/**
+  - Casks/**
+  - Formula/**
+  - packages/simbroker/**
   - scripts/package_cli.sh
+  - scripts/package_npm.sh
+  - scripts/sync_homebrew_tap.sh
 owner: spec-steward
 required_skills:
   - harness-engineering
@@ -27,6 +34,8 @@ primary_specs:
 verification_profile: spec-only
 commit_required: true
 allowed_paths:
+  - .github/ISSUE_TEMPLATE/**
+  - .github/pull_request_template.md
   - .github/workflows/**
   - .gitignore
   - CHANGELOG.md
@@ -40,7 +49,12 @@ allowed_paths:
   - examples/**/.simulator-broker/*.json
   - spec/**
   - references/**
+  - Casks/**
+  - Formula/**
+  - packages/simbroker/**
   - scripts/package_cli.sh
+  - scripts/package_npm.sh
+  - scripts/sync_homebrew_tap.sh
 forbidden_paths: []
 required_evidence:
   - structured-git-commit
