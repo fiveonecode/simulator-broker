@@ -15,7 +15,12 @@ globs:
   - examples/**/.simulator-broker/*.json
   - spec/**
   - references/**
+  - Casks/**
+  - Formula/**
+  - packages/simbroker/**
   - scripts/package_cli.sh
+  - scripts/package_npm.sh
+  - scripts/sync_homebrew_tap.sh
 owner: spec-steward
 required_skills:
   - harness-engineering
@@ -44,7 +49,12 @@ allowed_paths:
   - examples/**/.simulator-broker/*.json
   - spec/**
   - references/**
+  - Casks/**
+  - Formula/**
+  - packages/simbroker/**
   - scripts/package_cli.sh
+  - scripts/package_npm.sh
+  - scripts/sync_homebrew_tap.sh
 forbidden_paths: []
 required_evidence:
   - structured-git-commit

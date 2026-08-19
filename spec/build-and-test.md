@@ -37,14 +37,26 @@ A first extracted implementation slice now exists:
 - `host init --bootstrap-config` prints an honest warning that it creates real iOS Simulator devices before those devices are created
 - `scripts/package_cli.sh` packages the Node CLI runtime into a versioned
   tarball without XcodeGen or an app build
+- `Formula/simbroker.rb` installs that GitHub Release tarball through Homebrew.
+  `brew install fiveonecode/simulator-broker/simbroker` clones
+  `fiveonecode/homebrew-simulator-broker`. `scripts/sync_homebrew_tap.sh`
+  copies `Formula/` and `Casks/` into a tap checkout only when
+  `Formula/simbroker.rb` exists. `--check-remote` compares this tree to
+  the published tap formula and is not part of `spec-only`
+- `scripts/package_npm.sh` (`npm run package:npm`) packs `packages/simbroker`
+  with a `bin` field; the repo-root package stays `private`
+- `Casks/simulator-broker.rb` installs `Simulator Broker.app` from
+  `Simulator-Broker-<version>.zip` on GitHub Releases (signed/notarized app
+  shape from `package_distribution.sh`, not `package:local`)
 - public GitHub-hosted Ubuntu CI runs `verify:public-surface`,
   `test:broker-core`, `test:client`, and `test:harness-adoption`; it does not
   run `test:app`. The job budget is 30 minutes. Broker tests that build an
   app snapshot must inject the fixture `simctl` adapter. The default
   public-surface scan reads index blobs only for dirty or missing worktree
   files so a clean checkout does not spawn one `git cat-file` per file.
-- tagged versions such as `v0.1.0-alpha.1` attach the CLI tarball to a GitHub
-  Release through `.github/workflows/release.yml`
+- tagged versions such as `v0.1.0-alpha.1` attach the CLI tarball and the
+  packable `simbroker-<version>.tgz` to a GitHub Release through
+  `.github/workflows/release.yml`
 - local-debug portable bundle support through a zip bundle plus package-smoke verification of the bundled install path and installed-app launch proof
 - a separate Release distribution packaging path that requires operator-supplied signing inputs, runs `codesign` plus `spctl`, optionally notarizes with `notarytool`, and writes a readiness summary JSON
 - executable `agent-harness/` changes now route through the implementation

@@ -10,6 +10,14 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
   protected-path, and handoff contract
 - `CHANGELOG.md` — published version history for tagged releases
 - `.github/workflows/` — public Node test CI and tag-driven CLI release
+- `Formula/` — Homebrew CLI formula for the tagged Alpha tarball. Source of
+  truth for the tap; Homebrew clones
+  `fiveonecode/homebrew-simulator-broker` when a stranger runs
+  `brew install fiveonecode/simulator-broker/simbroker`
+- `Casks/` — Homebrew cask for the signed, notarized operator app zip.
+  Synced to the same tap.
+- `packages/simbroker/` — packable npm CLI metadata and `bin` wrapper; the
+  repo-root package stays private
 - `.github/ISSUE_TEMPLATE/` — install-failure, bug, and feature issue forms
 - `.github/pull_request_template.md` — public-patch PR checklist; no harness
   session required
@@ -25,7 +33,8 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
 - `scripts/` — repo-owned helper scripts including the canonical
   `validate.sh` full-repository gate, app generation, repo-local install,
   CLI-only install (`install_local.sh --cli-only`), CLI tarball packaging
-  (`package_cli.sh`), distribution install, portable package creation, smoke
+  (`package_cli.sh`), npm CLI packing (`package_npm.sh`), Homebrew tap
+  sync (`sync_homebrew_tap.sh`), distribution install, portable package creation, smoke
   verification, and harness bootstrap
 
 ## Important rule

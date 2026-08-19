@@ -138,7 +138,11 @@ test("README advertises GitHub Releases and the public Node CI badge", () => {
   assert.ok(readme.includes("github.com/fiveonecode/simulator-broker/releases"));
   assert.ok(readme.includes("./bin/simbroker --help"));
   assert.equal(readme.includes("or GitHub Release yet"), false);
-  assert.ok(readme.includes("There is no Homebrew formula or npm package yet."));
+  assert.equal(readme.includes("There is no Homebrew formula or npm package yet."), false);
+  assert.ok(readme.includes("brew install fiveonecode/simulator-broker/simbroker"));
+  assert.ok(readme.includes("homebrew-simulator-broker"));
+  assert.ok(readme.includes("npm install -g"));
+  assert.ok(readme.includes("simbroker-0.1.0-alpha.1.tgz"));
 });
 
 test("CHANGELOG and package.json name the Alpha version", () => {
@@ -170,9 +174,16 @@ test("release workflow packages the CLI tarball on version tags", () => {
 
   assert.ok(release.includes("tags:"));
   assert.ok(release.includes("npm run package:cli"));
+  assert.ok(release.includes("npm run package:npm"));
+  assert.ok(release.includes("artifacts/npm/simbroker-${version}.tgz"));
   assert.ok(release.includes("gh release create"));
   assert.ok(release.includes("--prerelease"));
   assert.equal(release.includes("test:app"), false);
+  assert.equal(
+    release.replace(/\s+/g, " ").includes("This release is not a Homebrew formula, notarized app, or npm package."),
+    false,
+    "future release notes must not deny Homebrew and npm",
+  );
 });
 
 test("issue forms cover install failure, bug, and feature and state Alpha limits", () => {
@@ -187,12 +198,20 @@ test("issue forms cover install failure, bug, and feature and state Alpha limits
   assert.ok(bug.includes("name: Bug"));
   assert.ok(feature.includes("name: Feature"));
   assert.ok(install.includes("install_local.sh --cli-only"));
+  assert.ok(install.includes("brew install fiveonecode/simulator-broker/simbroker"));
+  assert.ok(install.includes("npm install -g"));
+  assert.ok(install.includes("simbroker-0.1.0-alpha.1.tgz"));
   assert.ok(bug.includes("labels:"));
   assert.ok(feature.includes("enhancement"));
   for (const body of [install, bug, feature, config]) {
     assert.ok(body.includes("Alpha"), "community forms must say Alpha");
     assert.ok(body.includes("macOS"), "community forms must say macOS");
     assert.ok(body.includes("Xcode"), "community forms must say Xcode");
+    assert.equal(
+      body.replace(/\s+/g, " ").includes("There is no Homebrew formula, notarized app, or npm package yet."),
+      false,
+      "issue forms must not claim Homebrew/npm do not exist",
+    );
   }
 });
 
@@ -224,6 +243,112 @@ test("status and contributing point strangers at issue forms, not later-sequence
   assert.ok(contributing.includes("good first issue"));
   assert.ok(gettingStarted.includes("Report a problem"));
   assert.ok(readme.includes("issues/new/choose"));
+});
+
+test("Homebrew one-liner is documented against the homebrew-simulator-broker tap", () => {
+  const readme = readRepoFile("README.md");
+  const gettingStarted = readRepoFile("docs/getting-started.md");
+  const structure = readRepoFile("spec/project-structure.md");
+  const changelog = readRepoFile("CHANGELOG.md");
+  const syncScript = readRepoFile("scripts/sync_homebrew_tap.sh");
+
+  for (const body of [readme, gettingStarted, structure, changelog]) {
+    assert.ok(
+      body.includes("brew install fiveonecode/simulator-broker/simbroker"),
+      "docs/specs must keep the advertised brew one-liner",
+    );
+    assert.ok(
+      body.includes("homebrew-simulator-broker"),
+      "docs/specs must name the GitHub tap repo Homebrew actually clones",
+    );
+  }
+
+  assert.ok(syncScript.includes("--check-remote"));
+  assert.ok(syncScript.includes("cmp -s"));
+  assert.ok(syncScript.includes("--max-time"));
+  assert.ok(syncScript.includes("Formula/simbroker.rb"));
+});
+
+test("sync_homebrew_tap.sh copies Formula and Casks into a tap checkout", () => {
+  const tapDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-homebrew-tap-"));
+  const init = spawnSync("git", ["init", tapDir], { encoding: "utf8" });
+  assert.equal(init.status, 0, init.stderr);
+  const sync = spawnSync(
+    "bash",
+    [path.join(repoRoot, "scripts/sync_homebrew_tap.sh"), "--tap-dir", tapDir],
+    { encoding: "utf8", cwd: repoRoot },
+  );
+  assert.equal(sync.status, 0, sync.stderr + sync.stdout);
+  assert.equal(fs.existsSync(path.join(tapDir, "Formula/simbroker.rb")), true);
+  assert.equal(fs.existsSync(path.join(tapDir, "Casks/simulator-broker.rb")), true);
+  const copied = fs.readFileSync(path.join(tapDir, "Formula/simbroker.rb"), "utf8");
+  const source = readRepoFile("Formula/simbroker.rb");
+  assert.equal(copied, source);
+});
+
+test("Homebrew formula points at the Alpha CLI tarball and the cask names a notarized app zip", () => {
+  const formula = readRepoFile("Formula/simbroker.rb");
+  const cask = readRepoFile("Casks/simulator-broker.rb");
+  const checksum = formula.match(/sha256 "([a-f0-9]{64})"/);
+  const url = formula.match(/url "([^"]+)"/);
+
+  assert.ok(formula.includes("class Simbroker < Formula"));
+  assert.ok(url, "formula must have a url");
+  assert.equal(
+    url[1],
+    "https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.1/simulator-broker-0.1.0-alpha.1-cli.tar.gz",
+  );
+  assert.ok(checksum, "formula must pin a sha256");
+  assert.equal(checksum[1], "699695bc65a5bcb25b9c9b5d01494fcc3f25a40dcc90b8b5bf1ec61ea87a8522");
+  assert.ok(formula.includes('shell_output("#{bin}/simbroker --help")'));
+  assert.equal(formula.includes("package:local"), false);
+
+  assert.ok(cask.includes('cask "simulator-broker"'));
+  assert.ok(cask.includes("releases/download/v#{version}/Simulator-Broker-#{version}.zip"));
+  assert.ok(cask.includes('app "Simulator Broker.app"'));
+  assert.equal(cask.includes("package:local"), false);
+  assert.equal(cask.includes("package_local"), false);
+  assert.ok(cask.includes("package:distribution") || cask.includes("package_distribution"));
+});
+
+test("root package stays private and package_npm.sh packs a runnable simbroker bin", () => {
+  const rootPackage = JSON.parse(readRepoFile("package.json"));
+  const cliPackage = JSON.parse(readRepoFile("packages/simbroker/package.json"));
+
+  assert.equal(rootPackage.private, true);
+  assert.equal(rootPackage.bin, undefined);
+  assert.equal(cliPackage.name, "simbroker");
+  assert.equal(cliPackage.private, false);
+  assert.equal(cliPackage.bin.simbroker, "bin/simbroker.js");
+  assert.equal(cliPackage.version, rootPackage.version);
+  assert.ok(rootPackage.scripts["package:npm"].includes("package_npm.sh"));
+
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-npm-"));
+  const pack = spawnSync("bash", [path.join(repoRoot, "scripts/package_npm.sh"), "--output-dir", outputDir], {
+    encoding: "utf8",
+    cwd: repoRoot,
+  });
+  assert.equal(pack.status, 0, pack.stderr + pack.stdout);
+
+  const tarball = path.join(outputDir, "simbroker-0.1.0-alpha.1.tgz");
+  assert.equal(fs.existsSync(tarball), true, pack.stdout);
+
+  const installDir = path.join(outputDir, "prefix");
+  fs.mkdirSync(installDir);
+  const install = spawnSync("npm", ["install", "--global", "--prefix", installDir, tarball], {
+    encoding: "utf8",
+    cwd: outputDir,
+  });
+  assert.equal(install.status, 0, install.stderr + install.stdout);
+
+  const installedBin = path.join(installDir, "bin/simbroker");
+  const help = spawnSync(installedBin, ["--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0, help.stderr);
+  const helpText = `${help.stdout}${help.stderr}`;
+  assert.ok(helpText.includes("simbroker"));
+  assert.equal(helpText.trim().startsWith("{"), false, "help must not be JSON-only");
+  assert.equal(fs.existsSync(path.join(installDir, "lib/node_modules/simbroker/broker-core/test")), false);
+  assert.equal(fs.existsSync(path.join(installDir, "lib/node_modules/simbroker/client/test")), false);
 });
 
 test("package_cli.sh writes a runnable CLI tarball without tests or the app", () => {

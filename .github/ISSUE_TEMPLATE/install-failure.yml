@@ -7,8 +7,11 @@ body:
     attributes:
       value: |
         Simulator Broker is **Alpha**, **macOS-only**, and needs **Xcode** to
-        create or run iOS Simulators. There is no Homebrew formula, notarized
-        app, or npm package yet.
+        create or run iOS Simulators. Install the CLI with
+        `brew install fiveonecode/simulator-broker/simbroker` or
+        `npm install -g` of the `simbroker-0.1.0-alpha.1.tgz` from GitHub
+        Releases. A signed, notarized operator app zip is not attached to
+        this Alpha release.
 
         Do not paste credentials, private home paths, customer data, or
         live lease files. Redact logs first. Security reports go through
@@ -19,6 +22,8 @@ body:
     attributes:
       label: What install path did you use?
       options:
+        - Homebrew (`brew install fiveonecode/simulator-broker/simbroker`)
+        - npm (`npm install -g` of `simbroker-0.1.0-alpha.1.tgz` from GitHub Releases)
         - CLI-only (`bash scripts/install_local.sh --cli-only`)
         - Contributor app + CLI (`npm run install:local`)
         - Alpha CLI tarball from GitHub Releases

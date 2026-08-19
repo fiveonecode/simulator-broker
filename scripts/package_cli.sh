@@ -72,8 +72,9 @@ Run:
 
     ./bin/simbroker --help
 
-This archive does not include the macOS operator app, a Homebrew formula, or
-an npm package.
+This archive is the Node CLI only. Homebrew installs it through
+Formula/simbroker.rb. The packable npm CLI is packages/simbroker
+(`npm run package:npm`). The macOS operator app is separate.
 EOF
 
 cat > "$bundle/bin/simbroker" <<'EOF'
