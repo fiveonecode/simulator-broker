@@ -13,7 +13,7 @@ Use local operator-provided context if available. Do not commit private/local co
 
 ## Required Workflow
 
-1. Identify the paths you intend to change and choose a task session dir under `$AGENT_HOME/agent-harness/simulator-broker-app/` (defaults to `~/.agents/agent-harness/simulator-broker-app/`).
+1. Identify the paths you intend to change and choose a task session dir under `$AGENT_HOME/agent-harness/simulator-broker/` (defaults to `~/.agents/agent-harness/simulator-broker/`; `CODEX_HOME` remains a compatibility parent).
 2. Run `npm run agent:context -- --paths <files> --session-dir <dir>` and treat any reported verification obligations as blocking acceptance requirements, not optional suggestions.
 3. If the task is underspecified, expected to span multiple autonomous rounds, or likely to need a clean resume, rerun `agent:context` with `--session-mode long-running`, then populate the session artifacts with `npm run agent:plan`, `npm run agent:handoff`, and `npm run agent:evaluate`.
 4. Read the linked specs and open required skill `SKILL.md` files before implementation.
