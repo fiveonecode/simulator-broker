@@ -579,6 +579,37 @@ describe("task completion gate", () => {
     const { repoRoot, taskFilePath } = createRepoFixture();
     const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "agent-harness-public-session-root-"));
     const sessionName = "public-safe-commit-metadata";
+    const sessionDir = path.join(sessionRoot, "agent-harness", "simulator-broker", sessionName);
+    const contextPack = makeContextPack();
+    contextPack.verificationObligations = [];
+    const contract = writeTaskSession(sessionDir, contextPack, repoRoot);
+
+    commitTaskChange(
+      repoRoot,
+      taskFilePath,
+      makeStructuredCommitMessage(
+        "Public-safe task commit",
+        `task-session: [task artifact: task-sessions/${sessionName}]`,
+        `Verification recorded in [task artifact: task-sessions/${sessionName}/verify/implementation].`,
+      ),
+    );
+    writeVerifyResult(sessionDir, "implementation", makeCurrentVerifyResult(repoRoot, contract, {
+      profileId: "implementation",
+      proofKind: "code",
+    }));
+
+    const result = evaluateTaskCompletion(sessionDir, repoRoot, readTaskContract(sessionDir), loadSessionVerifyResults(sessionDir));
+
+    expect(result.status).toBe("passed");
+    expect(result.commitCheck.passed).toBe(true);
+    rmSync(repoRoot, { force: true, recursive: true });
+    rmSync(sessionRoot, { force: true, recursive: true });
+  });
+
+  it("accepts public-safe artifact labels for historical simulator-broker-app session paths", () => {
+    const { repoRoot, taskFilePath } = createRepoFixture();
+    const sessionRoot = mkdtempSync(path.join(os.tmpdir(), "agent-harness-legacy-session-root-"));
+    const sessionName = "legacy-app-slug-commit-metadata";
     const sessionDir = path.join(sessionRoot, "agent-harness", "simulator-broker-app", sessionName);
     const contextPack = makeContextPack();
     contextPack.verificationObligations = [];

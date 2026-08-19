@@ -25,6 +25,7 @@ describe("runtime argument parsing", () => {
   const sessionDirWithSpaces = path.join(repoRoot, "artifacts", "agent-harness", "runtime test session");
   const originalArtifactsRoot = process.env.AGENT_HARNESS_ARTIFACTS_ROOT;
   const originalAgentHome = process.env.AGENT_HOME;
+  const originalCodexHome = process.env.CODEX_HOME;
 
   function runHarnessCommand(args: string[]): string {
     return execFileSync(
@@ -64,6 +65,12 @@ describe("runtime argument parsing", () => {
       delete process.env.AGENT_HOME;
     } else {
       process.env.AGENT_HOME = originalAgentHome;
+    }
+
+    if (originalCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = originalCodexHome;
     }
 
     if (existsSync(sessionDirWithSpaces)) {
@@ -373,37 +380,54 @@ describe("runtime argument parsing", () => {
   it("defaults harness artifacts outside the repo worktree", () => {
     delete process.env.AGENT_HARNESS_ARTIFACTS_ROOT;
     delete process.env.AGENT_HOME;
+    delete process.env.CODEX_HOME;
 
     expect(getAgentHome()).toBe(path.join(os.homedir(), ".agents"));
-    expect(getDefaultArtifactsRoot(repoRoot)).toBe(path.join(os.homedir(), ".agents", "agent-harness", "simulator-broker-app"));
+    expect(getDefaultArtifactsRoot(repoRoot)).toBe(path.join(os.homedir(), ".agents", "agent-harness", "simulator-broker"));
     expect(getLegacyArtifactsRoot(repoRoot)).toBe(path.join(repoRoot, "artifacts", "agent-harness"));
   });
 
-  it("uses package identity instead of checkout directory for the artifact namespace", () => {
+  it("uses the product slug instead of checkout directory or package.json name", () => {
     const temporaryRoot = mkdtempSync(path.join(os.tmpdir(), "agent-harness-runtime-checkout-"));
     delete process.env.AGENT_HARNESS_ARTIFACTS_ROOT;
     delete process.env.AGENT_HOME;
+    delete process.env.CODEX_HOME;
 
     try {
       mkdirSync(temporaryRoot, { recursive: true });
       writeFileSync(path.join(temporaryRoot, "package.json"), JSON.stringify({ name: "simulator-broker-app" }));
 
-      expect(getDefaultArtifactsRoot(temporaryRoot)).toBe(path.join(os.homedir(), ".agents", "agent-harness", "simulator-broker-app"));
+      expect(getDefaultArtifactsRoot(temporaryRoot)).toBe(path.join(os.homedir(), ".agents", "agent-harness", "simulator-broker"));
     } finally {
       rmSync(temporaryRoot, { force: true, recursive: true });
     }
   });
 
-  it("uses AGENT_HOME for the default artifacts root", () => {
+  it("prefers AGENT_HOME over CODEX_HOME for the default artifacts root", () => {
     const agentHome = mkdtempSync(path.join(os.tmpdir(), "agent-harness-runtime-agent-home-"));
+    const codexHome = mkdtempSync(path.join(os.tmpdir(), "agent-harness-runtime-codex-home-"));
     delete process.env.AGENT_HARNESS_ARTIFACTS_ROOT;
 
     try {
       process.env.AGENT_HOME = agentHome;
-      expect(getDefaultArtifactsRoot(repoRoot)).toBe(path.join(agentHome, "agent-harness", "simulator-broker-app"));
+      process.env.CODEX_HOME = codexHome;
+      expect(getDefaultArtifactsRoot(repoRoot)).toBe(path.join(agentHome, "agent-harness", "simulator-broker"));
+
+      delete process.env.AGENT_HOME;
+      expect(getDefaultArtifactsRoot(repoRoot)).toBe(path.join(codexHome, "agent-harness", "simulator-broker"));
     } finally {
       rmSync(agentHome, { force: true, recursive: true });
+      rmSync(codexHome, { force: true, recursive: true });
     }
+  });
+
+  it("treats empty AGENT_HOME and CODEX_HOME as unset", () => {
+    delete process.env.AGENT_HARNESS_ARTIFACTS_ROOT;
+    process.env.AGENT_HOME = "";
+    process.env.CODEX_HOME = "  ";
+
+    expect(getAgentHome()).toBe(path.join(os.homedir(), ".agents"));
+    expect(getDefaultArtifactsRoot(repoRoot)).toBe(path.join(os.homedir(), ".agents", "agent-harness", "simulator-broker"));
   });
 
   it("uses the configured harness artifacts root override for new artifact directories", () => {

@@ -230,19 +230,19 @@ bash scripts/test_app.sh
 bash scripts/test_app.sh --build-only
 bash scripts/test_app.sh --only-testing SimulatorBrokerAppTests/BrokerDashboardStoreTests
 bash scripts/test_app.sh --only-testing SimulatorBrokerAppTests/BrokerSnapshotLoaderTests --result-bundle-path "$PWD/artifacts/app-test.xcresult"
-npm run agent:context -- --paths README.md broker-core/ client/ package.json spec/README.md spec/architecture.md spec/build-and-test.md spec/global-simulator-broker.md spec/implementation-plan.md spec/project-structure.md --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker-app/phase8-exit-code-contract" --session-mode long-running
-npm run agent:plan -- --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker-app/phase8-exit-code-contract"
-npm run agent:verify -- --profile implementation --paths broker-core/ client/ --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker-app/phase8-exit-code-contract"
-npm run agent:verify -- --profile spec-only --paths README.md broker-core/ client/ package.json spec/README.md spec/architecture.md spec/build-and-test.md spec/global-simulator-broker.md spec/implementation-plan.md spec/project-structure.md --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker-app/phase8-exit-code-contract"
-npm run agent:handoff -- --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker-app/phase8-exit-code-contract"
-npm run agent:evaluate -- --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker-app/phase8-exit-code-contract"
-npm run agent:complete -- --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker-app/phase8-exit-code-contract"
+npm run agent:context -- --paths README.md broker-core/ client/ package.json spec/README.md spec/architecture.md spec/build-and-test.md spec/global-simulator-broker.md spec/implementation-plan.md spec/project-structure.md --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker/phase8-exit-code-contract" --session-mode long-running
+npm run agent:plan -- --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker/phase8-exit-code-contract"
+npm run agent:verify -- --profile implementation --paths broker-core/ client/ --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker/phase8-exit-code-contract"
+npm run agent:verify -- --profile spec-only --paths README.md broker-core/ client/ package.json spec/README.md spec/architecture.md spec/build-and-test.md spec/global-simulator-broker.md spec/implementation-plan.md spec/project-structure.md --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker/phase8-exit-code-contract"
+npm run agent:handoff -- --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker/phase8-exit-code-contract"
+npm run agent:evaluate -- --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker/phase8-exit-code-contract"
+npm run agent:complete -- --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker/phase8-exit-code-contract"
 ```
 
 ## Verification obligations
 
 - `npm run agent:context -- --paths <files> --session-dir <dir>` is the routing and obligation source of truth for a task.
-- Task session dirs live under `${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker-app/`; `AGENT_HOME` is the only session-root override.
+- Task session dirs live under `${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker/`. The product slug is `simulator-broker`; it is not derived from `package.json` name `simulator-broker-app` or from the checkout directory. `CODEX_HOME` remains a compatibility parent for legacy session roots.
 - Implementation-owned paths require the `implementation` profile, which runs
   the complete `npm test` suite plus the `agent-harness` TypeScript build and
   Vitest suite. Specs, manifests, and harness contract paths require

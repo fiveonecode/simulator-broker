@@ -2,7 +2,7 @@
 //                                  IMPORTS                                   //
 // -------------------------------------------------------------------------- //
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -102,8 +102,14 @@ export function shellQuoteForPlatform(value: string, platform: NodeJS.Platform =
   return shellQuote(value);
 }
 
+function nonemptyEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
+}
+
 export function getAgentHome(): string {
-  return process.env.AGENT_HOME
+  return nonemptyEnv("AGENT_HOME")
+    ?? nonemptyEnv("CODEX_HOME")
     ?? path.join(os.homedir(), ".agents");
 }
 
@@ -112,39 +118,7 @@ type WindowsProcessIdentity = {
   startTime?: string;
 };
 
-function sanitizeSlug(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9._-]+/g, "-")
-    .replaceAll(/^-+|-+$/g, "");
-}
-
-function readPackageName(repoRoot: string): string | undefined {
-  const packageJsonPath = path.join(repoRoot, "package.json");
-  if (existsSync(packageJsonPath) === false) {
-    return undefined;
-  }
-
-  try {
-    const payload = JSON.parse(readFileSync(packageJsonPath, "utf8")) as unknown;
-    if (typeof payload === "object" && payload !== null && "name" in payload) {
-      const name = (payload as { name?: unknown }).name;
-      return typeof name === "string" ? name : undefined;
-    }
-  } catch {
-    return undefined;
-  }
-
-  return undefined;
-}
-
-function sanitizeRepoSlug(repoRoot: string): string {
-  const packageSlug = readPackageName(repoRoot);
-  const slug = sanitizeSlug(packageSlug ?? path.basename(repoRoot));
-
-  return slug || "repo";
-}
+const HARNESS_PRODUCT_SLUG = "simulator-broker";
 
 export function getDefaultArtifactsRoot(repoRoot: string): string {
   const overrideRoot = process.env.AGENT_HARNESS_ARTIFACTS_ROOT;
@@ -153,7 +127,7 @@ export function getDefaultArtifactsRoot(repoRoot: string): string {
     return path.resolve(repoRoot, overrideRoot);
   }
 
-  return path.join(getAgentHome(), "agent-harness", sanitizeRepoSlug(repoRoot));
+  return path.join(getAgentHome(), "agent-harness", HARNESS_PRODUCT_SLUG);
 }
 
 export function getLegacyArtifactsRoot(repoRoot: string): string {
