@@ -10,7 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Homebrew formula `Formula/simbroker.rb` installs the Alpha CLI tarball
-  (`brew install fiveonecode/simulator-broker/simbroker`).
+  (`brew install fiveonecode/simulator-broker/simbroker`). Homebrew clones
+  [`fiveonecode/homebrew-simulator-broker`](https://github.com/fiveonecode/homebrew-simulator-broker)
+  for that tap name. `Formula/` and `Casks/` here stay the source of truth.
 - Homebrew cask `Casks/simulator-broker.rb` installs `Simulator Broker.app`
   from the signed, notarized GitHub Release zip `Simulator-Broker-<version>.zip`
   when that zip is attached.

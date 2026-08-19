@@ -30,7 +30,9 @@ This Alpha already includes:
 - GitHub issue forms for install failure, bug, and feature, plus a light PR
   template that does not require a harness session
 - Homebrew formula `fiveonecode/simulator-broker/simbroker` for the Alpha CLI
-  tarball, a packable `simbroker` npm CLI (`npm run package:npm`), and a
+  tarball. Homebrew clones `fiveonecode/homebrew-simulator-broker` for that
+  tap name; `Formula/` and `Casks/` in this repository stay the source of
+  truth. Packable `simbroker` npm CLI (`npm run package:npm`), and a
   Homebrew cask that installs `Simulator Broker.app` from the signed,
   notarized GitHub Release zip when that zip is attached
 - local-debug packaging through `npm run package:local`

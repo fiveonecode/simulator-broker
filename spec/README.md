@@ -59,7 +59,8 @@ This repo exists to develop a reusable local simulator broker:
   template is a public-patch checklist and does not require a harness session
 - Homebrew formula `Formula/simbroker.rb` and packable npm CLI
   `packages/simbroker` install the Alpha CLI; cask `Casks/simulator-broker.rb`
-  names the signed, notarized GitHub Release app zip
+  names the signed, notarized GitHub Release app zip. The tap GitHub name
+  is `fiveonecode/homebrew-simulator-broker`
 - `host init --bootstrap-config` warns that it creates real Simulator devices before provisioning them
 - broker-aware sample consumer repo artifacts now cover manual human, interactive agent, unattended agent build-and-test, and CI patterns under `examples/harness-adoption/`
 - broker-aware build/test leases now support downstream process registration, memory ceiling containment, evidence bundles, and forced-abort cleanup for detached simulator-like processes

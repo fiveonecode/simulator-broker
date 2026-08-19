@@ -140,6 +140,7 @@ test("README advertises GitHub Releases and the public Node CI badge", () => {
   assert.equal(readme.includes("or GitHub Release yet"), false);
   assert.equal(readme.includes("There is no Homebrew formula or npm package yet."), false);
   assert.ok(readme.includes("brew install fiveonecode/simulator-broker/simbroker"));
+  assert.ok(readme.includes("homebrew-simulator-broker"));
   assert.ok(readme.includes("npm install -g"));
   assert.ok(readme.includes("simbroker-0.1.0-alpha.1.tgz"));
 });
@@ -235,6 +236,58 @@ test("status and contributing point strangers at issue forms, not later-sequence
   assert.ok(contributing.includes("good first issue"));
   assert.ok(gettingStarted.includes("Report a problem"));
   assert.ok(readme.includes("issues/new/choose"));
+});
+
+test("Homebrew one-liner is documented against the homebrew-simulator-broker tap", async () => {
+  const readme = readRepoFile("README.md");
+  const gettingStarted = readRepoFile("docs/getting-started.md");
+  const structure = readRepoFile("spec/project-structure.md");
+  const changelog = readRepoFile("CHANGELOG.md");
+
+  for (const body of [readme, gettingStarted, structure, changelog]) {
+    assert.ok(
+      body.includes("brew install fiveonecode/simulator-broker/simbroker"),
+      "docs/specs must keep the advertised brew one-liner",
+    );
+    assert.ok(
+      body.includes("homebrew-simulator-broker"),
+      "docs/specs must name the GitHub tap repo Homebrew actually clones",
+    );
+  }
+
+  const repoResponse = await fetch("https://api.github.com/repos/fiveonecode/homebrew-simulator-broker", {
+    headers: { "User-Agent": "simulator-broker-front-door-test" },
+  });
+  assert.equal(
+    repoResponse.status,
+    200,
+    "fiveonecode/homebrew-simulator-broker must exist for the brew one-liner",
+  );
+  const formulaResponse = await fetch(
+    "https://raw.githubusercontent.com/fiveonecode/homebrew-simulator-broker/main/Formula/simbroker.rb",
+    { headers: { "User-Agent": "simulator-broker-front-door-test" } },
+  );
+  assert.equal(formulaResponse.status, 200, "tap must publish Formula/simbroker.rb on main");
+  const formula = await formulaResponse.text();
+  assert.ok(formula.includes("class Simbroker"));
+  assert.ok(formula.includes("simulator-broker-0.1.0-alpha.1-cli.tar.gz"));
+});
+
+test("sync_homebrew_tap.sh copies Formula and Casks into a tap checkout", () => {
+  const tapDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-homebrew-tap-"));
+  const init = spawnSync("git", ["init", tapDir], { encoding: "utf8" });
+  assert.equal(init.status, 0, init.stderr);
+  const sync = spawnSync(
+    "bash",
+    [path.join(repoRoot, "scripts/sync_homebrew_tap.sh"), "--tap-dir", tapDir],
+    { encoding: "utf8", cwd: repoRoot },
+  );
+  assert.equal(sync.status, 0, sync.stderr + sync.stdout);
+  assert.equal(fs.existsSync(path.join(tapDir, "Formula/simbroker.rb")), true);
+  assert.equal(fs.existsSync(path.join(tapDir, "Casks/simulator-broker.rb")), true);
+  const copied = fs.readFileSync(path.join(tapDir, "Formula/simbroker.rb"), "utf8");
+  const source = readRepoFile("Formula/simbroker.rb");
+  assert.equal(copied, source);
 });
 
 test("Homebrew formula points at the Alpha CLI tarball and the cask names a notarized app zip", () => {

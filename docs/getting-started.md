@@ -31,6 +31,10 @@ simbroker --help
 ```
 
 That formula installs the tagged Alpha CLI tarball from GitHub Releases.
+Homebrew clones
+[`fiveonecode/homebrew-simulator-broker`](https://github.com/fiveonecode/homebrew-simulator-broker)
+for the tap name `fiveonecode/simulator-broker`. `Formula/` and `Casks/`
+in this repository stay the source of truth.
 
 ## Install the CLI with npm
 

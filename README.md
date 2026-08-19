@@ -35,6 +35,11 @@ brew install fiveonecode/simulator-broker/simbroker
 simbroker --help
 ```
 
+Homebrew clones
+[`fiveonecode/homebrew-simulator-broker`](https://github.com/fiveonecode/homebrew-simulator-broker)
+for that tap name. `Formula/` and `Casks/` in this repository stay the
+source of truth.
+
 ```bash
 npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.1/simbroker-0.1.0-alpha.1.tgz
 simbroker --help

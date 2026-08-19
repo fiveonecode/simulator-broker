@@ -37,7 +37,11 @@ A first extracted implementation slice now exists:
 - `host init --bootstrap-config` prints an honest warning that it creates real iOS Simulator devices before those devices are created
 - `scripts/package_cli.sh` packages the Node CLI runtime into a versioned
   tarball without XcodeGen or an app build
-- `Formula/simbroker.rb` installs that GitHub Release tarball through Homebrew
+- `Formula/simbroker.rb` installs that GitHub Release tarball through Homebrew.
+  `brew install fiveonecode/simulator-broker/simbroker` clones
+  `fiveonecode/homebrew-simulator-broker`. `scripts/sync_homebrew_tap.sh`
+  copies `Formula/` and `Casks/` into a tap checkout only when
+  `Formula/simbroker.rb` exists
 - `scripts/package_npm.sh` (`npm run package:npm`) packs `packages/simbroker`
   with a `bin` field; the repo-root package stays `private`
 - `Casks/simulator-broker.rb` installs `Simulator Broker.app` from
