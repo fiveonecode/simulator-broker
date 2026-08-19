@@ -57,6 +57,49 @@ test("README separates use-versus-develop install guidance and includes a hello-
   assert.ok(readme.includes("simbroker lease acquire"));
 });
 
+test("README Use it orders Homebrew CLI, cask, host setup, then hello world", () => {
+  const readme = readRepoFile("README.md");
+  const useIt = headingSection(readme, "Use it");
+  const hello = headingSection(readme, "Five-minute hello world");
+  const gettingStarted = readRepoFile("docs/getting-started.md");
+
+  assert.ok(useIt.includes("brew install fiveonecode/simulator-broker/simbroker"));
+  assert.ok(useIt.includes("brew install --cask fiveonecode/simulator-broker/simulator-broker"));
+  assert.ok(
+    useIt.includes("Set Up This Mac") || useIt.includes("Complete first-time setup"),
+    "Use it must name the app first-run surface",
+  );
+  assert.ok(useIt.includes("host init --bootstrap-config"));
+  assert.ok(useIt.includes("simbroker service start"));
+  assert.ok(
+    /Homebrew\s+does not create/i.test(useIt),
+    "Use it must not claim Homebrew creates simulators",
+  );
+  assert.ok(
+    /hello world is only after a host config exists/i.test(useIt)
+      || /only after a host config exists/i.test(useIt),
+    "Use it must place hello world after host config",
+  );
+
+  assert.ok(hello.includes("simbroker capacity check --purpose agent-ui-session --json"));
+  assert.ok(/unavailable/.test(hello));
+  assert.ok(/repair_needed/.test(hello));
+  assert.ok(hello.includes("simbroker doctor"));
+  assert.ok(hello.includes("simbroker simulators repair"));
+  assert.ok(hello.includes("simbroker lease acquire"));
+  assert.ok(
+    /host config/i.test(hello) && (/first-run/i.test(hello) || /after/i.test(hello)),
+    "hello world must require a host config",
+  );
+
+  const gettingHello = headingSection(gettingStarted, "Hello world");
+  assert.ok(gettingHello.includes("simbroker capacity check --purpose agent-ui-session --json"));
+  assert.ok(gettingHello.includes("simbroker doctor"));
+  assert.ok(gettingHello.includes("simbroker simulators repair"));
+  assert.ok(/unavailable/.test(gettingHello));
+  assert.ok(/repair_needed/.test(gettingHello));
+});
+
 function headingSection(markdown, heading) {
   const marker = `\n## ${heading}\n`;
   const start = markdown.indexOf(marker);

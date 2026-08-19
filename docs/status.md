@@ -21,7 +21,13 @@ This Alpha already includes:
 - optional Automatic shutdown configured only through broker commands
 - a macOS operator app with Overview, Simulators, Projects, and Events
 - a broker-owned `app-snapshot.json` read model
-- app-driven first-run setup and per-repo onboarding commands
+- app-driven first-run setup and per-repo onboarding commands. Public
+  first-run order is Homebrew CLI, Homebrew cask, then **Set Up This Mac**
+  / **Complete first-time setup** (or `host init --bootstrap-config` and
+  `service start`). Homebrew does not create simulators. Hello world runs
+  only after a host config exists and after `capacity check` for
+  `agent-ui-session`; stop on `unavailable` or `repair_needed` and use
+  `doctor` / `simulators repair`
 - CLI-only install through `bash scripts/install_local.sh --cli-only`, plus
   the contributor app+CLI path `npm run install:local`
 - tagged Alpha CLI tarball through `npm run package:cli` and GitHub Releases

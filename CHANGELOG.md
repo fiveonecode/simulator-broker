@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Public first-run order is Homebrew CLI, Homebrew cask, then **Set Up This
+  Mac** / **Complete first-time setup** (or `host init --bootstrap-config`
+  and `service start`). Hello world runs only after a host config exists
+  and after `capacity check --purpose agent-ui-session`; stop on
+  `unavailable` or `repair_needed` and use `doctor` / `simulators repair`.
+  Homebrew does not create simulators.
+- The app **Finish Local Broker Installation** copy leads with
+  `brew install fiveonecode/simulator-broker/simbroker` and **Refresh**.
+- `host init --bootstrap-config` `runtime-not-found` errors name
+  `--ios-version` and `xcrun simctl list runtimes`. Default starter iOS
+  stays `18`.
+
 ### Added
 
 - Homebrew formula `Formula/simbroker.rb` installs the Alpha CLI tarball

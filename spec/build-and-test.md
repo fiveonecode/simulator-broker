@@ -34,7 +34,7 @@ A first extracted implementation slice now exists:
 - installer coverage for stopping a running service before replacing the installed runtime, restarting it after metadata is written, shell-safe env helper serialization, and default-location install metadata for custom prefixes without leaving smoke-run paths in a developer install
 - CLI-only install through `bash scripts/install_local.sh --cli-only`, which copies the Node runtime and writes `simbroker` without XcodeGen or an app build
 - PATH persistence after install: Homebrew prefix bin when that is the install location, otherwise one guarded login-profile snippet for the default `~/.local/bin` location; `--profile` overrides the profile path so tests never edit the operator login rc
-- `host init --bootstrap-config` prints an honest warning that it creates real iOS Simulator devices before those devices are created
+- `host init --bootstrap-config` prints an honest warning that it creates real iOS Simulator devices before those devices are created. Public first-run order is Homebrew CLI, Homebrew cask, then the app **Set Up This Mac** / **Complete first-time setup** (or that CLI pair). Homebrew does not create simulators. Hello world requires a host config and a passing `capacity check --purpose agent-ui-session`; `unavailable` or `repair_needed` stops at `doctor` / `simulators repair`. Default starter iOS stays `18`. A `runtime-not-found` error names `--ios-version` and `xcrun simctl list runtimes`
 - `scripts/package_cli.sh` packages the Node CLI runtime into a versioned
   tarball without XcodeGen or an app build
 - `Formula/simbroker.rb` installs that GitHub Release tarball through Homebrew.

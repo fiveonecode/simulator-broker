@@ -65,9 +65,13 @@ export function createDeviceRecord({
   };
 }
 
-export function createSimctlFixture(root, { devices = [] } = {}) {
+export function createSimctlFixture(root, { devices = [], runtimes } = {}) {
   const statePath = path.join(root, "simctl-state.json");
-  writeJson(statePath, defaultSimctlFixtureState({ devices }));
+  const state = defaultSimctlFixtureState({ devices });
+  if (runtimes !== undefined) {
+    state.runtimes = runtimes;
+  }
+  writeJson(statePath, state);
   return {
     adapter: createFixtureSimctlAdapter({ statePath }),
     env: {

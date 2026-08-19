@@ -814,6 +814,51 @@ test("host init can bootstrap a starter host config when none exists yet", () =>
   assert.ok(simctlState.devices.some((device) => device.name === "Simulator Broker bootstrap-host manual-1"));
 });
 
+test("host init --bootstrap-config names --ios-version when no runtime matches the starter iOS version", () => {
+  const root = makeTempDir();
+  const simctl = createSimctlFixture(root, {
+    runtimes: [
+      {
+        identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-0",
+        isAvailable: true,
+        supportedDeviceTypes: [
+          {
+            identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+            name: "iPhone 16",
+            productFamily: "iPhone",
+          },
+          {
+            identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+            name: "iPad (A16)",
+            productFamily: "iPad",
+          },
+        ],
+        version: "26.0",
+      },
+    ],
+  });
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  try {
+    initBroker(resolvedPaths, {
+      bootstrapConfig: true,
+      hostId: "missing-runtime-host",
+      processExists: () => true,
+      simctlAdapter: simctl.adapter,
+    });
+    assert.fail("expected runtime-not-found");
+  } catch (error) {
+    assert.equal(error instanceof BrokerError, true);
+    assert.equal(error.payload.reasonCode, "runtime-not-found");
+    assert.match(error.message, /--ios-version/);
+    assert.match(error.message, /xcrun simctl list runtimes/);
+    assert.match(error.message, /\b18\b/);
+  }
+});
+
 test("host init warns before creating bootstrap simulators", () => {
   const paths = makePaths();
   const resolvedPaths = brokerPaths(paths);
