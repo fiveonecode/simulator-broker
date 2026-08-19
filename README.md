@@ -3,7 +3,10 @@
 A local control plane so humans, AI agents, and CI jobs can share iOS Simulators
 on one Mac without stealing devices from each other.
 
-**Status:** Alpha · macOS only · Xcode required
+> **Alpha.** macOS only. Xcode is required to create or run iOS Simulators.
+> Interfaces can change. There is no Homebrew formula, notarized app, or npm
+> package yet.
+
 [![Node tests](https://github.com/fiveonecode/simulator-broker/actions/workflows/ci.yml/badge.svg)](https://github.com/fiveonecode/simulator-broker/actions/workflows/ci.yml)
 
 Simulator Broker leases simulator aliases by *purpose* (for example
@@ -97,6 +100,7 @@ casually on a machine whose simulator inventory you cannot afford to change.
 - [Getting started](docs/getting-started.md) — install, first-run, reinstall, and uninstall
 - [Concepts](docs/concepts.md) — host, project, purpose, lease, pin, and `brokerd`
 - [Current capabilities](docs/status.md) — what this Alpha already implements
+- [Open an issue](https://github.com/fiveonecode/simulator-broker/issues/new/choose) — install failure, bug, or feature
 - [Harness integration](spec/harness-integration.md) — make a consumer repo broker-aware
 - [Sample consumer repo](examples/harness-adoption/sample-consumer-repo/README.md)
 

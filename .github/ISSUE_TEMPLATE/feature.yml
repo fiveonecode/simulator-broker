@@ -1,0 +1,52 @@
+name: Feature
+description: Propose a change that is not already in the Alpha contract.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Simulator Broker is **Alpha**, **macOS-only**, and needs **Xcode**.
+        It is maintenance-only infrastructure. There is no Homebrew formula,
+        notarized app, or npm package yet.
+
+        Maintainers may decline requests that add a feature, commercialization,
+        or UX roadmap.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you hitting?
+      description: Describe the gap a stranger hits today. Not a solution yet.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should change?
+      description: A concrete, bounded change. Link docs or specs if you have them.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface is this about?
+      options:
+        - CLI / broker-core
+        - Local brokerd service
+        - macOS operator app
+        - Install or packaging
+        - Docs or contributor track
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before submitting
+      options:
+        - label: I understand this is Alpha, macOS-only, and requires Xcode.
+          required: true
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: This is not a security report. I will use a private advisory for vulnerabilities.
+          required: true

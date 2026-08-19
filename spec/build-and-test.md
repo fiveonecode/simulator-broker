@@ -292,6 +292,9 @@ Add stronger profiles next for:
 - `bash scripts/install_local.sh --cli-only` installs the CLI runtime without invoking `xcodegen` or `xcodebuild` and without requiring an app bundle
 - `npm run package:cli` writes `artifacts/cli/simulator-broker-<version>-cli.tar.gz` plus a SHA-256 checksum and does not invoke XcodeGen or `xcodebuild`
 - `.github/workflows/ci.yml` runs the public Node suites on `ubuntu-latest` with a 30-minute budget and does not run `npm run test:app`
+- `.github/ISSUE_TEMPLATE/` ships install-failure, bug, and feature forms, and
+  `.github/pull_request_template.md` is a public-patch checklist that does not
+  require `agent:context` or a task session directory
 - `host init --bootstrap-config` writes a warning that real Simulator devices will be created before it calls `simctl` create
 - `npm run test:install-smoke` proves a fresh-machine-style install can bootstrap host config, scaffold a repo, start the service, acquire a lease, generate an app snapshot from the installed CLI, launch the installed app bundle against the smoke fixture, assert the `SimulatorBrokerApp` process stays alive, restore any preexisting default install metadata including symlink target contents, and clean up only the simulators provisioned by the smoke run afterward
 - `npm run package:distribution` builds the app in `Release`, requires operator-supplied `SIMBROKER_DISTRIBUTION_TEAM_ID` plus `SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY`, optionally consumes `SIMBROKER_NOTARYTOOL_PROFILE`, and writes a machine-readable readiness summary under `artifacts/distribution/`

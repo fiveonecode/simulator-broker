@@ -1,5 +1,7 @@
 id: specs
 globs:
+  - .github/ISSUE_TEMPLATE/**
+  - .github/pull_request_template.md
   - .github/workflows/**
   - .gitignore
   - CHANGELOG.md
@@ -27,6 +29,8 @@ primary_specs:
 verification_profile: spec-only
 commit_required: true
 allowed_paths:
+  - .github/ISSUE_TEMPLATE/**
+  - .github/pull_request_template.md
   - .github/workflows/**
   - .gitignore
   - CHANGELOG.md
