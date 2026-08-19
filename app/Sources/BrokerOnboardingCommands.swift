@@ -31,6 +31,16 @@ struct BrokerCLIInvocationFormatter {
   }
 }
 
+enum BrokerMissingCLISetupCopy {
+  static let brewInstallCommand = "brew install fiveonecode/simulator-broker/simbroker"
+  static let refreshActionTitle = "Refresh"
+  static let heroMessage =
+    "Install the Homebrew CLI with `brew install fiveonecode/simulator-broker/simbroker`, then click Refresh. The app cannot finish first-run setup until that CLI is on this Mac."
+  static let manualFallbackText =
+    "The public path is the Homebrew formula, then Refresh. Development builds may still set SIMBROKER_CLI_PATH."
+  static let manualFallbackCommands = [brewInstallCommand]
+}
+
 struct RepoOnboardingCommandGuide {
   let commands: [String]
   let shellHelpText: String

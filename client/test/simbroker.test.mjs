@@ -324,6 +324,42 @@ test("host init can bootstrap a starter host config on a fresh machine path", ()
   assert.equal(result.json.bootstrapWarning, HOST_BOOTSTRAP_DEVICE_WARNING);
 });
 
+test("host init --bootstrap-config reports runtime-not-found with --ios-version guidance", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root, {
+      runtimes: [
+        {
+          identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-0",
+          isAvailable: true,
+          supportedDeviceTypes: [
+            {
+              identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+              name: "iPhone 16",
+              productFamily: "iPhone",
+            },
+            {
+              identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+              name: "iPad (A16)",
+              productFamily: "iPad",
+            },
+          ],
+          version: "26.0",
+        },
+      ],
+    }),
+    stateRoot: path.join(root, "state"),
+  };
+
+  const result = runCli(fixture, "host", "init", "--bootstrap-config", "--host-id", "cli-missing-runtime");
+  assert.notEqual(result.status, 0);
+  assert.equal(result.json.ok, false);
+  assert.equal(result.json.reasonCode, "runtime-not-found");
+  assert.match(result.json.error, /--ios-version/);
+  assert.match(result.json.error, /xcrun simctl list runtimes/);
+});
+
 test("host init --bootstrap-config warns on stdout-adjacent stderr before devices exist", () => {
   const root = makeTempDir();
   const fixture = {

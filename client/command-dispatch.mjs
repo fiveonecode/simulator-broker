@@ -617,6 +617,7 @@ function helpPayload(group) {
       ],
       notes: [
         "host init --bootstrap-config creates real iOS Simulator devices on this Mac.",
+        "If no iOS runtime matches the requested version, pass --ios-version from `xcrun simctl list runtimes`. Default starter iOS is 18.",
       ],
       group: "host",
       usage: "simbroker host <command>",

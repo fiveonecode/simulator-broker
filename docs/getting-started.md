@@ -85,11 +85,17 @@ the same way as the CLI-only installer.
 
 ## First-run host setup
 
-The app is the preferred first-run surface.
+Do this after the Homebrew CLI and cask (or another documented CLI
+install) resolve, and before hello world. Homebrew does not create
+Simulator devices. The app is the preferred first-run surface.
 
 1. Launch `Simulator Broker.app`.
 2. If it shows **Set Up This Mac**, click **Complete first-time setup**.
 3. Wait until the dashboard shows the broker is ready.
+
+If the app says **Finish Local Broker Installation**, install the
+Homebrew CLI (`brew install fiveonecode/simulator-broker/simbroker`) and
+click **Refresh**.
 
 CLI fallback, which prints a warning and then creates real simulator devices:
 
@@ -97,6 +103,10 @@ CLI fallback, which prints a warning and then creates real simulator devices:
 simbroker host init --bootstrap-config
 simbroker service start
 ```
+
+If bootstrap fails because no installed iOS runtime matches the requested
+version, pass `--ios-version` from `xcrun simctl list runtimes`. The
+default starter iOS version stays `18`.
 
 Then register each repo you want the broker to know about:
 
@@ -110,11 +120,28 @@ or the `broker-harness-adoption` skill.
 
 ## Hello world
 
+Run this only after a host config exists from first-run setup.
+
 ```bash
 mkdir -p /tmp/sample-broker-repo && cd /tmp/sample-broker-repo
 simbroker project init
 simbroker project validate
 simbroker capacity check --purpose agent-ui-session --json
+```
+
+Read `purposes[].status` (and `summary` counts), not the top-level
+`status`. Top-level `status` is only `ready` or `needs_attention`.
+
+If `purposes[].status` is `unavailable`, stop. Preview missing capacity
+with `simbroker capacity reconcile --json`. Do not acquire a lease.
+
+If `purposes[].status` is `repair_needed`, stop. Run `simbroker doctor`,
+then `simbroker simulators repair --alias <alias>` for the alias doctor
+names. Do not acquire a lease.
+
+If `purposes[].status` is `available`:
+
+```bash
 simbroker lease acquire --purpose agent-ui-session --lease-file /tmp/simbroker-hello-lease.json
 simbroker host status
 simbroker lease release --lease-file /tmp/simbroker-hello-lease.json

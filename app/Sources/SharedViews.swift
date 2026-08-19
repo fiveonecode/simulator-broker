@@ -346,7 +346,7 @@ struct BrokerSetupView: View {
             .disabled(store.isApplyingAction || primaryActionEnabled == false)
           }
 
-          Button("Refresh") {
+          Button(BrokerMissingCLISetupCopy.refreshActionTitle) {
             store.refreshNow()
           }
           .buttonStyle(.bordered)
@@ -422,7 +422,7 @@ struct BrokerSetupView: View {
   private var heroMessage: String {
     switch store.startupState {
     case .missingCLI:
-      return "The app cannot find a usable `simbroker` CLI yet, so it cannot self-serve machine setup. Once the CLI is available, this screen can initialize the Mac and start brokerd for you."
+      return BrokerMissingCLISetupCopy.heroMessage
     case .needsHostBootstrap:
       return "This Mac has not been initialized for Simulator Broker yet. First-run setup will create the starter simulator pool, write host config, and start brokerd."
     case .needsServiceStart:
@@ -475,9 +475,7 @@ struct BrokerSetupView: View {
 
     switch store.startupState {
     case .missingCLI:
-      return [
-        "export SIMBROKER_CLI_PATH=/absolute/path/to/simbroker",
-      ]
+      return BrokerMissingCLISetupCopy.manualFallbackCommands
     case .needsHostBootstrap:
       return [
         formatter.command("host init --bootstrap-config --host-config \"\(store.hostConfigPath)\" --state-root \"\(store.stateRootPath)\""),
@@ -501,7 +499,7 @@ struct BrokerSetupView: View {
   private var manualFallbackText: String {
     switch store.startupState {
     case .missingCLI:
-      return "If you are running a development build, point the app at a repo-local CLI with `SIMBROKER_CLI_PATH` or reinstall the packaged broker so \(store.cliHintPath) exists."
+      return BrokerMissingCLISetupCopy.manualFallbackText
     case .needsHostBootstrap:
       return "CLI fallback for the same first-run setup flow."
     case .needsServiceStart, .readOnlySnapshot:

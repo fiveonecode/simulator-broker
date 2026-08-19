@@ -1064,10 +1064,13 @@ function selectRuntimeForAlias(simctl, iosVersion) {
     .sort((left, right) => compareVersions(right.version, left.version));
 
   if (runtimes.length === 0) {
-    throw new BrokerError(`No available iOS runtime matched ${iosVersion}.`, {
-      iosVersion,
-      reasonCode: "runtime-not-found",
-    });
+    throw new BrokerError(
+      `No available iOS runtime matched ${iosVersion}. Pass --ios-version to match an installed runtime from \`xcrun simctl list runtimes\`.`,
+      {
+        iosVersion,
+        reasonCode: "runtime-not-found",
+      },
+    );
   }
 
   return runtimes[0];

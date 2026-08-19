@@ -27,7 +27,10 @@ If you only ever use one simulator by hand, you may not need this yet.
 
 ## Use it
 
-One-line CLI install on macOS, with Node.js 20+ still required at runtime:
+Install the Homebrew CLI, then the Homebrew cask, then set up this Mac.
+The five-minute hello world is only after a host config exists. Homebrew
+does not create Simulator devices. Node.js 20+ is still required at
+runtime.
 
 ```bash
 brew install fiveonecode/simulator-broker/simbroker
@@ -38,6 +41,28 @@ Homebrew clones
 [`fiveonecode/homebrew-simulator-broker`](https://github.com/fiveonecode/homebrew-simulator-broker)
 for that tap name. `Formula/` and `Casks/` in this repository stay the
 source of truth.
+
+```bash
+brew install --cask fiveonecode/simulator-broker/simulator-broker
+```
+
+That cask downloads `Simulator-Broker-<version>.zip` from
+[GitHub Releases](https://github.com/fiveonecode/simulator-broker/releases).
+
+The app is the preferred first-run host setup. Open `Simulator Broker.app`.
+If it shows **Set Up This Mac**, click **Complete first-time setup**. That
+runs the same broker commands as:
+
+```bash
+simbroker host init --bootstrap-config
+simbroker service start
+```
+
+`host init --bootstrap-config` prints a warning and then creates real
+Simulator devices. Do not run it casually on a machine whose simulator
+inventory you cannot afford to change.
+
+Other CLI install options:
 
 ```bash
 npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.1/simbroker-0.1.0-alpha.1.tgz
@@ -58,15 +83,6 @@ build the macOS app. If Homebrew is installed, `simbroker` lands in
 and one guarded login-shell PATH line. Open a new terminal if this shell still
 cannot resolve `simbroker`. `source .../env.sh` remains a fallback.
 
-The Homebrew cask installs the signed, notarized operator app:
-
-```bash
-brew install --cask fiveonecode/simulator-broker/simulator-broker
-```
-
-That cask downloads `Simulator-Broker-<version>.zip` from
-[GitHub Releases](https://github.com/fiveonecode/simulator-broker/releases).
-
 Xcode is still required to create and run iOS Simulators. Alpha CLI tarballs
 are also attached to those releases. Extract a tarball and run
 `./bin/simbroker --help`.
@@ -74,11 +90,7 @@ are also attached to those releases. Extract a tarball and run
 `simbroker` help and `simbroker doctor` print human-readable text by default.
 Pass `--json` for machine-readable payloads.
 
-First-run host setup is `simbroker host init --bootstrap-config`. It prints a
-warning and then creates real Simulator devices. Do not run it casually on a
-machine whose simulator inventory you cannot afford to change.
-
-To install the operator app as well, use the contributor command in
+To build the operator app from this checkout, use the contributor command in
 [Develop it](#develop-it).
 
 ## Develop it
@@ -100,20 +112,33 @@ keep the `agent:context` / `agent:verify` / `agent:complete` track.
 
 ## Five-minute hello world
 
-After the CLI resolves and this Mac has a host config:
+After the CLI resolves and this Mac has a host config from the first-run step
+above:
 
 ```bash
 mkdir -p /tmp/sample-broker-repo && cd /tmp/sample-broker-repo
 simbroker project init
 simbroker project validate
 simbroker capacity check --purpose agent-ui-session --json
+```
+
+Read `purposes[].status` (and `summary` counts), not the top-level
+`status`. Top-level `status` is only `ready` or `needs_attention`.
+
+If `purposes[].status` is `unavailable`, stop. Preview missing capacity
+with `simbroker capacity reconcile --json`. Do not acquire a lease.
+
+If `purposes[].status` is `repair_needed`, stop. Run `simbroker doctor`,
+then `simbroker simulators repair --alias <alias>` for the alias doctor
+names. Do not acquire a lease.
+
+If `purposes[].status` is `available`:
+
+```bash
 simbroker lease acquire --purpose agent-ui-session --lease-file /tmp/simbroker-hello-lease.json
 simbroker host status
 simbroker lease release --lease-file /tmp/simbroker-hello-lease.json
 ```
-
-`host init --bootstrap-config` provisions real Simulator devices. Do not run it
-casually on a machine whose simulator inventory you cannot afford to change.
 
 ## Next reading
 

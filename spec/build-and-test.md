@@ -24,7 +24,7 @@ A first extracted implementation slice now exists:
   stale-recovery, lock-race, scheduler, confirmed-cleanup, and failure coverage
 - tracked-text public-surface scanning with an ignored local denylist extension
 - app-side operator controls for pin create and clear, lease release, and lifecycle actions over the shared broker authority
-- app launch-time fixture overrides through `--state-root`, `--host-config`, optional `--cli-path`, plus direct pane/detail targeting for deterministic screenshot and smoke scenarios
+- app launch-time fixture overrides through `--state-root`, `--host-config`, optional `--cli-path`, plus direct pane/detail targeting for deterministic screenshot and smoke scenarios. When `--cli-path` / `SIMBROKER_CLI_PATH` and `install.json` are unset, the app also looks for an executable `simbroker` in Homebrew prefix `bin` (`/opt/homebrew`, `/usr/local`, and `HOMEBREW_PREFIX`) before `~/.local/bin`
 - broker-owned state artifacts are restricted to the current user, and lease, containment, pin, and lifecycle mutations share the broker mutation authority whether invoked directly, through the service, or from the app
 - inactive local project registrations can be removed only through the explicit, locked `project forget --project-id <id>` command; it is idempotent, refreshes the shared app snapshot, preserves the repository and audit history, and rejects projects with active leases or pins
 - the macOS app test wrapper now supports build-only reruns, focused `-only-testing` filters, and stable `xcresult` output for runtime triage
@@ -34,7 +34,7 @@ A first extracted implementation slice now exists:
 - installer coverage for stopping a running service before replacing the installed runtime, restarting it after metadata is written, shell-safe env helper serialization, and default-location install metadata for custom prefixes without leaving smoke-run paths in a developer install
 - CLI-only install through `bash scripts/install_local.sh --cli-only`, which copies the Node runtime and writes `simbroker` without XcodeGen or an app build
 - PATH persistence after install: Homebrew prefix bin when that is the install location, otherwise one guarded login-profile snippet for the default `~/.local/bin` location; `--profile` overrides the profile path so tests never edit the operator login rc
-- `host init --bootstrap-config` prints an honest warning that it creates real iOS Simulator devices before those devices are created
+- `host init --bootstrap-config` prints an honest warning that it creates real iOS Simulator devices before those devices are created. Public first-run order is Homebrew CLI, Homebrew cask, then the app **Set Up This Mac** / **Complete first-time setup** (or that CLI pair). Homebrew does not create simulators. Hello world requires a host config and a passing `capacity check --purpose agent-ui-session` (`purposes[].status`, not the top-level `status`). `unavailable` stops at `capacity reconcile`; `repair_needed` stops at `doctor` and `simulators repair --alias <alias>`. Default starter iOS stays `18`. A `runtime-not-found` error names `--ios-version` and `xcrun simctl list runtimes`
 - `scripts/package_cli.sh` packages the Node CLI runtime into a versioned
   tarball without XcodeGen or an app build
 - `Formula/simbroker.rb` installs that GitHub Release tarball through Homebrew.

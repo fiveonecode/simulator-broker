@@ -50,6 +50,47 @@ struct BrokerRuntimePaths: Sendable {
       .appending(path: "simbroker")
   }
 
+  static func defaultHomebrewPrefixRoots(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> [URL] {
+    var roots: [URL] = []
+    if let prefix = environment["HOMEBREW_PREFIX"], prefix.isEmpty == false {
+      roots.append(URL(fileURLWithPath: (prefix as NSString).expandingTildeInPath))
+    }
+    roots.append(URL(fileURLWithPath: "/opt/homebrew"))
+    roots.append(URL(fileURLWithPath: "/usr/local"))
+    var seen = Set<String>()
+    return roots.filter { seen.insert($0.standardizedFileURL.path).inserted }
+  }
+
+  static func cliCandidateURLs(
+    configuredCLIURL: URL?,
+    installMetadataCLIPath: String?,
+    homebrewPrefixRoots: [URL] = defaultHomebrewPrefixRoots(),
+    defaultCLIURL: URL = defaultCLIURL()
+  ) -> [URL] {
+    var candidates: [URL] = []
+    if let configuredCLIURL {
+      candidates.append(configuredCLIURL)
+    }
+    if let installMetadataCLIPath, installMetadataCLIPath.isEmpty == false {
+      candidates.append(URL(fileURLWithPath: (installMetadataCLIPath as NSString).expandingTildeInPath))
+    }
+    for root in homebrewPrefixRoots {
+      candidates.append(root.appending(path: "bin").appending(path: "simbroker"))
+    }
+    candidates.append(defaultCLIURL)
+    var seen = Set<String>()
+    return candidates.filter { seen.insert($0.standardizedFileURL.path).inserted }
+  }
+
+  static func firstExecutableCLIURL(
+    among candidates: [URL],
+    isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+  ) -> URL? {
+    candidates.first { isExecutable($0.path) }
+  }
+
   static func defaultInstallRoot() -> URL {
     FileManager.default.homeDirectoryForCurrentUser
       .appending(path: "Library")
@@ -285,25 +326,12 @@ actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
   }
 
   private func resolveCLIPath(installMetadata: BrokerInstallMetadata?) -> URL? {
-    let fileManager = FileManager.default
-    let candidates = [
-      paths.configuredCLIURL,
-      installMetadata?.cliPath.flatMap { cliPath in
-        cliPath.isEmpty ? nil : URL(fileURLWithPath: (cliPath as NSString).expandingTildeInPath)
-      },
-      BrokerRuntimePaths.defaultCLIURL(),
-    ]
-
-    for candidate in candidates {
-      guard let candidate else {
-        continue
-      }
-      if fileManager.isExecutableFile(atPath: candidate.path) {
-        return candidate
-      }
-    }
-
-    return nil
+    BrokerRuntimePaths.firstExecutableCLIURL(
+      among: BrokerRuntimePaths.cliCandidateURLs(
+        configuredCLIURL: paths.configuredCLIURL,
+        installMetadataCLIPath: installMetadata?.cliPath
+      )
+    )
   }
 
   private func normalizedPath(_ rawPath: String) -> String {
