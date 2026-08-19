@@ -38,7 +38,7 @@ in this repository stay the source of truth.
 ## Install the CLI with npm
 
 ```bash
-npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.1/simbroker-0.1.0-alpha.1.tgz
+npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.2/simbroker-0.1.0-alpha.2.tgz
 command -v simbroker
 simbroker --help
 ```

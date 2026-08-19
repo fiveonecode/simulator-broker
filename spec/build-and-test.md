@@ -55,11 +55,12 @@ A first extracted implementation slice now exists:
   app snapshot must inject the fixture `simctl` adapter. The default
   public-surface scan reads index blobs only for dirty or missing worktree
   files so a clean checkout does not spawn one `git cat-file` per file.
-- tagged versions such as `v0.1.0-alpha.1` attach the CLI tarball, the
+- tagged versions such as `v0.1.0-alpha.2` attach the CLI tarball, the
   packable `simbroker-<version>.tgz`, and the notarized
   `Simulator-Broker-<version>.zip` to a GitHub Release. The CLI and npm
   tarballs come from `.github/workflows/release.yml`; the app zip is an
-  operator-signed notarized attach for this Alpha.
+  operator-signed notarized attach for this Alpha. The Homebrew formula
+  and cask pin the current tagged artifacts.
 - local-debug portable bundle support through a zip bundle plus package-smoke verification of the bundled install path and installed-app launch proof
 - a separate Release distribution packaging path that requires operator-supplied signing inputs, runs `codesign` plus `spctl`, optionally notarizes with `notarytool`, and writes a readiness summary JSON
 - executable `agent-harness/` changes now route through the implementation

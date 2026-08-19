@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2] - 2026-08-20
+
+This tag is the first Homebrew CLI tarball, npm tarball, and notarized
+app zip that match the public first-run docs on `main`.
+
 ### Changed
 
 - Public first-run order is Homebrew CLI, Homebrew cask, then **Set Up This
@@ -19,11 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   create simulators.
 - The app **Finish Local Broker Installation** copy leads with
   `brew install fiveonecode/simulator-broker/simbroker` and **Refresh**.
-  Refresh now discovers `simbroker` in Homebrew prefix `bin` (`/opt/homebrew`
-  and `/usr/local`) as well as `install.json` and `~/.local/bin`.
+  Refresh now discovers `simbroker` in Homebrew prefix `bin` as well as
+  `install.json` and the clone-install default bin.
 - `host init --bootstrap-config` `runtime-not-found` errors name
   `--ios-version` and `xcrun simctl list runtimes`. Default starter iOS
   stays `18`.
+- Formula, cask, README npm URL, and SECURITY supported version now name
+  `0.1.0-alpha.2`.
 
 ### Added
 
@@ -33,11 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for that tap name. `Formula/` and `Casks/` here stay the source of truth.
 - Homebrew cask `Casks/simulator-broker.rb` installs `Simulator Broker.app`
   from the signed, notarized GitHub Release zip `Simulator-Broker-<version>.zip`.
-  Tag `v0.1.0-alpha.1` now attaches that zip, and the cask pins its SHA-256.
+  This tag attaches that zip, and the cask pins its SHA-256.
 - Packable npm CLI `packages/simbroker` (`npm run package:npm`) with a `bin`
   field. The repo-root package stays private. Tag-driven
-  `.github/workflows/release.yml` attaches that tarball and no longer
-  claims the release is not a Homebrew formula or npm package.
+  `.github/workflows/release.yml` attaches that tarball.
 
 ## [0.1.0-alpha.1] - 2026-08-18
 
