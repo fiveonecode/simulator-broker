@@ -14,8 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [`fiveonecode/homebrew-simulator-broker`](https://github.com/fiveonecode/homebrew-simulator-broker)
   for that tap name. `Formula/` and `Casks/` here stay the source of truth.
 - Homebrew cask `Casks/simulator-broker.rb` installs `Simulator Broker.app`
-  from the signed, notarized GitHub Release zip `Simulator-Broker-<version>.zip`
-  when that zip is attached.
+  from the signed, notarized GitHub Release zip `Simulator-Broker-<version>.zip`.
+  Tag `v0.1.0-alpha.1` now attaches that zip, and the cask pins its SHA-256.
 - Packable npm CLI `packages/simbroker` (`npm run package:npm`) with a `bin`
   field. The repo-root package stays private. Tag-driven
   `.github/workflows/release.yml` attaches that tarball and no longer

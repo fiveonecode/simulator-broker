@@ -68,7 +68,5 @@ node client/bin/simbroker.mjs lease release --lease-file /tmp/simbroker-lease.js
 node client/bin/simbroker.mjs simulators boot --alias ui-1
 ```
 
-## Lower-priority public follow-through
-
-- Attach a signed, notarized `Simulator-Broker-<version>.zip` to GitHub
-  Releases so the Homebrew cask has a downloadable app artifact
+The Alpha GitHub Release attaches the signed, notarized
+`Simulator-Broker-<version>.zip` used by the Homebrew cask.
