@@ -63,7 +63,7 @@ Each app window must own independent UI state and its own refresh lifecycle whil
 
 1. Prepare a deterministic fixture:
    ```bash
-   session_dir="$HOME/.codex/agent-harness/simulator-broker-app/window-state-isolation-repro"
+   session_dir="${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker-app/window-state-isolation-repro"
    fixture_root="$session_dir/runtime-fixture"
    state_root="$fixture_root/state"
    host_config="$fixture_root/host-config.json"

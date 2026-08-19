@@ -416,7 +416,7 @@ function normalizeSessionIdentifier(value: string): string {
 function getSessionIdentifiers(sessionDir: string, repoRoot: string): string[] {
   const absoluteSessionDir = normalizeSessionIdentifier(path.resolve(sessionDir));
   const relativeSessionDir = normalizeSessionIdentifier(path.relative(repoRoot, absoluteSessionDir));
-  const taskSessionMatch = /\/agent-harness\/simulator-broker-app\/([^/]+)(?:\/.*)?$/u.exec(absoluteSessionDir);
+  const taskSessionMatch = /\/agent-harness\/simulator-broker(?:-app)?\/([^/]+)(?:\/.*)?$/u.exec(absoluteSessionDir);
   const publicSessionIdentifiers = [
     taskSessionMatch ? `task-sessions/${taskSessionMatch[1]}` : undefined,
     taskSessionMatch?.[1],

@@ -164,9 +164,9 @@ describe("verify profile execution", () => {
     rmSync(repoRoot, { force: true, recursive: true });
   });
 
-  it("allows nested Codex harness session artifact directories", async () => {
-    const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "agent-harness-verify-codex-home-"));
-    const previousCodexHome = process.env.CODEX_HOME;
+  it("allows nested agent harness session artifact directories", async () => {
+    const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "verify-agent-home-"));
+    const previousAgentHome = process.env.AGENT_HOME;
     const profile: VerifyProfile = {
       advisory: false,
       covers_boundaries: [],
@@ -181,12 +181,114 @@ describe("verify profile execution", () => {
     };
 
     try {
+      const agentHome = path.join(temporaryDirectory, "agent-home");
+      process.env.AGENT_HOME = agentHome;
+      const artifactsDir = path.join(
+        agentHome,
+        "agent-harness",
+        "simulator-broker",
+        "session",
+        "verify",
+        "implementation",
+      );
+      const result = await executeVerifyProfile({
+        artifactsDir,
+        paths: ["agent-harness/src/lib/verify.ts"],
+        profile,
+        repoRoot: process.cwd(),
+      });
+
+      expect(result.passed).toBe(true);
+      expect(result.artifactsDir).toBe(path.join(
+        realpathSync(temporaryDirectory),
+        "agent-home",
+        "agent-harness",
+        "simulator-broker",
+        "session",
+        "verify",
+        "implementation",
+      ));
+    } finally {
+      if (previousAgentHome === undefined) {
+        delete process.env.AGENT_HOME;
+      } else {
+        process.env.AGENT_HOME = previousAgentHome;
+      }
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects agent harness artifact directories with symlinked ancestors", async () => {
+    const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "agent-harness-verify-agent-link-"));
+    const outsideTarget = mkdtempSync(path.join(os.tmpdir(), "verify-outside-target-"));
+    const previousAgentHome = process.env.AGENT_HOME;
+    const profile: VerifyProfile = {
+      advisory: false,
+      covers_boundaries: [],
+      covers_scenarios: [],
+      commands: [],
+      evidence_extractors: ["artifact-manifest"],
+      failure_patterns: [],
+      id: "implementation",
+      proof_kind: "code",
+      required_artifacts: [],
+      required_pass_signals: [],
+    };
+
+    try {
+      const agentHome = path.join(temporaryDirectory, "agent-home");
+      const harnessRoot = path.join(agentHome, "agent-harness");
+      const markerPath = path.join(outsideTarget, "keep.txt");
+      process.env.AGENT_HOME = agentHome;
+      mkdirSync(harnessRoot, { recursive: true });
+      writeFileSync(markerPath, "do not delete\n");
+      symlinkSync(outsideTarget, path.join(harnessRoot, "link"));
+
+      await expect(
+        executeVerifyProfile({
+          artifactsDir: path.join(harnessRoot, "link", "run"),
+          paths: ["agent-harness/src/lib/verify.ts"],
+          profile,
+          repoRoot: process.cwd(),
+        }),
+      ).rejects.toThrow(/Refusing to clear untrusted verification artifacts directory/);
+      expect(existsSync(markerPath)).toBe(true);
+    } finally {
+      if (previousAgentHome === undefined) {
+        delete process.env.AGENT_HOME;
+      } else {
+        process.env.AGENT_HOME = previousAgentHome;
+      }
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+      rmSync(outsideTarget, { force: true, recursive: true });
+    }
+  });
+
+  it("allows nested Codex harness session artifact directories", async () => {
+    const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "verify-codex-home-"));
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousAgentHome = process.env.AGENT_HOME;
+    const profile: VerifyProfile = {
+      advisory: false,
+      covers_boundaries: [],
+      covers_scenarios: [],
+      commands: [],
+      evidence_extractors: ["artifact-manifest"],
+      failure_patterns: [],
+      id: "implementation",
+      proof_kind: "code",
+      required_artifacts: ["paths.txt"],
+      required_pass_signals: [],
+    };
+
+    try {
+      delete process.env.AGENT_HOME;
       const codexHome = path.join(temporaryDirectory, "codex-home");
       process.env.CODEX_HOME = codexHome;
       const artifactsDir = path.join(
         codexHome,
         "agent-harness",
-        "simulator-broker-app",
+        "simulator-broker",
         "session",
         "verify",
         "implementation",
@@ -203,7 +305,7 @@ describe("verify profile execution", () => {
         realpathSync(temporaryDirectory),
         "codex-home",
         "agent-harness",
-        "simulator-broker-app",
+        "simulator-broker",
         "session",
         "verify",
         "implementation",
@@ -214,7 +316,75 @@ describe("verify profile execution", () => {
       } else {
         process.env.CODEX_HOME = previousCodexHome;
       }
+      if (previousAgentHome === undefined) {
+        delete process.env.AGENT_HOME;
+      } else {
+        process.env.AGENT_HOME = previousAgentHome;
+      }
       rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps configured Codex home artifact directories trusted when AGENT_HOME is set", async () => {
+    const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "verify-codex-home-compat-"));
+    const agentHomeDirectory = mkdtempSync(path.join(os.tmpdir(), "verify-agent-home-"));
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousAgentHome = process.env.AGENT_HOME;
+    const profile: VerifyProfile = {
+      advisory: false,
+      covers_boundaries: [],
+      covers_scenarios: [],
+      commands: [],
+      evidence_extractors: ["artifact-manifest"],
+      failure_patterns: [],
+      id: "implementation",
+      proof_kind: "code",
+      required_artifacts: ["paths.txt"],
+      required_pass_signals: [],
+    };
+
+    try {
+      const codexHome = path.join(temporaryDirectory, "codex-home");
+      process.env.CODEX_HOME = codexHome;
+      process.env.AGENT_HOME = agentHomeDirectory;
+      const artifactsDir = path.join(
+        codexHome,
+        "agent-harness",
+        "simulator-broker",
+        "session",
+        "verify",
+        "implementation",
+      );
+      const result = await executeVerifyProfile({
+        artifactsDir,
+        paths: ["agent-harness/src/lib/verify.ts"],
+        profile,
+        repoRoot: process.cwd(),
+      });
+
+      expect(result.passed).toBe(true);
+      expect(result.artifactsDir).toBe(path.join(
+        realpathSync(temporaryDirectory),
+        "codex-home",
+        "agent-harness",
+        "simulator-broker",
+        "session",
+        "verify",
+        "implementation",
+      ));
+    } finally {
+      if (previousCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = previousCodexHome;
+      }
+      if (previousAgentHome === undefined) {
+        delete process.env.AGENT_HOME;
+      } else {
+        process.env.AGENT_HOME = previousAgentHome;
+      }
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+      rmSync(agentHomeDirectory, { force: true, recursive: true });
     }
   });
 

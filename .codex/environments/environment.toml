@@ -29,6 +29,6 @@ icon = "test"
 command = '''
 #!/usr/bin/env bash
 set -euo pipefail
-npm run agent:verify -- --profile spec-only --paths spec/README.md --session-dir "$HOME/.codex/agent-harness/simulator-broker-app/manual-verify"
+npm run agent:verify -- --profile spec-only --paths spec/README.md --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker/manual-verify"
 '''
 platform = "darwin"

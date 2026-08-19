@@ -23,7 +23,7 @@ import {
 import {
   DEFAULT_COMMAND_MAX_STDERR_BYTES,
   DEFAULT_COMMAND_MAX_STDOUT_BYTES,
-  getCodexHome,
+  getAgentHome,
   getDefaultArtifactsRoot,
   getLegacyArtifactsRoot,
   runCommand,
@@ -284,11 +284,16 @@ function assertSafeArtifactsDirectory(input: ExecuteVerifyInput): string {
   const artifactsDir = resolveExistingPathPrefix(input.artifactsDir);
   const repoRoot = resolveExistingPathPrefix(input.repoRoot);
   const filesystemRoot = path.parse(artifactsDir).root;
-  const codexHarnessRoot = resolveExistingPathPrefix(path.join(getCodexHome(), "agent-harness"));
+  const agentHarnessRoot = resolveExistingPathPrefix(path.join(getAgentHome(), "agent-harness"));
+  const configuredCodexHome = process.env.CODEX_HOME?.trim();
+  const legacyCodexHarnessRoot = resolveExistingPathPrefix(
+    path.join(configuredCodexHome || path.join(homedir(), ".codex"), "agent-harness"),
+  );
   const defaultArtifactsRoot = resolveExistingPathPrefix(getDefaultArtifactsRoot(repoRoot));
   const legacyArtifactsRoot = resolveExistingPathPrefix(getLegacyArtifactsRoot(repoRoot));
   const unsafeExactPaths = [
-    codexHarnessRoot,
+    agentHarnessRoot,
+    legacyCodexHarnessRoot,
     filesystemRoot,
     resolveExistingPathPrefix(homedir()),
     resolveExistingPathPrefix(tmpdir()),
@@ -310,7 +315,8 @@ function assertSafeArtifactsDirectory(input: ExecuteVerifyInput): string {
 
   if (
     isDescendantOf(defaultArtifactsRoot, artifactsDir)
-    || isNestedHarnessArtifactPath(codexHarnessRoot, artifactsDir)
+    || isNestedHarnessArtifactPath(agentHarnessRoot, artifactsDir)
+    || isNestedHarnessArtifactPath(legacyCodexHarnessRoot, artifactsDir)
     || isTempHarnessArtifactPath(artifactsDir)
   ) {
     return artifactsDir;
