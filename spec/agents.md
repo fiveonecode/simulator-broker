@@ -40,6 +40,7 @@ Maintainers and agent runs still use `agent:context` / `agent:verify` /
 
 - `script/build_and_run.sh` is the canonical macOS app kill/build/run entrypoint for local work.
 - `.codex/environments/environment.toml` must expose a `Run` action that points at `./script/build_and_run.sh`.
+- Codex harness actions in `.codex/environments/environment.toml`, including `verify-specs`, must pass `--session-dir` under `${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker/`. The product slug is `simulator-broker`; it is not derived from `package.json` name `simulator-broker-app`.
 - App workflow changes should route through the repo-shipped skills above instead of ad hoc shell chains or undocumented local commands.
 - When the app needs desktop-only behavior that SwiftUI cannot express cleanly, document the exact gap first and keep the implementation covered by `swiftui-pro` and `xcode-build`.
 
