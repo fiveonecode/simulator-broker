@@ -40,7 +40,7 @@ Implement one source-owned Simulator Broker task using the repository contracts.
 - Keep local paths, credentials, private task context, machine identities,
   simulator identifiers, and host-local configuration out of public files.
 - Use a task session under
-  `$CODEX_HOME/agent-harness/simulator-broker-app/` and satisfy every selected
+  `$AGENT_HOME/agent-harness/simulator-broker-app/` and satisfy every selected
   verification profile before closeout.
 - Run `./scripts/validate.sh` before handoff.
 - Do not weaken this workflow, its validator, or `.agents` verification

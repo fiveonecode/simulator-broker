@@ -102,8 +102,14 @@ export function shellQuoteForPlatform(value: string, platform: NodeJS.Platform =
   return shellQuote(value);
 }
 
+export function getAgentHome(): string {
+  return process.env.AGENT_HOME
+    ?? process.env.CODEX_HOME
+    ?? path.join(os.homedir(), ".agents");
+}
+
 export function getCodexHome(): string {
-  return process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
+  return getAgentHome();
 }
 
 type WindowsProcessIdentity = {
@@ -152,7 +158,7 @@ export function getDefaultArtifactsRoot(repoRoot: string): string {
     return path.resolve(repoRoot, overrideRoot);
   }
 
-  return path.join(getCodexHome(), "agent-harness", sanitizeRepoSlug(repoRoot));
+  return path.join(getAgentHome(), "agent-harness", sanitizeRepoSlug(repoRoot));
 }
 
 export function getLegacyArtifactsRoot(repoRoot: string): string {
