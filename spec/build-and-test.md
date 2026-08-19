@@ -24,7 +24,7 @@ A first extracted implementation slice now exists:
   stale-recovery, lock-race, scheduler, confirmed-cleanup, and failure coverage
 - tracked-text public-surface scanning with an ignored local denylist extension
 - app-side operator controls for pin create and clear, lease release, and lifecycle actions over the shared broker authority
-- app launch-time fixture overrides through `--state-root`, `--host-config`, optional `--cli-path`, plus direct pane/detail targeting for deterministic screenshot and smoke scenarios
+- app launch-time fixture overrides through `--state-root`, `--host-config`, optional `--cli-path`, plus direct pane/detail targeting for deterministic screenshot and smoke scenarios. When `--cli-path` / `SIMBROKER_CLI_PATH` and `install.json` are unset, the app also looks for an executable `simbroker` in Homebrew prefix `bin` (`/opt/homebrew`, `/usr/local`, and `HOMEBREW_PREFIX`) before `~/.local/bin`
 - broker-owned state artifacts are restricted to the current user, and lease, containment, pin, and lifecycle mutations share the broker mutation authority whether invoked directly, through the service, or from the app
 - inactive local project registrations can be removed only through the explicit, locked `project forget --project-id <id>` command; it is idempotent, refreshes the shared app snapshot, preserves the repository and audit history, and rejects projects with active leases or pins
 - the macOS app test wrapper now supports build-only reruns, focused `-only-testing` filters, and stable `xcresult` output for runtime triage

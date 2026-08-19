@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   create simulators.
 - The app **Finish Local Broker Installation** copy leads with
   `brew install fiveonecode/simulator-broker/simbroker` and **Refresh**.
+  Refresh now discovers `simbroker` in Homebrew prefix `bin` (`/opt/homebrew`
+  and `/usr/local`) as well as `install.json` and `~/.local/bin`.
 - `host init --bootstrap-config` `runtime-not-found` errors name
   `--ios-version` and `xcrun simctl list runtimes`. Default starter iOS
   stays `18`.

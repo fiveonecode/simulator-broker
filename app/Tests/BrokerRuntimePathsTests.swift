@@ -74,4 +74,70 @@ final class BrokerRuntimePathsTests: XCTestCase {
     XCTAssertEqual(launchContext.initialSelection.projectId, "sample-project")
     XCTAssertNil(launchContext.initialSelection.eventId)
   }
+
+  func testCLICandidatesPreferConfiguredThenInstallThenHomebrewThenLocalDefault() {
+    let configured = URL(fileURLWithPath: "/tmp/configured-simbroker")
+    let installPath = "/tmp/installed-simbroker"
+    let candidates = BrokerRuntimePaths.cliCandidateURLs(
+      configuredCLIURL: configured,
+      installMetadataCLIPath: installPath,
+      homebrewPrefixRoots: [
+        URL(fileURLWithPath: "/opt/homebrew"),
+        URL(fileURLWithPath: "/usr/local"),
+      ],
+      defaultCLIURL: URL(fileURLWithPath: "/tmp/home/.local/bin/simbroker")
+    )
+
+    XCTAssertEqual(
+      candidates.map(\.path),
+      [
+        "/tmp/configured-simbroker",
+        "/tmp/installed-simbroker",
+        "/opt/homebrew/bin/simbroker",
+        "/usr/local/bin/simbroker",
+        "/tmp/home/.local/bin/simbroker",
+      ]
+    )
+  }
+
+  func testFirstExecutableCLIPrefersHomebrewOverLocalDefault() {
+    let homebrew = URL(fileURLWithPath: "/opt/homebrew/bin/simbroker")
+    let localDefault = URL(fileURLWithPath: "/tmp/home/.local/bin/simbroker")
+    let candidates = BrokerRuntimePaths.cliCandidateURLs(
+      configuredCLIURL: nil,
+      installMetadataCLIPath: nil,
+      homebrewPrefixRoots: [URL(fileURLWithPath: "/opt/homebrew")],
+      defaultCLIURL: localDefault
+    )
+    let resolved = BrokerRuntimePaths.firstExecutableCLIURL(among: candidates) { path in
+      path == homebrew.path || path == localDefault.path
+    }
+
+    XCTAssertEqual(resolved, homebrew)
+  }
+
+  func testFirstExecutableCLIFallsBackToLocalDefaultWhenHomebrewIsMissing() {
+    let localDefault = URL(fileURLWithPath: "/tmp/home/.local/bin/simbroker")
+    let candidates = BrokerRuntimePaths.cliCandidateURLs(
+      configuredCLIURL: nil,
+      installMetadataCLIPath: nil,
+      homebrewPrefixRoots: [URL(fileURLWithPath: "/opt/homebrew")],
+      defaultCLIURL: localDefault
+    )
+    let resolved = BrokerRuntimePaths.firstExecutableCLIURL(among: candidates) { path in
+      path == localDefault.path
+    }
+
+    XCTAssertEqual(resolved, localDefault)
+  }
+
+  func testDefaultHomebrewPrefixesIncludeStandardRootsAndOptionalHOMEBREW_PREFIX() {
+    let prefixes = BrokerRuntimePaths.defaultHomebrewPrefixRoots(
+      environment: ["HOMEBREW_PREFIX": "/opt/homebrew"]
+    )
+    XCTAssertEqual(
+      prefixes.map(\.path),
+      ["/opt/homebrew", "/usr/local"]
+    )
+  }
 }
