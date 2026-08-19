@@ -65,7 +65,7 @@ inventory you cannot afford to change.
 Other CLI install options:
 
 ```bash
-npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.1/simbroker-0.1.0-alpha.1.tgz
+npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.2/simbroker-0.1.0-alpha.2.tgz
 simbroker --help
 ```
 

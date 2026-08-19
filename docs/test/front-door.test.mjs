@@ -12,6 +12,9 @@ function readRepoFile(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
 }
 
+const packageJson = JSON.parse(readRepoFile("package.json"));
+const version = packageJson.version;
+
 function firstScreen(markdown) {
   const lines = markdown.split(/\r?\n/);
   const headingIndexes = [];
@@ -192,16 +195,16 @@ test("README advertises GitHub Releases and the public Node CI badge", () => {
   assert.ok(readme.includes("brew install --cask fiveonecode/simulator-broker/simulator-broker"));
   assert.ok(readme.includes("homebrew-simulator-broker"));
   assert.ok(readme.includes("npm install -g"));
-  assert.ok(readme.includes("simbroker-0.1.0-alpha.1.tgz"));
+  assert.ok(readme.includes(`simbroker-${version}.tgz`));
   assert.equal(readme.includes("is not attached"), false);
 });
 
 test("CHANGELOG and package.json name the Alpha version", () => {
   const changelog = readRepoFile("CHANGELOG.md");
-  const packageJson = JSON.parse(readRepoFile("package.json"));
 
-  assert.equal(packageJson.version, "0.1.0-alpha.1");
-  assert.ok(changelog.includes("## [0.1.0-alpha.1]"));
+  assert.equal(packageJson.version, version);
+  assert.match(version, /^0\.1\.0-alpha\.\d+$/);
+  assert.ok(changelog.includes(`## [${version}]`));
   assert.ok(changelog.includes("scripts/package_cli.sh"));
 });
 
@@ -251,7 +254,9 @@ test("issue forms cover install failure, bug, and feature and state Alpha limits
   assert.ok(install.includes("install_local.sh --cli-only"));
   assert.ok(install.includes("brew install fiveonecode/simulator-broker/simbroker"));
   assert.ok(install.includes("npm install -g"));
-  assert.ok(install.includes("simbroker-0.1.0-alpha.1.tgz"));
+  assert.ok(install.includes(`simbroker-${version}.tgz`));
+  assert.ok(install.includes("brew install --cask fiveonecode/simulator-broker/simulator-broker"));
+  assert.equal(install.includes("operator app zip is not attached"), false);
   assert.ok(bug.includes("labels:"));
   assert.ok(feature.includes("enhancement"));
   for (const body of [install, bug, feature, config]) {
@@ -347,19 +352,20 @@ test("Homebrew formula points at the Alpha CLI tarball and the cask names a nota
   assert.ok(url, "formula must have a url");
   assert.equal(
     url[1],
-    "https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.1/simulator-broker-0.1.0-alpha.1-cli.tar.gz",
+    `https://github.com/fiveonecode/simulator-broker/releases/download/v${version}/simulator-broker-${version}-cli.tar.gz`,
   );
   assert.ok(checksum, "formula must pin a sha256");
-  assert.equal(checksum[1], "699695bc65a5bcb25b9c9b5d01494fcc3f25a40dcc90b8b5bf1ec61ea87a8522");
+  assert.match(checksum[1], /^[a-f0-9]{64}$/);
   assert.ok(formula.includes('shell_output("#{bin}/simbroker --help")'));
   assert.equal(formula.includes("package:local"), false);
 
   assert.ok(cask.includes('cask "simulator-broker"'));
+  assert.ok(cask.includes(`version "${version}"`));
   assert.ok(cask.includes("releases/download/v#{version}/Simulator-Broker-#{version}.zip"));
   assert.ok(cask.includes('app "Simulator Broker.app"'));
   const caskChecksum = cask.match(/sha256 "([a-f0-9]{64})"/);
   assert.ok(caskChecksum, "cask must pin a sha256");
-  assert.equal(caskChecksum[1], "5e19d128bf8061d5e18812c092e8a3b8e5f4514ff42bc233baa643fb0f075f70");
+  assert.match(caskChecksum[1], /^[a-f0-9]{64}$/);
   assert.equal(cask.includes("sha256 :no_check"), false);
   assert.equal(cask.includes("package:local"), false);
   assert.equal(cask.includes("package_local"), false);
@@ -386,7 +392,7 @@ test("root package stays private and package_npm.sh packs a runnable simbroker b
   });
   assert.equal(pack.status, 0, pack.stderr + pack.stdout);
 
-  const tarball = path.join(outputDir, "simbroker-0.1.0-alpha.1.tgz");
+  const tarball = path.join(outputDir, `simbroker-${version}.tgz`);
   assert.equal(fs.existsSync(tarball), true, pack.stdout);
 
   const installDir = path.join(outputDir, "prefix");
@@ -415,7 +421,7 @@ test("package_cli.sh writes a runnable CLI tarball without tests or the app", ()
   });
 
   assert.equal(result.status, 0, result.stderr);
-  const tarball = path.join(outputDir, "simulator-broker-0.1.0-alpha.1-cli.tar.gz");
+  const tarball = path.join(outputDir, `simulator-broker-${version}-cli.tar.gz`);
   const checksum = `${tarball}.sha256`;
   assert.equal(fs.existsSync(tarball), true, result.stdout);
   assert.equal(fs.existsSync(checksum), true, result.stdout);
@@ -425,7 +431,7 @@ test("package_cli.sh writes a runnable CLI tarball without tests or the app", ()
   const extract = spawnSync("tar", ["-xzf", tarball, "-C", extractDir], { encoding: "utf8" });
   assert.equal(extract.status, 0, extract.stderr);
 
-  const root = path.join(extractDir, "simulator-broker-0.1.0-alpha.1-cli");
+  const root = path.join(extractDir, `simulator-broker-${version}-cli`);
   const help = spawnSync(path.join(root, "bin/simbroker"), ["--help"], { encoding: "utf8" });
   assert.equal(help.status, 0, help.stderr);
   assert.ok(help.stdout.includes("simbroker") || help.stderr.includes("simbroker"));

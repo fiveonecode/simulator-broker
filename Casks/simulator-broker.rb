@@ -1,6 +1,6 @@
 cask "simulator-broker" do
-  version "0.1.0-alpha.1"
-  sha256 "5e19d128bf8061d5e18812c092e8a3b8e5f4514ff42bc233baa643fb0f075f70"
+  version "0.1.0-alpha.2"
+  sha256 "1135d767cb6eb4944ed389f7b57af808b7046b00078875bef79ad50ee14c6e40"
 
   url "https://github.com/fiveonecode/simulator-broker/releases/download/v#{version}/Simulator-Broker-#{version}.zip"
   name "Simulator Broker"
