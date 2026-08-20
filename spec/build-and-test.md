@@ -49,8 +49,9 @@ A first extracted implementation slice now exists:
   `Simulator-Broker-<version>.zip` on GitHub Releases (signed/notarized app
   from `payload/app/Simulator Broker.app` after `package_distribution.sh`,
   not `package:local`). The cask pins the published zip SHA-256.
-- public GitHub-hosted Ubuntu CI runs `verify:public-surface`,
-  `test:broker-core`, `test:client`, and `test:harness-adoption`; it does not
+- public GitHub-hosted Ubuntu CI runs `verify:public-surface`, the managed-skill
+  ownership check, `test:broker-core`, `test:client`, and
+  `test:harness-adoption`; it does not
   run `test:app`. The job budget is 30 minutes. Broker tests that build an
   app snapshot must inject the fixture `simctl` adapter. The default
   public-surface scan reads index blobs only for dirty or missing worktree
@@ -204,6 +205,7 @@ npm run test:broker-core
 npm run test:client
 npm run test:harness-adoption
 npm run verify:public-surface
+bash scripts/check_managed_skill_ownership.sh
 node client/bin/simbroker.mjs lease --help
 node client/bin/simbroker.mjs host --help
 node client/bin/simbroker.mjs capacity --help

@@ -9,11 +9,14 @@ commands:
     run: node --test docs/test/*.test.mjs
   - id: instruction-parity-check
     run: cmp -s AGENTS.md CLAUDE.md || { echo "AGENTS.md and CLAUDE.md must stay identical." >&2; exit 1; }
+  - id: managed-skill-ownership
+    run: bash scripts/check_managed_skill_ownership.sh
 required_artifacts:
   - paths.txt
 required_pass_signals:
   - spec-diff-check
   - instruction-parity-check
+  - managed-skill-ownership
   - public-front-door-check
 failure_patterns:
   - "error:"

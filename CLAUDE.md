@@ -58,6 +58,9 @@ Use local operator-provided context if available. Do not commit private/local co
 - Use `swiftui-pro` for SwiftUI scene structure, sidebars, toolbars, commands, search, settings, keyboard-driven desktop behavior, view refactors, window chrome, and modern macOS materials.
 - Use `swift-concurrency-pro` for async service calls, task cancellation, actors, and cross-thread correctness.
 - Use `apple-doc-research` when Apple framework, signing, packaging, notarization, or platform guidance is needed.
+- `code-review`, `harness-engineering`, `ios-xcodegen`,
+  `spec-creation-updating`, `xcode-build`, and `xcode-cloud` come from the
+  managed-global baseline and must not be copied into any project skill root.
 
 ### Gate B — Verification
 
