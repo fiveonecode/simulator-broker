@@ -31,6 +31,9 @@ jobs:
       - name: Public-surface scan
         run: npm run verify:public-surface
 
+      - name: Managed skill ownership
+        run: bash scripts/check_managed_skill_ownership.sh
+
       - name: broker-core tests
         run: npm run test:broker-core
 

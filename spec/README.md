@@ -31,7 +31,8 @@ This repo exists to develop a reusable local simulator broker:
 - repo bootstrapped
 - agent harness copied and wired
 - Codex instructions initialized
-- useful skills copied into `.agents/skills/`
+- shared skills resolved from the managed-global baseline and project-specific
+  skills retained under `.agents/skills/`
 - product-specific seed material removed from the public source tree
 - reusable implementation plan drafted in `spec/implementation-plan.md`
 - file-backed `broker-core` first slice implemented in `broker-core/`

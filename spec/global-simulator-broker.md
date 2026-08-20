@@ -522,7 +522,8 @@ This repo is ready for public-source collaboration only if:
 - copied product seed material is absent from the public tree
 - public examples demonstrate adoption patterns without private product data
 - agent harness commands run in this repo
-- useful skills are available locally in `.agents/skills/`
+- shared skills resolve from the managed-global baseline and project-specific
+  skills remain available under `.agents/skills/`
 - a fresh agent can begin here without opening a private product repo first
 - `verify:public-surface` runs in the normal gate, scans tracked text for real
   home paths and prohibited local artifacts, and supports an ignored

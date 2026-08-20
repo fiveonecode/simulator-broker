@@ -1,26 +1,28 @@
 # Repo-Local Skills
 
-This repo includes a curated subset of skills so a fresh agent can continue
-without depending on private product repositories.
+This repo owns project-specific skills and relies on the agent client's
+managed-global baseline for shared skills.
 
-## General Engineering Skills
+## Managed global
 
 - `spec-creation-updating`
-- `apple-doc-research`
-- `swiftui-pro`
-- `swift-concurrency-pro`
-- `screenshot-analyze-verification`
 - `harness-engineering`
 - `xcode-build`
-- `swiftui-simulator-ui`
 - `code-review`
 - `ios-xcodegen`
 - `xcode-cloud`
-- `apple-hig-designer`
 
-## Local to this repo
+These names must not be copied into any project skill root.
+
+## Project local
 
 - `broker-harness-adoption`
+- `apple-doc-research`
+- `apple-hig-designer`
+- `screenshot-analyze-verification`
+- `swift-concurrency-pro`
+- `swiftui-pro`
+- `swiftui-simulator-ui`
 
 Do not add private source snapshots, local machine paths, credentials, or
 company-only task context to skill docs.
