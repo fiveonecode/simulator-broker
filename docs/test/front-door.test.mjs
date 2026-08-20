@@ -138,6 +138,11 @@ test("CONTRIBUTING leads with a public Node-20 patch track that does not require
       || human.includes("npm test"),
     "public track must name a Node test command that is not agent:*",
   );
+  assert.ok(human.includes("npm run test:docs"), "public track must name test:docs");
+  assert.ok(
+    human.includes("does not run") && human.includes("npm run test:docs"),
+    "public track must not claim Ubuntu CI runs test:docs",
+  );
   assert.equal(human.includes("You do not need to run `agent:context`"), true);
   assert.equal(human.includes("$HOME/.codex"), false);
   assert.equal(human.includes("npm run agent:context --"), false);
@@ -277,6 +282,7 @@ test("PR template is a public-patch checklist and does not require the harness",
   assert.ok(template.includes("npm run test:broker-core"));
   assert.ok(template.includes("npm run test:client"));
   assert.ok(template.includes("npm run test:harness-adoption"));
+  assert.ok(template.includes("npm run test:docs"));
   assert.ok(template.includes("Alpha"));
   assert.ok(template.includes("macOS"));
   assert.ok(template.includes("Xcode"));

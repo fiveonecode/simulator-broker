@@ -7,7 +7,7 @@
 A public patch uses Node.js 20 and the Node suites that match the change.
 You do not need the agent harness or a task session directory.
 
-- [ ] `npm run test:broker-core` / `npm run test:client` / `npm run test:harness-adoption` as applicable, or I explained why a deterministic test is not available
+- [ ] `npm run test:broker-core` / `npm run test:client` / `npm run test:harness-adoption` / `npm run test:docs` as applicable, or I explained why a deterministic test is not available
 - [ ] I did not commit private paths, credentials, generated Xcode projects, local broker state, or task-session artifacts
 
 ## Notes
