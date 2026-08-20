@@ -31,8 +31,11 @@ commands do not go through `agent:*`:
 ```bash
 npm run test:broker-core
 npm run test:client
+npm run test:docs
 npm run test:harness-adoption
 ```
+
+Run `npm run test:docs` for doc, README, or template changes; it runs the `docs/test` front-door checks.
 
 App work also needs XcodeGen and `npm run test:app`. The full suite is
 `npm test`. The same Node suites run on GitHub-hosted Ubuntu CI. That job

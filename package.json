@@ -27,6 +27,7 @@
     "test:app:focus": "bash ./scripts/test_app.sh --only-testing",
     "test:broker-core": "node --test broker-core/test/*.test.mjs",
     "test:client": "node --test client/test/*.test.mjs",
+    "test:docs": "node --test docs/test/*.test.mjs",
     "test:harness-adoption": "node --test examples/harness-adoption/test/*.test.mjs",
     "test:install-smoke": "bash ./scripts/install_smoke.sh",
     "test:package-smoke": "bash ./scripts/package_smoke.sh",
