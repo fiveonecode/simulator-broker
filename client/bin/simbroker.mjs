@@ -5,9 +5,17 @@ import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createInterface } from "node:readline/promises";
 
 import { BROKER_EXIT_CODES, INTERNAL_ERROR_REASON_CODE, resolveBrokerExitCode } from "../../broker-core/error-contract.mjs";
-import { BrokerError, HOST_BOOTSTRAP_DEVICE_WARNING, idlePolicyConfiguredBroker, resolveBrokerPaths } from "../../broker-core/index.mjs";
+import {
+  applySetupBroker,
+  BrokerError,
+  HOST_BOOTSTRAP_DEVICE_WARNING,
+  idlePolicyConfiguredBroker,
+  previewSetupBroker,
+  resolveBrokerPaths,
+} from "../../broker-core/index.mjs";
 import {
   createCommandRequest,
   executeBrokerCommand,
@@ -26,6 +34,11 @@ import {
   serviceStartupTimeoutMs,
   streamServiceEvents,
 } from "../service/service-client.mjs";
+import {
+  blockedSetupPreview,
+  completeSetupPreview,
+  evaluateSetupPrerequisites,
+} from "../setup-preflight.mjs";
 
 const BROKERD_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "brokerd.mjs");
 const SERVICE_CONTROL_FLAGS = new Set([
@@ -41,6 +54,17 @@ const BROKER_PATH_FLAGS = new Set([
   "host-config",
   "project-file",
   "repo-root",
+  "service-socket",
+  "state-root",
+]);
+const SETUP_FLAGS = new Set([
+  "apply",
+  "confirm",
+  "help",
+  "host-config",
+  "host-id",
+  "ios-version",
+  "json",
   "service-socket",
   "state-root",
 ]);
@@ -561,6 +585,370 @@ async function runServiceAwareRequest(paths, request) {
   return payload;
 }
 
+function rejectUnknownSetupFlags(flags) {
+  for (const key of flags.keys()) {
+    if (!SETUP_FLAGS.has(key)) {
+      throw new BrokerError(`Flag --${key} is not valid for setup.`, {
+        flag: key,
+        reasonCode: "invalid-flag",
+      });
+    }
+  }
+}
+
+function setupBooleanFlag(flags, key) {
+  if (!flags.has(key)) {
+    return false;
+  }
+  const value = flags.get(key);
+  if (value === true || value === "true") {
+    return true;
+  }
+  if (value === "false") {
+    return false;
+  }
+  throw new BrokerError(`Flag --${key} must be passed without a value or with true/false.`, {
+    flag: key,
+    reasonCode: "invalid-flag",
+  });
+}
+
+function setupValueFlag(flags, key) {
+  if (!flags.has(key)) {
+    return null;
+  }
+  const value = flagValue(flags, key);
+  if (value === null || String(value).trim() === "") {
+    throw new BrokerError(`Missing required flag --${key}.`, {
+      flag: key,
+      reasonCode: "missing-flag",
+    });
+  }
+  return value;
+}
+
+function setupOptions(flags) {
+  rejectUnknownSetupFlags(flags);
+  const apply = setupBooleanFlag(flags, "apply");
+  const confirmPlanId = setupValueFlag(flags, "confirm");
+  if (!apply && confirmPlanId !== null) {
+    throw new BrokerError("--confirm requires --apply for setup.", {
+      reasonCode: "invalid-flag",
+    });
+  }
+  return {
+    apply,
+    confirmPlanId,
+    hostId: setupValueFlag(flags, "host-id"),
+    iosVersion: setupValueFlag(flags, "ios-version"),
+  };
+}
+
+function setupPrerequisiteFromError(error) {
+  const reasonCode = error?.payload?.reasonCode ?? error?.reasonCode ?? "simctl-inventory-invalid";
+  const runtimeProblem = reasonCode === "runtime-not-found" || reasonCode === "device-type-not-found";
+  return {
+    details: {
+      error: error?.message ?? String(error),
+      reasonCode,
+    },
+    id: runtimeProblem ? "ios-runtime" : "simctl-inventory",
+    remediationCommands: runtimeProblem
+      ? ["Open Xcode > Settings > Components", "xcodebuild -downloadPlatform iOS"]
+      : ["xcrun simctl list --json runtimes", "xcrun simctl list --json devices", "xcrun simctl list --json devicetypes"],
+    status: "blocked",
+    summary: runtimeProblem
+      ? "No installed iOS runtime supports both starter device families."
+      : "Simulator inventory could not be read as valid JSON.",
+  };
+}
+
+async function buildSetupPreview(paths, options) {
+  const prerequisites = evaluateSetupPrerequisites(paths);
+  if (prerequisites.some((prerequisite) => prerequisite.status === "blocked")) {
+    return blockedSetupPreview(paths, prerequisites, options);
+  }
+
+  let corePreview;
+  try {
+    corePreview = previewSetupBroker(paths, {
+      hostId: options.hostId ?? undefined,
+      iosVersion: options.iosVersion ?? undefined,
+    });
+    prerequisites.push({
+      id: "simctl-inventory",
+      remediationCommands: [],
+      status: "ready",
+      summary: "Installed Simulator runtimes, devices, and device types were read successfully.",
+    });
+  } catch (error) {
+    return blockedSetupPreview(paths, [...prerequisites, setupPrerequisiteFromError(error)], options);
+  }
+
+  let running = false;
+  if (corePreview.host.configured && corePreview.status !== "blocked") {
+    try {
+      running = (await serviceStatus(paths)).running;
+    } catch (error) {
+      corePreview = {
+        ...corePreview,
+        prerequisites: [...corePreview.prerequisites, {
+          details: error?.payload ?? { error: error?.message ?? String(error) },
+          id: "service-identity",
+          remediationCommands: ["simbroker service stop", "simbroker setup"],
+          status: "blocked",
+          summary: error?.message ?? "The running broker service uses different paths.",
+        }],
+        status: "blocked",
+      };
+    }
+  }
+  return completeSetupPreview(corePreview, prerequisites, {
+    serviceRunning: running,
+    snapshotReady: fs.existsSync(paths.appSnapshotPath),
+  });
+}
+
+function shellQuoteArgument(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function setupApplyCommand(preview, flags, options) {
+  const parts = ["simbroker", "setup", "--apply", "--confirm", shellQuoteArgument(preview.planId)];
+  for (const [flag, value] of [
+    ["ios-version", options.iosVersion],
+    ["host-id", options.hostId],
+    ["host-config", flagValue(flags, "host-config")],
+    ["state-root", flagValue(flags, "state-root")],
+    ["service-socket", flagValue(flags, "service-socket")],
+  ]) {
+    if (value !== null) {
+      parts.push(`--${flag}`, shellQuoteArgument(value));
+    }
+  }
+  return parts.join(" ");
+}
+
+function setupInterruptedError(signalName, completedStages, hostCommitted) {
+  return new BrokerError("Setup was interrupted.", {
+    command: "setup",
+    completedStages,
+    exitCode: signalName === "SIGTERM" ? 143 : 130,
+    failedStage: completedStages.at(-1) ?? "preflight",
+    hostCommitted,
+    reasonCode: "setup-interrupted",
+    recoveryCommand: "simbroker setup",
+  });
+}
+
+function decorateSetupFailure(error, stage, completedStages, hostCommitted, serviceRunning) {
+  if (error instanceof BrokerError) {
+    error.payload.command = "setup";
+    error.payload.completedStages ??= completedStages;
+    error.payload.failedStage ??= stage;
+    error.payload.hostCommitted ??= hostCommitted;
+    error.payload.recoveryCommand ??= "simbroker setup";
+    error.payload.serviceRunning ??= serviceRunning;
+    return error;
+  }
+  return new BrokerError(error?.message ?? String(error), {
+    command: "setup",
+    completedStages,
+    failedStage: stage,
+    hostCommitted,
+    reasonCode: INTERNAL_ERROR_REASON_CODE,
+    recoveryCommand: "simbroker setup",
+    serviceRunning,
+  });
+}
+
+async function applySetup(paths, options, cancellation) {
+  const completedStages = ["preflight", "confirmation"];
+  let hostCommitted = fs.existsSync(paths.hostConfigPath);
+  let serviceRunning = false;
+  const checkCancellation = () => {
+    if (cancellation.signalName !== null) {
+      throw setupInterruptedError(cancellation.signalName, completedStages, hostCommitted);
+    }
+  };
+
+  let coreResult;
+  try {
+    checkCancellation();
+    coreResult = applySetupBroker(paths, {
+      cancellationSignalName: cancellation.signalName ?? "SIGINT",
+      confirmPlanId: options.confirmPlanId,
+      hostId: options.hostId ?? undefined,
+      iosVersion: options.iosVersion ?? undefined,
+      isCancelled: () => cancellation.signalName !== null,
+    });
+    hostCommitted = true;
+    completedStages.push("host", "devices", "registry");
+  } catch (error) {
+    throw decorateSetupFailure(error, "provisioning", completedStages, fs.existsSync(paths.hostConfigPath), false);
+  }
+
+  let serviceResult;
+  try {
+    checkCancellation();
+    serviceResult = await startService(paths);
+    serviceRunning = true;
+    completedStages.push("service");
+  } catch (error) {
+    throw decorateSetupFailure(error, "service-start", completedStages, hostCommitted, false);
+  }
+
+  let snapshot;
+  try {
+    checkCancellation();
+    snapshot = await executeServiceCommand(paths, {
+      command: "snapshot",
+      group: "app",
+      options: { eventLimit: 50 },
+      type: "command",
+    }, { expectedServiceIdentity: serviceResult.service });
+    if (path.resolve(snapshot.hostConfigPath) !== path.resolve(paths.hostConfigPath)
+      || path.resolve(snapshot.stateRoot) !== path.resolve(paths.stateRoot)) {
+      throw new BrokerError("The refreshed snapshot belongs to different broker paths.", {
+        reasonCode: "service-identity-mismatch",
+      });
+    }
+    completedStages.push("snapshot");
+  } catch (error) {
+    throw decorateSetupFailure(error, "snapshot-refresh", completedStages, hostCommitted, serviceRunning);
+  }
+
+  let health;
+  try {
+    checkCancellation();
+    health = await executeServiceCommand(paths, {
+      command: "status",
+      group: "doctor",
+      options: {},
+      type: "command",
+    }, { expectedServiceIdentity: serviceResult.service });
+    const expectedAliases = new Set(["manual-1", "ui-1", "ui-2", "build-1", "build-2", "ipad-1"]);
+    const snapshotAliases = new Set((snapshot.simulators ?? []).map((simulator) => simulator.alias));
+    const missingExpectedAliases = coreResult.host.created
+      ? [...expectedAliases].filter((alias) => !snapshotAliases.has(alias))
+      : [];
+    if (!health.ok || missingExpectedAliases.length > 0) {
+      const unhealthyIssue = (health.issues ?? []).some((issue) => issue.alias);
+      throw new BrokerError("Broker health verification failed after setup.", {
+        doctorIssues: health.issues ?? [],
+        exitCode: unhealthyIssue ? BROKER_EXIT_CODES.repairNeeded : BROKER_EXIT_CODES.unavailable,
+        missingExpectedAliases,
+        reasonCode: "setup-health-check-failed",
+      });
+    }
+    completedStages.push("health");
+  } catch (error) {
+    throw decorateSetupFailure(error, "health", completedStages, hostCommitted, serviceRunning);
+  }
+
+  return {
+    ...coreResult,
+    health: { issueCount: 0, ok: true },
+    nextSteps: [],
+    service: {
+      identityVerified: true,
+      running: true,
+      started: serviceResult.started === true,
+    },
+    snapshot: { ready: true },
+  };
+}
+
+async function promptForSetupConfirmation() {
+  const readline = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await readline.question("Create or adopt these 6 Simulator devices and finish setup? [y/N] ");
+    return /^y(?:es)?$/i.test(answer.trim());
+  } catch {
+    return false;
+  } finally {
+    readline.close();
+  }
+}
+
+async function runSetup(paths, flags) {
+  const options = setupOptions(flags);
+  const preview = await buildSetupPreview(paths, options);
+  const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true && !wantsJson();
+
+  if (options.apply && !options.confirmPlanId) {
+    throw new BrokerError("Setup apply requires the current plan confirmation.", {
+      command: "setup",
+      currentPlanId: preview.planId,
+      failedStage: "confirmation",
+      reasonCode: "setup-confirmation-required",
+      recoveryCommand: "simbroker setup",
+    });
+  }
+
+  if (preview.status === "blocked") {
+    if (options.apply) {
+      const blocker = preview.prerequisites.find((prerequisite) => prerequisite.status === "blocked");
+      throw new BrokerError("Setup prerequisites are not ready.", {
+        blockerReasonCode: blocker?.details?.reasonCode ?? blocker?.id ?? null,
+        command: "setup",
+        failedStage: "preflight",
+        prerequisites: preview.prerequisites,
+        reasonCode: "setup-prerequisite-failed",
+        recoveryCommand: "simbroker setup",
+      });
+    }
+    return preview;
+  }
+
+  if (!options.apply) {
+    if (wantsJson()) {
+      return preview;
+    }
+    if (!interactive) {
+      return {
+        ...preview,
+        confirmation: {
+          ...preview.confirmation,
+          applyCommand: setupApplyCommand(preview, flags, options),
+        },
+      };
+    }
+    if (!preview.confirmation.required) {
+      if (preview.status === "ready") {
+        return preview;
+      }
+      options.apply = true;
+      options.confirmPlanId = preview.planId;
+    } else {
+      process.stdout.write(format(preview, { json: false }));
+      if (!await promptForSetupConfirmation()) {
+        return {
+          command: "setup",
+          mode: "preview",
+          ok: true,
+          schemaVersion: 1,
+          status: "cancelled",
+        };
+      }
+      options.apply = true;
+      options.confirmPlanId = preview.planId;
+    }
+  }
+
+  const cancellation = { signalName: null };
+  const handleSigint = () => { cancellation.signalName = "SIGINT"; };
+  const handleSigterm = () => { cancellation.signalName = "SIGTERM"; };
+  process.once("SIGINT", handleSigint);
+  process.once("SIGTERM", handleSigterm);
+  try {
+    return await applySetup(paths, options, cancellation);
+  } finally {
+    process.removeListener("SIGINT", handleSigint);
+    process.removeListener("SIGTERM", handleSigterm);
+  }
+}
+
 const invocation = parseArgs(process.argv.slice(2));
 
 function wantsJson() {
@@ -571,6 +959,9 @@ async function main() {
   const { flags, positionals } = invocation;
   rejectExtraPositionals(positionals);
   const [group, command] = positionals;
+  if (group === "setup" && command === undefined && !flags.has("help")) {
+    rejectUnknownSetupFlags(flags);
+  }
   const paths = buildPaths(flags);
 
   if (flags.has("help") || group === "help" || command === "help") {
@@ -586,6 +977,10 @@ async function main() {
         process.stderr.write(`${HOST_BOOTSTRAP_DEVICE_WARNING}\n`);
       }
     }
+  }
+
+  if (group === "setup" && command === undefined) {
+    return runSetup(paths, flags);
   }
 
   switch (`${group ?? ""}:${command ?? ""}`) {
@@ -617,7 +1012,16 @@ main()
   })
   .catch((error) => {
     if (error instanceof BrokerError) {
-      process.stdout.write(format(error.payload, { json: true }));
+      const setupInvocation = invocation.positionals[0] === "setup";
+      const payload = setupInvocation
+        ? {
+            command: "setup",
+            failedStage: "arguments",
+            recoveryCommand: "simbroker setup",
+            ...error.payload,
+          }
+        : error.payload;
+      process.stdout.write(format(payload, { json: wantsJson() || !setupInvocation }));
       process.exit(error.exitCode);
       return;
     }

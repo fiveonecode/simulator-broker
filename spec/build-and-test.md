@@ -31,10 +31,22 @@ A first extracted implementation slice now exists:
 - the macOS app emits unified `Logger` telemetry for startup, refresh, setup, broker actions, and override-required command outcomes
 - the repo-owned macOS entrypoints now fail fast with actionable messages when `xcodegen` or `xcodebuild` is missing or misconfigured
 - local install smoke coverage for a fresh-machine-style bootstrap, service start, lease acquire, app snapshot flow, installed-app launch proof, simulator cleanup that preserves preexisting simulators, and restoration of preexisting default install metadata
+- guided setup coverage for prerequisite preview, exact plan extraction,
+  confirmed six-device apply, service/snapshot/doctor readiness,
+  version-agnostic project scaffold, lease acquire/release, zero-create rerun,
+  and baseline-preserving cleanup
 - installer coverage for stopping a running service before replacing the installed runtime, restarting it after metadata is written, shell-safe env helper serialization, and default-location install metadata for custom prefixes without leaving smoke-run paths in a developer install
 - CLI-only install through `bash scripts/install_local.sh --cli-only`, which copies the Node runtime and writes `simbroker` without XcodeGen or an app build
 - PATH persistence after install: Homebrew prefix bin when that is the install location, otherwise one guarded login-profile snippet for the default `~/.local/bin` location; `--profile` overrides the profile path so tests never edit the operator login rc
-- `host init --bootstrap-config` prints an honest warning that it creates real iOS Simulator devices before those devices are created. Public first-run order is Homebrew CLI, Homebrew cask, then the app **Set Up This Mac** / **Complete first-time setup** (or that CLI pair). Homebrew does not create simulators. Hello world requires a host config and a passing `capacity check --purpose agent-ui-session` (`purposes[].status`, not the top-level `status`). `unavailable` stops at `capacity reconcile`; `repair_needed` stops at `doctor` and `simulators repair --alias <alias>`. Default starter iOS stays `18`. A `runtime-not-found` error names `--ios-version` and `xcrun simctl list runtimes`
+- Public first-run order is Homebrew CLI, optional Homebrew cask, then app
+  **Complete first-time setup** or `simbroker setup`. The shared guided flow
+  previews prerequisites/newest compatible runtime/six devices, confirms an
+  exact plan, starts the service, refreshes the snapshot, and verifies doctor.
+  `host init --bootstrap-config` remains advanced and keeps its iOS 18 default.
+  Homebrew does not create simulators. Hello world requires setup ready and a
+  passing `capacity check --purpose agent-ui-session` (`purposes[].status`, not
+  top-level `status`). `unavailable` stops at reconcile; `repair_needed` stops
+  at doctor plus `simulators repair --alias <alias>`
 - `scripts/package_cli.sh` packages the Node CLI runtime into a versioned
   tarball without XcodeGen or an app build
 - `Formula/simbroker.rb` installs that GitHub Release tarball through Homebrew.
@@ -143,6 +155,7 @@ helper remains a current-shell fallback.
 After the app shows the broker is ready, onboard each consumer repo with:
 
 ```bash
+simbroker setup
 simbroker project init --repo-root /path/to/repo
 simbroker project validate --repo-root /path/to/repo
 ```

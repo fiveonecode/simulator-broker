@@ -27,10 +27,10 @@ If you only ever use one simulator by hand, you may not need this yet.
 
 ## Use it
 
-Install the Homebrew CLI, then the Homebrew cask, then set up this Mac.
-The five-minute hello world is only after a host config exists. Homebrew
-does not create Simulator devices. Node.js 20+ is still required at
-runtime.
+Install the Homebrew CLI and optional operator app, then run one guided machine
+setup. Homebrew does not create Simulator devices. `simbroker setup` first
+shows every prerequisite, the selected runtime, and the exact six-device plan;
+nothing changes until you confirm it. Node.js 20+ is still required at runtime.
 
 ```bash
 brew install fiveonecode/simulator-broker/simbroker
@@ -49,18 +49,20 @@ brew install --cask fiveonecode/simulator-broker/simulator-broker
 That cask downloads `Simulator-Broker-<version>.zip` from
 [GitHub Releases](https://github.com/fiveonecode/simulator-broker/releases).
 
-The app is the preferred first-run host setup. Open `Simulator Broker.app`.
-If it shows **Set Up This Mac**, click **Complete first-time setup**. That
-runs the same broker commands as:
+Open `Simulator Broker.app` and click **Complete first-time setup**, or use the
+same guided CLI flow:
 
 ```bash
-simbroker host init --bootstrap-config
-simbroker service start
+simbroker setup
 ```
 
-`host init --bootstrap-config` prints a warning and then creates real
-Simulator devices. Do not run it casually on a machine whose simulator
-inventory you cannot afford to change.
+The preview automatically selects the newest installed iOS runtime compatible
+with both iPhone and iPad, lists all six aliases as **Create** or **Reuse**, and
+asks once before provisioning. It then writes host configuration atomically,
+starts `brokerd`, refreshes the app snapshot, and verifies health. Rerun
+`simbroker setup` after an interruption; it safely finishes later stages without
+duplicating devices. For automation, use `simbroker setup --json`, then apply
+the returned `planId` with `--apply --confirm <plan-id> --json`.
 
 Other CLI install options:
 
@@ -112,8 +114,7 @@ keep the `agent:context` / `agent:verify` / `agent:complete` track.
 
 ## Five-minute hello world
 
-After the CLI resolves and this Mac has a host config from the first-run step
-above:
+After `simbroker setup` reports ready:
 
 ```bash
 mkdir -p /tmp/sample-broker-repo && cd /tmp/sample-broker-repo

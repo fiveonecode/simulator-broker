@@ -14,7 +14,7 @@ A small public patch follows the public-patches track in
 
 ## Prerequisites
 
-- macOS with Xcode and iOS Simulator support installed
+- macOS 14 or newer with full Xcode and iOS Simulator support installed
 - Node.js 20 or newer on `PATH`
 - `xcodegen` on `PATH` only if you install the macOS app (example: `brew install xcodegen`)
 
@@ -85,28 +85,44 @@ the same way as the CLI-only installer.
 
 ## First-run host setup
 
-Do this after the Homebrew CLI and cask (or another documented CLI
-install) resolve, and before hello world. Homebrew does not create
-Simulator devices. The app is the preferred first-run surface.
+Do this after the Homebrew CLI and optional cask resolve, and before hello
+world. Homebrew does not create Simulator devices.
 
 1. Launch `Simulator Broker.app`.
 2. If it shows **Set Up This Mac**, click **Complete first-time setup**.
-3. Wait until the dashboard shows the broker is ready.
+3. Review Xcode readiness, the automatically selected iOS runtime, available
+   disk space, and all six Create/Reuse rows.
+4. Confirm **Create 6 Simulators & Finish Setup** (the count adjusts when an
+   exact matching Simulator can be reused).
+5. Wait until the dashboard reports that `brokerd` is running and every managed
+   Simulator is healthy.
 
 If the app says **Finish Local Broker Installation**, install the
 Homebrew CLI (`brew install fiveonecode/simulator-broker/simbroker`) and
 click **Refresh**.
 
-CLI fallback, which prints a warning and then creates real simulator devices:
+The CLI is the same guided flow:
 
 ```bash
-simbroker host init --bootstrap-config
-simbroker service start
+simbroker setup
 ```
 
-If bootstrap fails because no installed iOS runtime matches the requested
-version, pass `--ios-version` from `xcrun simctl list runtimes`. The
-default starter iOS version stays `18`.
+It performs a read-only preview first and asks once before making changes. Use
+`--ios-version 26` for the newest installed compatible 26.x runtime or an exact
+value such as `--ios-version 26.4`. If no compatible runtime is installed,
+setup shows Xcode Settings > Components and `xcodebuild -downloadPlatform iOS`
+as manual recovery; it never downloads a runtime, accepts a license, runs
+first-launch tasks, or invokes `sudo` for you.
+
+In a non-interactive shell, preview and apply explicitly:
+
+```bash
+simbroker setup --json
+simbroker setup --apply --confirm <plan-id> --json
+```
+
+`host init --bootstrap-config` remains available as an advanced compatibility
+command and retains its iOS 18 default, but it is not the newcomer setup path.
 
 Then register each repo you want the broker to know about:
 
@@ -158,7 +174,9 @@ Do not take the broker offline while it has an active lease.
    Open a new login shell if `command -v simbroker` fails.
 5. Run `simbroker service start` and reopen the app.
 
-The installer preserves host config and broker state.
+The installer preserves host config and broker state. Finish by running
+`simbroker setup`; it verifies the existing host and safely restarts or refreshes
+only the missing later stages.
 
 ## Removing a stale project registration
 

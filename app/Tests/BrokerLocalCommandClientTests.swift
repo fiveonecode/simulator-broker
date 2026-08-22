@@ -126,6 +126,14 @@ final class BrokerLocalCommandClientTests: XCTestCase {
       runner.resolvedTimeoutNanoseconds(for: ["capacity", "check"]),
       925 * 1_000_000_000
     )
+    XCTAssertEqual(
+      runner.resolvedTimeoutNanoseconds(for: ["setup", "--json"]),
+      600 * 1_000_000_000
+    )
+    XCTAssertEqual(
+      runner.resolvedTimeoutNanoseconds(for: ["setup", "--apply", "--confirm", "sha256:test", "--json"]),
+      7_200 * 1_000_000_000
+    )
     let tempRoot = try makeTempRoot()
     let stateRoot = tempRoot.appending(path: "state")
     let hostConfigURL = tempRoot.appending(path: "host-config.json")

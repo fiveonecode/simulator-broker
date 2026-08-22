@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Guided, deterministic `simbroker setup` preview and confirmed apply for
+  prerequisite checks, newest-compatible runtime selection, the six-device
+  starter pool, atomic provisioning, `brokerd` startup, snapshot refresh, and
+  health verification.
+- A macOS setup-plan sheet with all six aliases, runtime/build and disk details,
+  remediation commands, exact plan confirmation, cooperative Stop, and
+  cancellation-aware task ownership.
+
+### Changed
+
+- New project scaffolds require an iPhone for UI purposes without pinning an
+  iOS version unless `--ios-version` is explicit.
+- Homebrew CLI and app metadata now require macOS 14 Sonoma, matching the app
+  deployment target.
+- Newcomer documentation and install/package smoke tests use `simbroker setup`;
+  `host init --bootstrap-config` remains an advanced compatibility command.
+
 ## [0.1.0-alpha.2] - 2026-08-20
 
 This tag is the first Homebrew CLI tarball, npm tarball, and notarized

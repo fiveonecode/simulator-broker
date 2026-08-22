@@ -19,6 +19,10 @@ Fresh repos can scaffold the starting project file with:
 simbroker project init --repo-root /path/to/repo
 ```
 
+Run `simbroker setup` once on the Mac first. The generated UI purposes require
+an iPhone but remain iOS-version agnostic unless the project explicitly passes
+`--ios-version`.
+
 Then adapt the generated purposes and add the wrapper scripts shown in this sample.
 
 Example local usage:

@@ -5,7 +5,7 @@ class Simbroker < Formula
   sha256 "f4b8740ff21ce6e7c6a3544e2811c1836d7132aaf3682d9e1c071732c80c7abe"
   license "MIT"
 
-  depends_on :macos
+  depends_on macos: :sonoma
   depends_on "node"
 
   def install

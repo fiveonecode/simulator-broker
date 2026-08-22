@@ -11,9 +11,12 @@ This Alpha already includes:
 - broker-mediated `boot`, `shutdown`, `erase`, and `repair`
 - stable exit codes for invalid requests, unavailable capacity, repair-needed
   aliases, override-required flows, and internal failures
-- `host init --bootstrap-config` that provisions real simulator devices,
-  including dual iPhone UI aliases (`ui-1`, `ui-2`) and a dedicated
-  `build-fast` alias
+- guided `simbroker setup` preview/confirmation that selects the newest
+  compatible installed runtime, provisions or reuses the six starter aliases,
+  starts `brokerd`, refreshes the snapshot, verifies health, and reruns without
+  duplicates
+- advanced `host init --bootstrap-config` compatibility with its unchanged iOS
+  18 default
 - `erase-on-acquire` leases behind a reset lock, with rollback if reset fails
   before a lease is handed out
 - lease selection that prefers a matching pin, then compatible warm capacity,
@@ -21,10 +24,10 @@ This Alpha already includes:
 - optional Automatic shutdown configured only through broker commands
 - a macOS operator app with Overview, Simulators, Projects, and Events
 - a broker-owned `app-snapshot.json` read model
-- app-driven first-run setup and per-repo onboarding commands. Public
-  first-run order is Homebrew CLI, Homebrew cask, then **Set Up This Mac**
-  / **Complete first-time setup** (or `host init --bootstrap-config` and
-  `service start`). Homebrew does not create simulators. Hello world runs
+- app-driven setup-plan review and per-repo onboarding commands. Public
+  first-run order is Homebrew CLI, optional Homebrew cask, then **Set Up This
+  Mac** / **Complete first-time setup** or `simbroker setup`. Homebrew does not
+  create simulators. Hello world runs
   only after a host config exists and after `capacity check` for
   `agent-ui-session`. Read `purposes[].status`, not the top-level
   `status`. Stop on `unavailable` and preview with `capacity reconcile`.
@@ -46,6 +49,7 @@ This Alpha already includes:
 - local-debug packaging through `npm run package:local`
 - signed distribution packaging through `npm run package:distribution`
 - `simbroker project init` for `.simulator-broker/project.json`
+  with version-agnostic iPhone UI requirements by default
 - `capacity check` and human-confirmed `capacity reconcile`
 - `idle` inspect, reconcile, and confirm-only cleanup
 - sample consumer artifacts under `examples/harness-adoption/`
@@ -67,6 +71,7 @@ npm run test:install-smoke
 npm run test:app
 npm run test:client
 node client/bin/simbroker.mjs service start
+node client/bin/simbroker.mjs setup --json
 node client/bin/simbroker.mjs service status
 node client/bin/simbroker.mjs app snapshot
 node client/bin/simbroker.mjs capacity check --repo-root "$PWD" --purpose agent-ui-session --json

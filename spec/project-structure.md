@@ -22,6 +22,8 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
 - `.github/pull_request_template.md` — public-patch PR checklist; no harness
   session required
 - `spec/` — active source of truth, including worker-ready task specs under `spec/tasks/`
+- `spec/tasks/guided-simbroker-setup.md` — cross-layer setup command, app,
+  recovery, and acceptance source of truth
 - `docs/` — public newcomer docs (getting started, concepts, status) and the
   README screenshot; not source of truth
 - `examples/` — executable sample repos and smoke fixtures for broker adoption patterns; not source of truth
@@ -29,6 +31,8 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
 - `app/` — XcodeGen spec, SwiftUI source, and XCTest coverage for the macOS operator app
 - `broker-core/` — reusable broker logic; current file-backed slice, lease containment helpers, shared `simctl` adapter, and error-contract boundaries live here
 - `client/` — CLI, local service, and compatibility layer; `client/bin/` contains `simbroker` and `brokerd`, `client/service/` contains the Unix-socket authority implementation, and `client/public-surface.mjs` implements the public text safety gate
+- `client/setup-preflight.mjs` — bounded read-only macOS/Xcode/path/disk setup
+  prerequisites; it does not own broker mutation
 - `script/` — canonical app run-loop entrypoints and shared macOS build preflight helpers such as `build_and_run.sh`
 - `scripts/` — repo-owned helper scripts including the canonical
   `validate.sh` full-repository gate, app generation, repo-local install,

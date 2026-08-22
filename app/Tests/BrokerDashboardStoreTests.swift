@@ -538,11 +538,12 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertEqual(store.startupState, .needsHostBootstrap)
   }
 
-  func testCompleteFirstTimeSetupRunsHostBootstrapAndStartsService() async throws {
+  func testGuidedSetupPreviewsThenAppliesTheExactPlan() async throws {
     let runtimePaths = BrokerRuntimePaths(
       stateRoot: URL(fileURLWithPath: "/tmp/simbroker-setup-state"),
       hostConfigURL: URL(fileURLWithPath: "/tmp/simbroker-setup-host.json"),
-      configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker")
+      configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker"),
+      serviceSocketURL: URL(fileURLWithPath: "/tmp/simbroker-setup.sock")
     )
     let loadedState = BrokerLoadedState(
       paths: runtimePaths,
@@ -555,6 +556,30 @@ final class BrokerDashboardStoreTests: XCTestCase {
       snapshot: nil
     )
     let localRunner = RecordingLocalCommandRunner()
+    let setupPlan = try makeSetupPlan()
+    await localRunner.enqueue(
+      BrokerCLICommandEnvelope(
+        error: nil,
+        exitCode: 0,
+        ok: true,
+        reasonCode: nil,
+        setupPlan: setupPlan,
+        started: nil,
+        status: "changes_required",
+        unchanged: nil
+      )
+    )
+    await localRunner.enqueue(
+      BrokerCLICommandEnvelope(
+        error: nil,
+        exitCode: 0,
+        ok: true,
+        reasonCode: nil,
+        started: true,
+        status: "ready",
+        unchanged: false
+      )
+    )
     let store = BrokerDashboardStore(
       loader: StubSnapshotLoader(state: loadedState),
       commandClient: RecordingCommandClient(),
@@ -563,28 +588,252 @@ final class BrokerDashboardStoreTests: XCTestCase {
     )
     store.loadedState = loadedState
 
-    try await store.completeFirstTimeSetup()
+    store.requestGuidedSetup()
+    try await waitUntil {
+      await MainActor.run { store.setupPhase == .awaitingConfirmation }
+    }
+    XCTAssertEqual(store.setupPlan?.devices.count, 6)
+    XCTAssertEqual(store.pendingSetupConfirmation, setupPlan.planId)
+
+    store.confirmGuidedSetup()
+    store.confirmGuidedSetup()
+    try await waitUntil {
+      await MainActor.run { store.setupPhase == .idle && store.lastActionMessage != nil }
+    }
 
     let invocations = await localRunner.invocations()
     XCTAssertEqual(invocations.count, 2)
     XCTAssertEqual(invocations[0].arguments, [
-      "host",
-      "init",
-      "--bootstrap-config",
+      "setup",
+      "--json",
       "--host-config",
       "/tmp/simbroker-setup-host.json",
       "--state-root",
       "/tmp/simbroker-setup-state",
+      "--service-socket",
+      "/tmp/simbroker-setup.sock",
     ])
     XCTAssertEqual(invocations[1].arguments, [
-      "service",
-      "start",
+      "setup",
+      "--apply",
+      "--confirm",
+      setupPlan.planId,
+      "--host-id",
+      "guided-app-host",
+      "--ios-version",
+      "26.5",
+      "--json",
       "--host-config",
       "/tmp/simbroker-setup-host.json",
       "--state-root",
       "/tmp/simbroker-setup-state",
+      "--service-socket",
+      "/tmp/simbroker-setup.sock",
     ])
-    XCTAssertEqual(store.lastActionMessage, "Broker setup completed and brokerd started.")
+    XCTAssertEqual(store.lastActionMessage, "Setup complete — brokerd is running and all managed simulators are healthy.")
+    XCTAssertNil(store.setupPlan)
+  }
+
+  func testGuidedSetupBlockedPlanDisablesConfirmationWithoutApplying() async throws {
+    let runtimePaths = BrokerRuntimePaths(
+      stateRoot: URL(fileURLWithPath: "/tmp/simbroker-blocked-state"),
+      hostConfigURL: URL(fileURLWithPath: "/tmp/simbroker-blocked-host.json"),
+      configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker")
+    )
+    let localRunner = RecordingLocalCommandRunner()
+    let blockedPlan = try makeSetupPlan(status: "blocked", confirmationRequired: false)
+    await localRunner.enqueue(
+      BrokerCLICommandEnvelope(
+        error: nil,
+        exitCode: 3,
+        ok: true,
+        reasonCode: nil,
+        setupPlan: blockedPlan,
+        started: nil,
+        status: "blocked",
+        unchanged: nil
+      )
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: BrokerLoadedState(
+        paths: runtimePaths,
+        tooling: BrokerToolingState(cliPath: runtimePaths.configuredCLIURL, hostConfigExists: false, installMetadata: nil),
+        service: nil,
+        snapshot: nil
+      )),
+      commandClient: RecordingCommandClient(),
+      localCommandRunner: localRunner,
+      runtimePaths: runtimePaths
+    )
+
+    store.requestGuidedSetup()
+    try await waitUntil {
+      await MainActor.run { store.setupPhase == .awaitingConfirmation }
+    }
+    store.confirmGuidedSetup()
+
+    XCTAssertEqual(store.setupPlan?.status, .blocked)
+    XCTAssertNil(store.pendingSetupConfirmation)
+    let invocations = await localRunner.invocations()
+    XCTAssertEqual(invocations.count, 1)
+  }
+
+  func testGuidedSetupCancelLeavesPreviewUnapplied() async throws {
+    let runtimePaths = BrokerRuntimePaths(
+      stateRoot: URL(fileURLWithPath: "/tmp/simbroker-cancel-state"),
+      hostConfigURL: URL(fileURLWithPath: "/tmp/simbroker-cancel-host.json"),
+      configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker")
+    )
+    let localRunner = RecordingLocalCommandRunner()
+    let setupPlan = try makeSetupPlan()
+    await localRunner.enqueue(BrokerCLICommandEnvelope(
+      error: nil,
+      exitCode: 0,
+      ok: true,
+      reasonCode: nil,
+      setupPlan: setupPlan,
+      started: nil,
+      status: "changes_required",
+      unchanged: nil
+    ))
+    let loadedState = BrokerLoadedState(
+      paths: runtimePaths,
+      tooling: BrokerToolingState(cliPath: runtimePaths.configuredCLIURL, hostConfigExists: false, installMetadata: nil),
+      service: nil,
+      snapshot: nil
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: RecordingCommandClient(),
+      localCommandRunner: localRunner,
+      runtimePaths: runtimePaths
+    )
+
+    store.requestGuidedSetup()
+    try await waitUntil { await MainActor.run { store.setupPhase == .awaitingConfirmation } }
+    store.cancelGuidedSetup()
+
+    XCTAssertEqual(store.setupPhase, .idle)
+    XCTAssertNil(store.setupPlan)
+    XCTAssertNil(store.pendingSetupConfirmation)
+    let invocationCount = await localRunner.invocations().count
+    XCTAssertEqual(invocationCount, 1)
+  }
+
+  func testGuidedSetupServiceOnlyPlanAppliesWithoutDeviceConfirmation() async throws {
+    let runtimePaths = BrokerRuntimePaths(
+      stateRoot: URL(fileURLWithPath: "/tmp/simbroker-finish-state"),
+      hostConfigURL: URL(fileURLWithPath: "/tmp/simbroker-finish-host.json"),
+      configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker")
+    )
+    let localRunner = RecordingLocalCommandRunner()
+    let setupPlan = try makeSetupPlan(confirmationRequired: false, hostConfigured: true, includeRuntime: false, createCount: 0)
+    await localRunner.enqueue(BrokerCLICommandEnvelope(
+      error: nil,
+      exitCode: 0,
+      ok: true,
+      reasonCode: nil,
+      setupPlan: setupPlan,
+      started: nil,
+      status: "changes_required",
+      unchanged: nil
+    ))
+    await localRunner.enqueue(BrokerCLICommandEnvelope(
+      error: nil,
+      exitCode: 0,
+      ok: true,
+      reasonCode: nil,
+      started: true,
+      status: "ready",
+      unchanged: false
+    ))
+    let loadedState = BrokerLoadedState(
+      paths: runtimePaths,
+      tooling: BrokerToolingState(cliPath: runtimePaths.configuredCLIURL, hostConfigExists: true, installMetadata: nil),
+      service: nil,
+      snapshot: nil
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: RecordingCommandClient(),
+      localCommandRunner: localRunner,
+      runtimePaths: runtimePaths
+    )
+
+    store.requestGuidedSetup()
+    try await waitUntil { await MainActor.run { store.setupPhase == .idle && store.lastActionMessage != nil } }
+
+    let invocations = await localRunner.invocations()
+    XCTAssertEqual(invocations.count, 2)
+    XCTAssertFalse(invocations[1].arguments.contains("--ios-version"))
+    XCTAssertTrue(invocations[1].arguments.contains("--host-id"))
+    XCTAssertTrue(invocations[1].arguments.contains("guided-app-host"))
+    XCTAssertNil(store.setupPlan)
+  }
+
+  func testStoppingGuidedSetupPreservesPlanWithoutPresentingCancellationAsFailure() async throws {
+    let runtimePaths = BrokerRuntimePaths(
+      stateRoot: URL(fileURLWithPath: "/tmp/simbroker-stop-state"),
+      hostConfigURL: URL(fileURLWithPath: "/tmp/simbroker-stop-host.json"),
+      configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker")
+    )
+    let setupPlan = try makeSetupPlan()
+    let localRunner = CancellableApplyLocalCommandRunner(plan: setupPlan)
+    let loadedState = BrokerLoadedState(
+      paths: runtimePaths,
+      tooling: BrokerToolingState(cliPath: runtimePaths.configuredCLIURL, hostConfigExists: false, installMetadata: nil),
+      service: nil,
+      snapshot: nil
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: RecordingCommandClient(),
+      localCommandRunner: localRunner,
+      runtimePaths: runtimePaths
+    )
+
+    store.requestGuidedSetup()
+    try await waitUntil { await MainActor.run { store.setupPhase == .awaitingConfirmation } }
+    store.confirmGuidedSetup()
+    try await waitUntil { await localRunner.applyStarted() }
+    store.stopGuidedSetup()
+    try await waitUntil { await MainActor.run { store.setupPhase == .awaitingConfirmation && store.isApplyingAction == false } }
+
+    XCTAssertNotNil(store.setupPlan)
+    XCTAssertNil(store.lastErrorMessage)
+  }
+
+  func testGuidedSetupApplyFailureRefreshesAndPreservesRecoveryPlan() async throws {
+    let runtimePaths = BrokerRuntimePaths(
+      stateRoot: URL(fileURLWithPath: "/tmp/simbroker-failure-state"),
+      hostConfigURL: URL(fileURLWithPath: "/tmp/simbroker-failure-host.json"),
+      configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker")
+    )
+    let setupPlan = try makeSetupPlan()
+    let localRunner = FailingApplyLocalCommandRunner(plan: setupPlan)
+    let loadedState = BrokerLoadedState(
+      paths: runtimePaths,
+      tooling: BrokerToolingState(cliPath: runtimePaths.configuredCLIURL, hostConfigExists: false, installMetadata: nil),
+      service: nil,
+      snapshot: nil
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: RecordingCommandClient(),
+      localCommandRunner: localRunner,
+      runtimePaths: runtimePaths
+    )
+
+    store.requestGuidedSetup()
+    try await waitUntil { await MainActor.run { store.setupPhase == .awaitingConfirmation } }
+    store.confirmGuidedSetup()
+    try await waitUntil { await MainActor.run { store.lastErrorMessage != nil && store.isApplyingAction == false } }
+
+    XCTAssertEqual(store.setupPhase, .awaitingConfirmation)
+    XCTAssertEqual(store.setupPlan?.planId, setupPlan.planId)
+    XCTAssertEqual(store.lastErrorMessage, "Setup committed; rerun simbroker setup.")
+    let invocationTotal = await localRunner.invocationTotal()
+    XCTAssertEqual(invocationTotal, 2)
   }
 
   func testCommandAvailabilityMatchesSelectedSimulatorState() throws {
@@ -1340,9 +1589,13 @@ private actor RecordingCommandClient: BrokerCommandSending {
 
 private actor RecordingLocalCommandRunner: BrokerLocalCommandRunning {
   private var recordedInvocations: [(cliPath: URL, arguments: [String])] = []
+  private var responses: [BrokerCLICommandEnvelope] = []
 
   func run(cliPath: URL, arguments: [String]) async throws -> BrokerCLICommandEnvelope {
     recordedInvocations.append((cliPath, arguments))
+    if responses.isEmpty == false {
+      return responses.removeFirst()
+    }
     return BrokerCLICommandEnvelope(
       error: nil,
       exitCode: 0,
@@ -1356,6 +1609,138 @@ private actor RecordingLocalCommandRunner: BrokerLocalCommandRunning {
   func invocations() -> [(cliPath: URL, arguments: [String])] {
     recordedInvocations
   }
+
+  func enqueue(_ response: BrokerCLICommandEnvelope) {
+    responses.append(response)
+  }
+}
+
+private actor CancellableApplyLocalCommandRunner: BrokerLocalCommandRunning {
+  private let plan: BrokerSetupPlan
+  private var invocationCount = 0
+  private var didStartApply = false
+
+  init(plan: BrokerSetupPlan) {
+    self.plan = plan
+  }
+
+  func run(cliPath: URL, arguments: [String]) async throws -> BrokerCLICommandEnvelope {
+    invocationCount += 1
+    if invocationCount == 1 {
+      return BrokerCLICommandEnvelope(
+        error: nil,
+        exitCode: 0,
+        ok: true,
+        reasonCode: nil,
+        setupPlan: plan,
+        started: nil,
+        status: "changes_required",
+        unchanged: nil
+      )
+    }
+    didStartApply = true
+    try await Task.sleep(for: .seconds(30))
+    return BrokerCLICommandEnvelope(
+      error: nil,
+      exitCode: 0,
+      ok: true,
+      reasonCode: nil,
+      started: true,
+      status: "ready",
+      unchanged: false
+    )
+  }
+
+  func applyStarted() -> Bool {
+    didStartApply
+  }
+}
+
+private actor FailingApplyLocalCommandRunner: BrokerLocalCommandRunning {
+  private let plan: BrokerSetupPlan
+  private var invocationCount = 0
+
+  init(plan: BrokerSetupPlan) {
+    self.plan = plan
+  }
+
+  func run(cliPath: URL, arguments: [String]) async throws -> BrokerCLICommandEnvelope {
+    invocationCount += 1
+    if invocationCount == 1 {
+      return BrokerCLICommandEnvelope(
+        error: nil,
+        exitCode: 0,
+        ok: true,
+        reasonCode: nil,
+        setupPlan: plan,
+        started: nil,
+        status: "changes_required",
+        unchanged: nil
+      )
+    }
+    throw SnapshotRefreshTestError(message: "Setup committed; rerun simbroker setup.")
+  }
+
+  func invocationTotal() -> Int {
+    invocationCount
+  }
+}
+
+private func makeSetupPlan(
+  status: String = "changes_required",
+  confirmationRequired: Bool = true,
+  hostConfigured: Bool = false,
+  includeRuntime: Bool = true,
+  createCount: Int = 6
+) throws -> BrokerSetupPlan {
+  let prerequisiteStatus = status == "blocked" ? "blocked" : "ready"
+  let runtime = includeRuntime ? """
+    {
+      "selectionSource": "automatic",
+      "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+      "version": "26.5",
+      "buildVersion": "23F77"
+    }
+    """ : "null"
+  let data = Data("""
+  {
+    "ok": true,
+    "command": "setup",
+    "schemaVersion": 1,
+    "mode": "preview",
+    "status": "\(status)",
+    "planId": "sha256:app-plan",
+    "prerequisites": [
+      {
+        "id": "xcode",
+        "status": "\(prerequisiteStatus)",
+        "summary": "Xcode readiness",
+        "remediationCommands": ["xcodebuild -checkFirstLaunchStatus"]
+      },
+      {
+        "id": "disk-space",
+        "status": "info",
+        "summary": "100.0 GiB is available.",
+        "details": { "availableBytes": 107374182400, "availableGiB": "100.0 GiB" },
+        "remediationCommands": []
+      }
+    ],
+    "host": { "configured": \(hostConfigured), "action": "\(hostConfigured ? "keep" : "create")", "hostId": "guided-app-host" },
+    "runtime": \(runtime),
+    "devices": [
+      { "alias": "manual-1", "displayName": "Manual iPhone", "deviceFamily": "iPhone", "deviceTypeName": "iPhone 17", "deviceTypeIdentifier": "iphone-17", "runtimeIdentifier": "ios-26-5", "runtimeVersion": "26.5", "capabilities": ["manual-persistent"], "resetPolicy": "none", "action": "create", "simulatorName": "Manual" },
+      { "alias": "ui-1", "displayName": "UI iPhone", "deviceFamily": "iPhone", "deviceTypeName": "iPhone 17", "deviceTypeIdentifier": "iphone-17", "runtimeIdentifier": "ios-26-5", "runtimeVersion": "26.5", "capabilities": ["interactive-resettable"], "resetPolicy": "erase-on-acquire", "action": "create", "simulatorName": "UI 1" },
+      { "alias": "ui-2", "displayName": "UI iPhone 2", "deviceFamily": "iPhone", "deviceTypeName": "iPhone 17", "deviceTypeIdentifier": "iphone-17", "runtimeIdentifier": "ios-26-5", "runtimeVersion": "26.5", "capabilities": ["interactive-resettable"], "resetPolicy": "erase-on-acquire", "action": "create", "simulatorName": "UI 2" },
+      { "alias": "build-1", "displayName": "Build iPhone", "deviceFamily": "iPhone", "deviceTypeName": "iPhone 17", "deviceTypeIdentifier": "iphone-17", "runtimeIdentifier": "ios-26-5", "runtimeVersion": "26.5", "capabilities": ["build-fast"], "resetPolicy": "none", "action": "create", "simulatorName": "Build 1" },
+      { "alias": "build-2", "displayName": "Build iPhone 2", "deviceFamily": "iPhone", "deviceTypeName": "iPhone 17", "deviceTypeIdentifier": "iphone-17", "runtimeIdentifier": "ios-26-5", "runtimeVersion": "26.5", "capabilities": ["build-fast"], "resetPolicy": "none", "action": "create", "simulatorName": "Build 2" },
+      { "alias": "ipad-1", "displayName": "UI iPad", "deviceFamily": "iPad", "deviceTypeName": "iPad (A16)", "deviceTypeIdentifier": "ipad-a16", "runtimeIdentifier": "ios-26-5", "runtimeVersion": "26.5", "capabilities": ["interactive-resettable"], "resetPolicy": "erase-on-acquire", "action": "create", "simulatorName": "iPad" }
+    ],
+    "service": { "running": false, "action": "start" },
+    "confirmation": { "required": \(confirmationRequired), "createCount": \(createCount), "reuseCount": \(6 - createCount) },
+    "nextSteps": []
+  }
+  """.utf8)
+  return try JSONDecoder().decode(BrokerSetupPlan.self, from: data)
 }
 
 private actor StubSnapshotLoader: BrokerSnapshotLoading {

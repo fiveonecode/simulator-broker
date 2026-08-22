@@ -337,11 +337,7 @@ struct BrokerSetupView: View {
 
         HStack(spacing: 12) {
           if let primaryActionTitle = primaryActionTitle {
-            Button(primaryActionTitle) {
-              Task {
-                await performPrimaryAction()
-              }
-            }
+            Button(primaryActionTitle, action: performPrimaryAction)
             .buttonStyle(.borderedProminent)
             .disabled(store.isApplyingAction || primaryActionEnabled == false)
           }
@@ -424,7 +420,7 @@ struct BrokerSetupView: View {
     case .missingCLI:
       return BrokerMissingCLISetupCopy.heroMessage
     case .needsHostBootstrap:
-      return "This Mac has not been initialized for Simulator Broker yet. First-run setup will create the starter simulator pool, write host config, and start brokerd."
+      return "Preview one guided plan for the starter Simulator pool, host configuration, brokerd startup, snapshot refresh, and health verification."
     case .needsServiceStart:
       return "The broker host config exists, but brokerd is not running. Start the service to enable live state, pins, lease release, and lifecycle actions."
     case .needsSnapshotRefresh:
@@ -476,22 +472,9 @@ struct BrokerSetupView: View {
     switch store.startupState {
     case .missingCLI:
       return BrokerMissingCLISetupCopy.manualFallbackCommands
-    case .needsHostBootstrap:
+    case .needsHostBootstrap, .needsServiceStart, .readOnlySnapshot, .needsSnapshotRefresh, .ready:
       return [
-        formatter.command("host init --bootstrap-config --host-config \"\(store.hostConfigPath)\" --state-root \"\(store.stateRootPath)\""),
-        formatter.command("service start --host-config \"\(store.hostConfigPath)\" --state-root \"\(store.stateRootPath)\""),
-      ]
-    case .needsServiceStart, .readOnlySnapshot:
-      return [
-        formatter.command("service start --host-config \"\(store.hostConfigPath)\" --state-root \"\(store.stateRootPath)\""),
-      ]
-    case .needsSnapshotRefresh:
-      return [
-        formatter.command("app snapshot --host-config \"\(store.hostConfigPath)\" --state-root \"\(store.stateRootPath)\""),
-      ]
-    case .ready:
-      return [
-        formatter.command("host status --host-config \"\(store.hostConfigPath)\" --state-root \"\(store.stateRootPath)\""),
+        formatter.command("setup --host-config \"\(store.hostConfigPath)\" --state-root \"\(store.stateRootPath)\""),
       ]
     }
   }
@@ -501,13 +484,13 @@ struct BrokerSetupView: View {
     case .missingCLI:
       return BrokerMissingCLISetupCopy.manualFallbackText
     case .needsHostBootstrap:
-      return "CLI fallback for the same first-run setup flow."
+      return "CLI fallback for the same guided preview and confirmation flow."
     case .needsServiceStart, .readOnlySnapshot:
-      return "CLI fallback for re-enabling live broker commands."
+      return "The same setup command safely finishes brokerd startup without replacing the host configuration."
     case .needsSnapshotRefresh:
-      return "CLI fallback for rebuilding the read-only app snapshot."
+      return "The same setup command safely refreshes and verifies broker state."
     case .ready:
-      return "The broker is healthy. Use the CLI below to inspect the host outside the app."
+      return "Rerunning setup verifies the existing healthy machine without expanding its pool."
     }
   }
 
@@ -515,12 +498,8 @@ struct BrokerSetupView: View {
     switch store.startupState {
     case .missingCLI:
       return false
-    case .needsHostBootstrap:
+    case .needsHostBootstrap, .needsServiceStart, .readOnlySnapshot, .needsSnapshotRefresh:
       return store.canRunLocalBrokerCommands
-    case .needsServiceStart, .readOnlySnapshot:
-      return store.canStartBrokerService
-    case .needsSnapshotRefresh:
-      return store.canRefreshSnapshotArtifact
     case .ready:
       return false
     }
@@ -533,27 +512,14 @@ struct BrokerSetupView: View {
     case .needsHostBootstrap:
       return "Complete first-time setup"
     case .needsServiceStart, .readOnlySnapshot:
-      return "Start brokerd"
+      return "Finish setup"
     case .needsSnapshotRefresh:
-      return "Generate snapshot"
+      return "Finish setup"
     }
   }
 
-  private func performPrimaryAction() async {
-    do {
-      switch store.startupState {
-      case .needsHostBootstrap:
-        try await store.completeFirstTimeSetup()
-      case .needsServiceStart, .readOnlySnapshot:
-        try await store.startBrokerService()
-      case .needsSnapshotRefresh:
-        try await store.refreshSnapshotArtifact()
-      case .missingCLI, .ready:
-        return
-      }
-    } catch {
-      store.lastErrorMessage = error.localizedDescription
-    }
+  private func performPrimaryAction() {
+    store.requestGuidedSetup()
   }
 }
 

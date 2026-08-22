@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.14.1`
-> **Last Updated:** `2026-08-18`
+> **Version:** `0.15.0`
+> **Last Updated:** `2026-08-22`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -35,6 +35,9 @@ A first extracted implementation slice now exists:
 - lease-scoped containment for broker-aware build/test wrappers, including downstream process metadata, memory ceiling checks, evidence bundles, and stale-owner cleanup when process metadata exists
 - deterministic warm reuse, boot-on-acquire, optional machine-local idle shutdown,
   confirmed cleanup, and public-safe operator controls
+- guided machine setup shared by CLI and app, with deterministic preview,
+  newest-compatible runtime selection, six-device provisioning, service and
+  snapshot completion, and doctor verification
 
 The extracted system must work for any repo that uses AI agentic development harnesses, CI jobs, or human-operated simulator workflows on one machine.
 
@@ -228,8 +231,16 @@ Current implementation slice:
 - broker-backed actions for pin create and clear, lease release, and lifecycle requests with human override confirmation
 - Overview **Automatic shutdown** status and broker-backed Apply, Disable, and
   count-confirmed cleanup actions; unconfigured policy leaves duration blank
-- first-run setup classification for missing CLI, missing host config, stopped service, and snapshot-refresh states
-- app-driven host bootstrap, service start, and snapshot refresh through bounded, cancellation-aware installed `simbroker` CLI subprocesses without creating an app-only mutation path; the app runner uses command-specific setup budgets that include preliminary service probe transfer, command transfer, service queue allowance, startup snapshot process sampling and inventory, and launcher headroom, and bounds process-tree discovery during cancellation before falling back to root-process signaling
+- first-run setup classification for missing CLI, missing host config, stopped
+  service, and snapshot-refresh states
+- app-driven `simbroker setup --json` preview and exact confirmed apply through
+  one bounded, cancellation-aware installed CLI subprocess contract; fresh
+  setup uses a dedicated six-device plan sheet, while service/snapshot-only
+  finishing work bypasses device confirmation
+- setup plan/phase/pending confirmation/stored task live in the `@MainActor`
+  store; Stop cancels the CLI process, cancellation refreshes state without a
+  generic error, and the setup timeout includes preflight, provisioning,
+  service, snapshot, and doctor instead of the 30-second fallback
 - repo onboarding guidance in the app when the machine is ready but no broker-aware repo has been registered yet
 
 ## 5. Ownership metadata that the extracted system should add
@@ -289,10 +300,14 @@ Default operational decisions for v1:
 Failure-contract defaults for v1:
 
 - exit code `0` means success
-- exit code `2` means invalid request or setup failure, including malformed flags, unknown commands, invalid config, or missing broker files
+- exit code `2` means invalid request, including malformed flags, unknown
+  commands, invalid config, or missing broker files
 - exit code `3` means unavailable capacity or transient broker-side unavailability, including exhaustion, conflicts, missing runtimes, service unavailability, expired service command queue budgets, or bounded process-sampler timeouts
 - exit code `4` means the requested alias needs repair before work can proceed
 - exit code `5` means human override or override confirmation is required before the action may continue
+- setup confirmation-required and stale-plan errors use `5`; setup prerequisite
+  and non-alias health failures use `3`; alias health uses `4`; cooperative
+  SIGINT/SIGTERM interruption uses `130`/`143`
 - exit code `1` means internal failure or an unclassified unexpected error
 - service responses must carry the same `exitCode` value in their JSON error payloads
 - clients must classify malformed service JSON as `service-unavailable`
@@ -429,8 +444,11 @@ capacity is non-actionable and never creates extra capacity. Missing runtime or
 device type blocks apply instead of downloading or guessing.
 
 Apply runs under the broker mutation authority in direct and service-backed
-modes. Capacity apply, host bootstrap, and simulator repair share the same
-host-config mutation lock. Forced host bootstrap also takes the lease mutation
+modes. Guided setup and capacity apply acquire capacity then lease-mutation
+locks; host bootstrap and simulator repair share the same host-config mutation
+authority. Setup revalidates its canonical plan before adopting or creating any
+Simulator and treats the atomic host-config rename as its commit point. Forced
+host bootstrap also takes the lease mutation
 lock and refuses to replace host config while any live lease or pin is active.
 Service-backed timeout budgets for capacity apply must include both forward
 simulator creation work and the bounded rollback inventory/delete/verification
@@ -539,6 +557,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.15.0 | 2026-08-22 | Added the shared guided setup/runtime/confirmation/recovery/app contract and version-agnostic project scaffolding default. |
 | 0.14.1 | 2026-08-18 | Help and doctor default to human-readable text; `--json` keeps the stable machine payload. |
 | 0.14.0 | 2026-08-10 | Replaced lease rotation with deterministic warm reuse, required boot-on-acquire, and added opt-in public-safe idle lifecycle, scheduler, cleanup, app, and verification contracts. |
 | 0.13.13 | 2026-08-10 | Added locked, explicit, idempotent cleanup for inactive local project registrations with lease/pin conflict protection and snapshot refresh. |

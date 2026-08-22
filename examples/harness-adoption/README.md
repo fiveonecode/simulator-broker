@@ -13,3 +13,6 @@ Current contents:
   - a CI runner script and GitHub Actions example
 
 Smoke coverage for these examples lives in `test/harness-adoption.test.mjs`.
+Machine setup is intentionally separate: run `simbroker setup` once on the Mac,
+then use `simbroker project init` in a consumer repo before adapting these
+wrappers.

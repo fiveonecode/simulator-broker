@@ -1,0 +1,371 @@
+# Guided `simbroker setup`
+
+> **Document ID:** `GSB-SETUP-001`
+> **Version:** `1.0.0`
+> **Last Updated:** `2026-08-22`
+> **Status:** `Active`
+> **Owner:** `spec-steward`, `ios-dev`
+> **Target:** Next Alpha PR
+
+Related: `spec/global-simulator-broker.md`, `spec/architecture.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `docs/getting-started.md`
+
+## 1. Objective and success criteria
+
+New users need one safe, obvious machine-setup flow instead of discovering and
+sequencing host bootstrap, service startup, snapshot refresh, and doctor
+commands. The CLI and macOS app must share one authoritative setup plan and
+confirmed apply contract.
+
+Success is one `simbroker setup` invocation, one human confirmation, six healthy
+starter aliases, a running path-verified `brokerd`, a current app snapshot, and
+an idempotent rerun that creates no duplicate devices.
+
+## 2. Scope and non-goals
+
+### In scope
+
+- bounded prerequisite inspection for Node.js 20+, macOS 14+, full Xcode,
+  first-launch completion, `simctl`, installed runtimes/inventory, writable
+  destinations, and informational disk availability
+- newest-compatible or explicitly selected installed iOS runtime
+- deterministic six-device create/reuse preview and plan ID
+- lock-scoped confirmed provisioning, atomic host commit, rollback, recovery,
+  service startup, snapshot refresh, and doctor verification
+- one shared CLI contract consumed by the macOS app
+- version-agnostic default project scaffolding
+- public docs, install/package smoke, deterministic tests, and visual evidence
+
+### Out of scope
+
+- downloading Xcode or runtimes automatically
+- running `sudo`, accepting licenses, or completing Xcode first-launch work
+- automatically replacing or repairing an unhealthy existing host
+- creating consumer repo configuration during machine setup
+- removing or changing the iOS 18 default of `host init --bootstrap-config`
+- migrating committed project files, public-CI performance work, or npm publish
+
+## 3. Functional requirements
+
+### REQ-001 — Command and flag surface
+
+The public forms are:
+
+```text
+simbroker setup [--ios-version <major|exact>] [--host-id <id>] [--json]
+simbroker setup --apply --confirm <plan-id> [--ios-version <major|exact>] [--host-id <id>] [--json]
+```
+
+`--host-config`, `--state-root`, and `--service-socket` remain valid path
+overrides. Setup rejects project/repo flags, `--force`, `--yes`, unknown flags,
+`--confirm` without `--apply`, and apply without current confirmation. Legacy
+host init is unchanged and documented only as advanced/troubleshooting.
+
+### REQ-002 — Invocation modes
+
+- Interactive fresh setup prints the read-only preview, prompts exactly
+  `Create or adopt these 6 Simulator devices and finish setup? [y/N]`, applies
+  on yes, and returns successful `cancelled` without mutation on no or EOF.
+- Interactive existing healthy setup automatically performs only safe finishing
+  work (service, snapshot, health) without a device-creation prompt.
+- Non-TTY preview never prompts or mutates and prints a copyable apply command.
+- `--json` preview never prompts or mutates and emits exactly one JSON document.
+- Confirmed apply never prompts, recomputes under locks, and emits one human
+  report or JSON document.
+
+### REQ-003 — Prerequisites
+
+Before planning, setup performs bounded, read-only checks:
+
+1. Node.js is 20 or newer.
+2. Platform is macOS 14 or newer.
+3. `xcode-select -p` resolves to a full Xcode developer directory.
+4. `xcodebuild -checkFirstLaunchStatus` succeeds.
+5. `xcrun --find simctl` succeeds.
+6. `simctl list --json runtimes`, `devices`, and `devicetypes` are valid.
+7. One available iOS runtime supports both starter families.
+8. Nearest existing host-config/state-root ancestors are writable.
+9. Disk availability is reported as bytes and formatted GiB when supported.
+
+Setup never executes the remediation commands. Blockers provide exact manual
+commands, including Xcode selection, `xcodebuild -runFirstLaunch`, Xcode
+Settings > Components, or `xcodebuild -downloadPlatform iOS`. Disk is `info`,
+is never blocking, and is excluded from the plan fingerprint.
+
+The Xcode command contract is grounded in installed Xcode help when an official
+documentation connector is unavailable: `xcodebuild -checkFirstLaunchStatus`,
+`xcodebuild -runFirstLaunch`, `xcodebuild -downloadPlatform`, `xcrun --find
+simctl`, and `xcrun simctl list --json`.
+
+### REQ-004 — Runtime policy
+
+Without override, choose the numerically newest available iOS runtime that
+supports both iPhone and iPad starter types. `--ios-version 26` chooses newest
+compatible 26.x; `26.4` chooses exactly 26.4. Ignore unavailable and non-iOS
+runtimes. Sort numeric version, build version, then identifier deterministically.
+No qualifying runtime produces a blocked preview with manual install guidance.
+
+### REQ-005 — Starter device plan
+
+| Alias | Family | Capabilities | Reset policy |
+|---|---|---|---|
+| `manual-1` | iPhone | `manual-persistent` | `none` |
+| `ui-1` | iPhone | `interactive-resettable`, `automation-resettable` | `erase-on-acquire` |
+| `ui-2` | iPhone | `interactive-resettable`, `automation-resettable` | `erase-on-acquire` |
+| `build-1` | iPhone | `build-fast` | `none` |
+| `build-2` | iPhone | `build-fast` | `none` |
+| `ipad-1` | iPad | `interactive-resettable` | `erase-on-acquire` |
+
+Existing preferred-device-type rules are reused. A Simulator is `reuse` only
+when broker name, runtime identifier, and device type identifier all match.
+Same-named incompatible devices are never adopted.
+
+### REQ-006 — Deterministic confirmation
+
+The SHA-256 plan ID canonicalizes schema version, requested host ID,
+host-config existence/relevant digest, selected runtime identifier/version/build,
+selected device type IDs, all target alias definitions/names, matching reusable
+identities, and create/reuse actions. It excludes timestamps, disk, formatting,
+service state, and unrelated inventory. Equivalent inventory order and duplicate
+records cannot change the ID.
+
+Apply acquires the capacity lock, then lease-mutation lock, rereads relevant
+state, recomputes, rejects stale confirmation before mutation, and applies only
+that plan. Host-init and setup provisioning share rollback helpers without
+nested lock acquisition or time-of-check/time-of-use gaps.
+
+### REQ-007 — Apply and verification
+
+Apply performs, in order:
+
+1. confirmation revalidation under locks
+2. exact create/reuse of six devices
+3. atomic complete host-config commit
+4. registry initialization/refresh
+5. provisioning lock release
+6. `brokerd` start or identity validation
+7. fresh snapshot through the active service
+8. doctor through the active service
+9. verification of path identity, expected fresh aliases, matching available
+   Simulator records, no `repair-needed`/`repairing`, and snapshot path identity
+10. `ready` completion
+
+### REQ-008 — Failure and recovery
+
+- Before host commit, delete only devices created by that attempt; preserve
+  reused/external devices and leave no claiming host/registry state.
+- After host commit, preserve host and devices; rerun `simbroker setup`.
+- Service failure preserves host and reports log path and exact retry.
+- Health failure preserves host/service and reports doctor issues plus exact
+  per-alias repair commands.
+- Existing invalid/unhealthy host is blocked without repair/replacement,
+  lease/pin mutation, or retirement.
+- Existing healthy host is never replaced or expanded to six.
+- Lock/revalidation guarantees concurrent setup creates at most one host; the
+  loser gets `setup-plan-stale`.
+- First SIGINT/SIGTERM is cooperative between Simulator operations and before
+  host commit, with exits 130/143; post-commit state is preserved. A second
+  termination may force exit.
+
+No setup-session file is persisted. Recovery derives from host config,
+Simulator inventory, service metadata, snapshot, and doctor.
+
+### REQ-009 — macOS app
+
+The app invokes `simbroker setup --json`. A fresh plan uses `sheet(item:)` and
+shows prerequisites, runtime/build, disk, six identifiable value-type rows,
+plain-language reset behavior, Create/Reuse state, finish stages, and “No
+changes have been made yet.” Actions are Cancel and a count-adjusted Create &
+Finish button. Apply passes exact plan ID plus the same runtime, host, and path
+selection.
+
+Service/snapshot-only plans apply immediately without a device sheet. Blocked
+plans show commands and no enabled confirm. Success refreshes to the dashboard
+and says: `Setup complete — brokerd is running and all managed simulators are
+healthy.` Failure refreshes first, preserves the sheet, and shows completed
+stages and recovery.
+
+The `@MainActor @Observable` store owns setup plan, phase, pending confirmation,
+and one stored task. Starting cancels the prior task; double confirm is
+prevented. Applying disables interactive dismissal and exposes text-labelled
+Stop, which cancels the CLI process. `CancellationError` is not a user failure.
+The sheet scrolls, uses semantic styles, default/cancel keyboard actions,
+VoiceOver labels, and status text/icons rather than color alone. Setup receives
+a full bounded timeout, not the 30-second unknown-command timeout. The app never
+calls `simctl` or writes broker state directly.
+
+### REQ-010 — Project onboarding compatibility
+
+Default UI purposes generated by `project init` require only:
+
+```json
+{ "deviceFamily": "iPhone" }
+```
+
+`iosVersion` is present only when `--ios-version` is explicit. Existing files
+are not migrated. Explicit major/exact semantics are unchanged. Successful
+setup ends with:
+
+```text
+Next, from a repository:
+  simbroker project init
+  simbroker project validate
+```
+
+### REQ-011 — Distribution metadata
+
+Formula and cask require macOS 14 Sonoma, matching the app deployment target.
+No third-party dependency is added.
+
+## 4. Public data contracts
+
+### Preview schema version 1
+
+```json
+{
+  "ok": true,
+  "command": "setup",
+  "schemaVersion": 1,
+  "mode": "preview",
+  "status": "changes_required",
+  "planId": "sha256:…",
+  "prerequisites": [],
+  "host": {},
+  "runtime": {},
+  "devices": [],
+  "service": {},
+  "confirmation": {},
+  "nextSteps": []
+}
+```
+
+Status is `ready`, `changes_required`, or `blocked`. Prerequisites carry `id`,
+`ready|blocked|info`, summary, optional details, and remediation commands. Host
+reports existence/action/ID. Fresh runtime reports selection source, identifier,
+version, and optional build. Devices report alias/display/family/type/runtime,
+capabilities/reset/action. Service reports running/action. Confirmation reports
+required and create/reuse counts. Next steps carry recovery or repo onboarding.
+
+### Completion schema version 1
+
+```json
+{
+  "ok": true,
+  "command": "setup",
+  "schemaVersion": 1,
+  "mode": "apply",
+  "status": "ready",
+  "planId": "sha256:…",
+  "host": { "configured": true, "created": true },
+  "devices": { "total": 6, "created": 6, "reused": 0 },
+  "service": { "running": true, "started": true, "identityVerified": true },
+  "snapshot": { "ready": true },
+  "health": { "ok": true, "issueCount": 0 },
+  "nextSteps": []
+}
+```
+
+Human output omits private Simulator IDs. JSON may carry machine-local IDs only
+where deterministic local tooling needs them.
+
+### Error contract
+
+| Reason | Exit |
+|---|---:|
+| `setup-confirmation-required` | 5 |
+| `setup-plan-stale` | 5 |
+| `setup-prerequisite-failed` | 3 |
+| `setup-health-check-failed` | 3, or 4 with unhealthy alias |
+| `setup-interrupted` | 130/143 |
+
+Existing runtime, type, service identity/timeout, invalid config, and unhealthy
+alias codes remain valid. Setup errors include failed/completed stages, host
+commit state, service state, exact recovery command, and public-safe doctor
+issues. JSON stdout is exactly one document with no progress/prompt text.
+
+## 5. State transitions
+
+```text
+unconfigured --preview--> changes_required --confirmed/locks--> provisioning
+provisioning --pre-commit failure/cancel--> unconfigured (created devices rolled back)
+provisioning --host commit--> configured --service/snapshot/doctor--> ready
+configured --later-stage failure--> configured (rerun setup)
+ready --rerun--> verified ready (no device creation)
+invalid|unhealthy existing --preview--> blocked (diagnosis only)
+```
+
+Host config is the commit point. No leases, pins, unrelated Simulator records,
+or reused devices are setup rollback targets.
+
+## 6. Non-functional and security requirements
+
+- Every external command and lock wait is bounded; setup apply timeout covers
+  preflight, inventory, six creates, service, snapshot, and doctor.
+- Canonical planning is deterministic and idempotent under inventory reorder.
+- Host/state artifacts remain current-user restricted and machine-local.
+- Output, specs, fixtures, screenshots, and commits remain public-safe; no
+  credentials, private paths, or machine IDs appear in committed evidence.
+- No network request or privilege escalation occurs during setup.
+- Observability uses stage-specific CLI errors and app `Setup` logs without
+  recording private Simulator IDs in normal human output.
+
+## 7. Implementation map and rollout
+
+- `broker-core/index.mjs`: plan, fingerprint, shared provisioning, locks,
+  rollback, project default
+- `broker-core/error-contract.mjs`: setup exit mapping
+- `client/setup-preflight.mjs`: machine prerequisites and disk information
+- `client/bin/simbroker.mjs`, `client/command-dispatch.mjs`: interaction,
+  service/snapshot/doctor completion, formatting, signals
+- `app/Sources/BrokerSetupModels.swift`, `SetupPlan*`,
+  `BrokerDashboardStore.swift`: app decode/presentation/task lifecycle
+- `scripts/install_smoke.sh`: isolated preview/apply/rerun proof
+- public docs/specs/tests: newcomer and compatibility contract
+
+Rollout is additive. Legacy low-level commands remain. Rollback is reverting
+the new command/app surface; setup-created machine state remains valid ordinary
+broker state and is not automatically destroyed.
+
+## 8. Verification traceability
+
+| Requirement | Deterministic proof |
+|---|---|
+| REQ-001–002 | CLI help/strict flags, TTY/non-TTY/JSON tests |
+| REQ-003–004 | setup-preflight and broker-core runtime selection tests |
+| REQ-005–006 | six-row/reuse/fingerprint/stale-plan core tests |
+| REQ-007–008 | core rollback/interruption/post-commit tests and CLI service fixture flow |
+| REQ-009 | app decoding/store/timeout/cancellation tests plus strict screenshots |
+| REQ-010 | core/CLI scaffold tests, docs guard, install smoke |
+| REQ-011 | docs distribution metadata assertions |
+
+Required gates are `test:broker-core`, `test:client`, `test:docs`,
+`test:harness-adoption`, `test:app`, `test:install-smoke`,
+`test:package-smoke`, `verify:public-surface`, `script/build_and_run.sh
+--verify`, harness profiles `implementation` and `spec-only`, and
+`agent:complete`.
+
+Visual scenarios are fresh plan light/dark, missing-runtime blocked, ready
+dashboard, full window, and tight sheet. Approval requires correct state, all
+six rows or obvious scroll/summary affordance, runtime/warning copy, no clipping,
+readable contrast, keyboard actions, and no color-only status.
+
+## 9. Risks and decisions
+
+- Inventory drift is mitigated by lock-scoped plan recomputation.
+- Partial provisioning is mitigated by baseline/name-aware pre-commit rollback.
+- Post-commit uncertainty is mitigated by preservation and idempotent rerun.
+- App process cancellation is bridged to CLI termination and refresh-on-cancel.
+- Long smoke runs isolate paths and delete only devices absent from the baseline.
+
+All product choices are locked; there are no open questions.
+
+## 10. Completion criteria
+
+Done requires all mapped automated and visual proofs passing, documented
+artifacts, structured public-safe commit(s), clean worktree, populated
+long-running plan/handoff/evaluation, and a passing `agent:complete`.
+
+## Document history
+
+| Version | Date | Author | Changes |
+|---|---|---|---|
+| 1.0.0 | 2026-08-22 | `spec-steward`, `ios-dev` | Active guided setup implementation contract |

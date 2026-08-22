@@ -1,5 +1,5 @@
 # Spec Index
-Related: `spec/architecture.md`, `spec/global-simulator-broker.md`, `spec/implementation-plan.md`, `spec/harness-integration.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/agents.md`, `spec/tasks/README.md`, `references/README.md`, `docs/getting-started.md`, `docs/concepts.md`
+Related: `spec/architecture.md`, `spec/global-simulator-broker.md`, `spec/implementation-plan.md`, `spec/harness-integration.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/agents.md`, `spec/tasks/README.md`, `spec/tasks/guided-simbroker-setup.md`, `references/README.md`, `docs/getting-started.md`, `docs/concepts.md`
 
 ## Purpose
 
@@ -23,6 +23,7 @@ This repo exists to develop a reusable local simulator broker:
 | `spec/agents.md` | Agent workflow and skill routing rules |
 | `spec/tasks/README.md` | Worker-ready cross-layer and macOS audit implementation tasks |
 | `spec/tasks/public-safe-on-demand-simulator-lifecycle.md` | Cross-layer contract for deterministic warm reuse and public-safe idle shutdown |
+| `spec/tasks/guided-simbroker-setup.md` | Shared CLI/app machine setup, deterministic confirmation, recovery, and acceptance contract |
 | `references/README.md` | Public-safe reference and example policy |
 | `README.md`, `docs/getting-started.md`, `docs/concepts.md` | Public newcomer front door; not a substitute for these specs |
 
@@ -80,6 +81,9 @@ This repo exists to develop a reusable local simulator broker:
 - optional machine-local idle policy, scheduled reconciliation, confirmed cleanup,
   app controls, and the `verify:public-surface` gate are implemented without a
   shipped duration preference
+- guided `simbroker setup` now previews prerequisites, newest-compatible runtime,
+  and the six-device starter pool before confirmed atomic apply, service startup,
+  snapshot refresh, and health verification; the app consumes the same contract
 
 ## Lower-priority roadmap
 

@@ -29,6 +29,8 @@ Owns:
 - lease, pin, and event schemas
 - public-safe capacity classification, deterministic reconcile planning, and
   additive capacity transactions
+- guided setup planning, newest-compatible runtime selection, exact starter
+  device reuse classification, canonical plan IDs, and pre-commit rollback
 
 Does not own:
 
@@ -49,6 +51,8 @@ Current implementation slice:
 - capacity check and confirmed reconcile using the same repo/host policy,
   `simctl` adapter boundary, mutation lock, local transaction journal, rollback,
   and recovery model as the rest of broker authority
+- confirmed setup apply under capacity-then-lease lock order, with host config as
+  the atomic commit point and no setup-session artifact
 
 ### `brokerd`
 
@@ -88,6 +92,9 @@ Owns:
   default to human-readable text and keep the same payload behind `--json`
 - repo project discovery and validation
 - repo project scaffolding through `project init`
+- bounded setup prerequisite evaluation plus TTY and JSON preview/apply
+  orchestration; service startup, snapshot refresh, and doctor are finishing
+  stages around the broker-core transaction
 - explicit removal of inactive local project registrations through `project forget`
 - compatibility wrappers for repos that want thin local helper commands
 - automatic routing through `brokerd` when the local service is available
@@ -122,6 +129,8 @@ Current implementation slice:
 - broker-backed operator actions for pin create and clear, lease release, and lifecycle commands with confirmation and override flows
 - Overview Automatic shutdown status, explicit duration entry, policy
   apply/disable, and count-confirmed cleanup over broker transport
+- a dedicated guided setup sheet driven by `simbroker setup --json`; the
+  `@MainActor` store owns plan/phase/confirmation/task state and cancellation
 
 Does not own:
 
@@ -147,6 +156,11 @@ broker authority. Consumer repos may request purposes and portable requirements,
 but they must not edit host config, choose host aliases, or create/delete
 broker capacity directly.
 
+Machine setup follows the same rule. The core owns mutation planning and
+provisioning; the CLI owns platform preflight and service completion; the app
+only renders and confirms the shared CLI contract. The app never calls `simctl`
+or writes host/state files directly.
+
 The broker must remain transparent: clients need explainable denial reasons, holder details, health state, and an auditable event feed instead of opaque background behavior.
 
 ## Policy split
@@ -154,6 +168,7 @@ The broker must remain transparent: clients need explainable denial reasons, hol
 - host-local inventory and capability definitions belong to the machine-local broker install
 - repo-owned purpose definitions belong to committed project files inside each consumer repo
 - repo purpose definitions may include explicit iOS version or device family requirements
+- new project scaffolds omit iOS version unless the caller explicitly pins one
 - normal automation requests purposes and capabilities, not hardcoded aliases
 - explicit alias pins are an operator action, not the default repo integration path
 - idle shutdown policy belongs only to machine-local broker state and is absent

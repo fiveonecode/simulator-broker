@@ -27,11 +27,21 @@ The host is this Mac. Host config records the broker-managed simulator aliases,
 their device family, and the real Simulator IDs. First-run setup writes that
 config. Do not edit those files by hand.
 
+## Machine setup
+
+`simbroker setup` prepares one Mac. It checks Xcode and installed runtimes,
+previews the six managed aliases, binds confirmation to a deterministic plan
+ID, provisions atomically, starts `brokerd`, refreshes the app snapshot, and
+verifies health. Machine setup never creates a consumer repository file and
+never replaces an existing unhealthy host automatically.
+
 ## Project
 
 A consumer repo commits `.simulator-broker/project.json`. That file names the
 repo and the purposes it can request. It must not contain machine-local alias
-names or Simulator UDIDs.
+names or Simulator UDIDs. New project scaffolds require an iPhone for UI
+purposes but do not pin an iOS version unless `project init --ios-version` is
+explicitly supplied, so policies remain portable across Macs.
 
 ## Purpose
 

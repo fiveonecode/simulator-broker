@@ -440,6 +440,138 @@ test("host init rejects unknown flags before mutating host config", () => {
   assert.equal(fs.existsSync(fixture.hostConfigPath), false);
 });
 
+test("setup JSON preview and confirmed apply create six aliases, start brokerd, and rerun idempotently", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "guided-cli");
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.equal(preview.json.mode, "preview");
+  assert.equal(preview.json.status, "changes_required");
+  assert.equal(preview.json.devices.length, 6);
+  assert.equal(preview.json.confirmation.createCount, 6);
+  assert.equal(fs.existsSync(fixture.hostConfigPath), false);
+
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "guided-cli",
+    "--json",
+  );
+  assert.equal(applied.status, 0, `${applied.stdout}\n${applied.stderr}`);
+  assert.equal(applied.json.status, "ready");
+  assert.deepEqual(applied.json.devices, { created: 6, reused: 0, total: 6 });
+  assert.equal(applied.json.service.running, true);
+  assert.equal(applied.json.service.identityVerified, true);
+  assert.equal(applied.json.snapshot.ready, true);
+  assert.equal(applied.json.health.ok, true);
+  assert.equal(readJson(fixture.hostConfigPath).aliases.length, 6);
+
+  const secondPreview = runCli(fixture, "setup", "--json");
+  assert.equal(secondPreview.status, 0, secondPreview.stderr);
+  assert.equal(secondPreview.json.status, "ready");
+  assert.equal(secondPreview.json.confirmation.required, false);
+  const secondApply = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    secondPreview.json.planId,
+    "--json",
+  );
+  assert.equal(secondApply.status, 0, `${secondApply.stdout}\n${secondApply.stderr}`);
+  assert.equal(secondApply.json.devices.created, 0);
+  assert.equal(readJson(fixture.simctl.statePath).devices.length, 6);
+
+  const stopped = runCli(fixture, "service", "stop");
+  assert.equal(stopped.status, 0, stopped.stderr);
+});
+
+test("concurrent confirmed setup allows one commit without duplicate devices", async () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "concurrent-guided-cli");
+  assert.equal(preview.status, 0, preview.stderr);
+
+  const results = await Promise.all([
+    runCliAsync(fixture, {}, "setup", "--apply", "--confirm", preview.json.planId, "--host-id", "concurrent-guided-cli", "--json"),
+    runCliAsync(fixture, {}, "setup", "--apply", "--confirm", preview.json.planId, "--host-id", "concurrent-guided-cli", "--json"),
+  ]);
+  const winner = results.find((result) => result.status === 0);
+  const loser = results.find((result) => result.status === 5);
+
+  assert.ok(winner, results.map((result) => result.stderr).join("\n"));
+  assert.equal(winner.json.status, "ready");
+  assert.ok(loser, results.map((result) => result.stderr).join("\n"));
+  assert.equal(loser.json.reasonCode, "setup-plan-stale");
+  assert.equal(readJson(fixture.hostConfigPath).aliases.length, 6);
+  assert.equal(readJson(fixture.simctl.statePath).devices.length, 6);
+
+  const stopped = runCli(fixture, "service", "stop");
+  assert.equal(stopped.status, 0, stopped.stderr);
+});
+
+test("non-TTY setup is read-only and prints a copyable confirmed apply command", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+
+  const preview = spawnCli(fixture, "setup", "--host-id", "human-preview");
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.match(preview.stdout, /Simulator pool \(6\)/);
+  assert.match(preview.stdout, /manual-1/);
+  assert.match(preview.stdout, /ipad-1/);
+  assert.match(preview.stdout, /Runtime: iOS 18\.2/);
+  assert.match(preview.stdout, /simbroker setup --apply --confirm/);
+  assert.equal(fs.existsSync(fixture.hostConfigPath), false);
+});
+
+test("setup rejects missing or stale confirmation and irrelevant flags before mutation", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+
+  const missing = runCli(fixture, "setup", "--apply", "--json");
+  assert.equal(missing.status, 5);
+  assert.equal(missing.json.reasonCode, "setup-confirmation-required");
+  assert.equal(fs.existsSync(fixture.hostConfigPath), false);
+
+  const stale = runCli(fixture, "setup", "--apply", "--confirm", "sha256:stale", "--json");
+  assert.equal(stale.status, 5);
+  assert.equal(stale.json.reasonCode, "setup-plan-stale");
+  assert.equal(fs.existsSync(fixture.hostConfigPath), false);
+
+  for (const args of [
+    ["--force"],
+    ["--yes"],
+    ["--repo-root", root],
+    ["--project-file", path.join(root, "project.json")],
+    ["--unknown"],
+  ]) {
+    const rejected = runCli(fixture, "setup", ...args, "--json");
+    assert.equal(rejected.status, 2, args[0]);
+    assert.equal(rejected.json.reasonCode, "invalid-flag", args[0]);
+  }
+});
+
 test("global path flags reject valueless overrides before defaulting", () => {
   const fixture = makeFixture();
 
@@ -473,6 +605,24 @@ test("project init scaffolds a starter repo config that can be validated immedia
   assert.equal(initResult.status, 0);
   assert.equal(initResult.json.ok, true);
   assert.equal(initResult.json.projectConfig.projectId, "new-repo");
+  const defaultUiPurpose = initResult.json.projectConfig.purposes.find((purpose) => purpose.id === "agent-ui-session");
+  assert.deepEqual(defaultUiPurpose.requires, { deviceFamily: "iPhone" });
+
+  const explicitRoot = path.join(root, "explicit-repo");
+  const explicitResult = runCli(
+    fixture,
+    "project",
+    "init",
+    "--repo-root",
+    explicitRoot,
+    "--project-id",
+    "explicit-repo",
+    "--ios-version",
+    "26",
+  );
+  assert.equal(explicitResult.status, 0);
+  const explicitUiPurpose = explicitResult.json.projectConfig.purposes.find((purpose) => purpose.id === "agent-ui-session");
+  assert.deepEqual(explicitUiPurpose.requires, { deviceFamily: "iPhone", iosVersion: "26" });
 
   const validateResult = runCli(fixture, "project", "validate", "--repo-root", fixture.repoRoot);
   assert.equal(validateResult.status, 0);

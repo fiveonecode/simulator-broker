@@ -8,6 +8,7 @@ import {
   acquireLeaseBroker,
   appSnapshotBroker,
   appSnapshotBrokerUnderMutationLock,
+  applySetupBroker,
   BrokerError,
   bootSimulatorBroker,
   checkCapacityBroker,
@@ -27,6 +28,7 @@ import {
   initProjectBroker,
   idleStatusBroker,
   readEventsBroker,
+  previewSetupBroker,
   reconcileIdleBroker,
   registerLeaseProcessBroker,
   reconcileCapacityBroker,
@@ -812,6 +814,307 @@ test("host init can bootstrap a starter host config when none exists yet", () =>
   assert.ok(status.simulators.every((simulator) => /^[0-9A-F-]{36}$/.test(simulator.simulatorId)));
   const simctlState = readJson(paths.simctl.statePath);
   assert.ok(simctlState.devices.some((device) => device.name === "Simulator Broker bootstrap-host manual-1"));
+});
+
+test("setup selects the newest compatible iOS runtime and honors major and exact overrides", () => {
+  const root = makeTempDir();
+  const supportedDeviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+  ];
+  const runtimes = [
+    {
+      buildversion: "22F76",
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-18-5",
+      isAvailable: true,
+      supportedDeviceTypes,
+      version: "18.5",
+    },
+    {
+      buildversion: "23E214",
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-4",
+      isAvailable: true,
+      supportedDeviceTypes,
+      version: "26.4",
+    },
+    {
+      buildversion: "23F76",
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+      isAvailable: true,
+      supportedDeviceTypes,
+      version: "26.5",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+      isAvailable: false,
+      supportedDeviceTypes,
+      version: "27.0",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimRuntime.tvOS-99-0",
+      isAvailable: true,
+      supportedDeviceTypes,
+      version: "99.0",
+    },
+  ];
+  const simctl = createSimctlFixture(root, { runtimes });
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  const automatic = previewSetupBroker(resolvedPaths, {
+    hostId: "setup-runtime",
+    simctlAdapter: simctl.adapter,
+  });
+  const major = previewSetupBroker(resolvedPaths, {
+    hostId: "setup-runtime",
+    iosVersion: "26",
+    simctlAdapter: simctl.adapter,
+  });
+  const exact = previewSetupBroker(resolvedPaths, {
+    hostId: "setup-runtime",
+    iosVersion: "26.4",
+    simctlAdapter: simctl.adapter,
+  });
+
+  assert.equal(automatic.runtime.version, "26.5");
+  assert.equal(automatic.runtime.buildVersion, "23F76");
+  assert.equal(automatic.runtime.selectionSource, "automatic");
+  assert.equal(major.runtime.version, "26.5");
+  assert.equal(major.runtime.selectionSource, "explicit");
+  assert.equal(exact.runtime.version, "26.4");
+  assert.ok(exact.devices.every((device) => device.runtimeVersion === "26.4"));
+});
+
+test("setup requires one runtime to support both starter device families", () => {
+  const root = makeTempDir();
+  const simctl = createSimctlFixture(root, {
+    runtimes: [{
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+      isAvailable: true,
+      supportedDeviceTypes: [{
+        identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        name: "iPhone 16",
+        productFamily: "iPhone",
+      }],
+      version: "26.5",
+    }],
+  });
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  assert.throws(() => previewSetupBroker(resolvedPaths, {
+    simctlAdapter: simctl.adapter,
+  }), (error) => error instanceof BrokerError && error.payload.reasonCode === "runtime-not-found");
+});
+
+test("setup preview is an exact stable six-device plan with strict reuse matching", () => {
+  const root = makeTempDir();
+  const matchingName = "Simulator Broker setup-plan ui-1";
+  const simctl = createSimctlFixture(root, {
+    devices: [
+      createDeviceRecord({
+        deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        name: matchingName,
+        udid: "REUSE-UI-1",
+      }),
+      createDeviceRecord({
+        deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+        name: "Simulator Broker setup-plan ui-2",
+        udid: "WRONG-TYPE-UI-2",
+      }),
+    ],
+  });
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+  const first = previewSetupBroker(resolvedPaths, {
+    hostId: "setup-plan",
+    simctlAdapter: simctl.adapter,
+  });
+
+  assert.equal(first.status, "changes_required");
+  assert.deepEqual(first.devices.map((device) => device.alias), [
+    "manual-1", "ui-1", "ui-2", "build-1", "build-2", "ipad-1",
+  ]);
+  assert.deepEqual(first.devices.map((device) => device.action), [
+    "create", "reuse", "create", "create", "create", "create",
+  ]);
+  assert.equal(first.confirmation.createCount, 5);
+  assert.equal(first.confirmation.reuseCount, 1);
+
+  const state = readJson(simctl.statePath);
+  state.devices.reverse();
+  state.devices.push(createDeviceRecord({
+    deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+    name: "Unrelated Simulator",
+    udid: "UNRELATED",
+  }));
+  state.runtimes.reverse();
+  writeJson(simctl.statePath, state);
+  const reordered = previewSetupBroker(resolvedPaths, {
+    hostId: "setup-plan",
+    simctlAdapter: simctl.adapter,
+  });
+  assert.equal(reordered.planId, first.planId);
+});
+
+test("setup rejects missing and stale confirmation before mutation and is idempotent after apply", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "confirmed-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const baselineCount = readJson(paths.simctl.statePath).devices.length;
+
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    hostId: "confirmed-setup",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-confirmation-required" && error.exitCode === 5);
+  assert.equal(readJson(paths.simctl.statePath).devices.length, baselineCount);
+
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: "sha256:stale",
+    hostId: "confirmed-setup",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-plan-stale" && error.exitCode === 5);
+  assert.equal(readJson(paths.simctl.statePath).devices.length, baselineCount);
+
+  const applied = applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "confirmed-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(applied.status, "ready");
+  assert.equal(applied.devices.total, 6);
+  assert.equal(applied.devices.created, 6);
+  assert.equal(readJson(paths.hostConfigPath).aliases.length, 6);
+
+  const secondPreview = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(secondPreview.host.action, "keep");
+  assert.equal(secondPreview.confirmation.required, false);
+  const secondApply = applySetupBroker(resolvedPaths, {
+    confirmPlanId: secondPreview.planId,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(secondApply.devices.created, 0);
+  assert.equal(readJson(paths.simctl.statePath).devices.length, baselineCount + 6);
+});
+
+test("setup blocks an existing host whose registry marks an alias for repair", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "unhealthy-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "unhealthy-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-1"].health = "repair-needed";
+  registry.aliases["ui-1"].driftReason = "test-unhealthy";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  const blocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.service.action, "blocked");
+  assert.ok(blocked.prerequisites.some((issue) => issue.alias === "ui-1"));
+  assert.deepEqual(blocked.nextSteps, ["simbroker simulators repair --alias ui-1"]);
+});
+
+test("setup rolls back every pre-commit create failure and cooperative interruption", () => {
+  for (let failurePosition = 1; failurePosition <= 6; failurePosition += 1) {
+    const paths = makePaths();
+    const resolvedPaths = brokerPaths(paths);
+    const preview = previewSetupBroker(resolvedPaths, {
+      hostId: `rollback-${failurePosition}`,
+      simctlAdapter: paths.simctl.adapter,
+    });
+    const baselineIds = readJson(paths.simctl.statePath).devices.map((device) => device.udid).sort();
+    let createCount = 0;
+    const failingAdapter = {
+      ...paths.simctl.adapter,
+      createDevice(name, deviceTypeId, runtimeId) {
+        createCount += 1;
+        const simulatorId = paths.simctl.adapter.createDevice(name, deviceTypeId, runtimeId);
+        if (createCount === failurePosition) {
+          throw new Error(`create failed at ${failurePosition}`);
+        }
+        return simulatorId;
+      },
+    };
+    assert.throws(() => applySetupBroker(resolvedPaths, {
+      confirmPlanId: preview.planId,
+      hostId: `rollback-${failurePosition}`,
+      simctlAdapter: failingAdapter,
+    }), new RegExp(`create failed at ${failurePosition}`));
+    assert.equal(fs.existsSync(paths.hostConfigPath), false);
+    assert.deepEqual(readJson(paths.simctl.statePath).devices.map((device) => device.udid).sort(), baselineIds);
+  }
+
+  const interruptedPaths = makePaths();
+  const interruptedResolvedPaths = brokerPaths(interruptedPaths);
+  const interruptedPreview = previewSetupBroker(interruptedResolvedPaths, {
+    hostId: "interrupted-setup",
+    simctlAdapter: interruptedPaths.simctl.adapter,
+  });
+  const baselineIds = readJson(interruptedPaths.simctl.statePath).devices.map((device) => device.udid).sort();
+  let createCount = 0;
+  const interruptingAdapter = {
+    ...interruptedPaths.simctl.adapter,
+    createDevice(name, deviceTypeId, runtimeId) {
+      createCount += 1;
+      return interruptedPaths.simctl.adapter.createDevice(name, deviceTypeId, runtimeId);
+    },
+  };
+  assert.throws(() => applySetupBroker(interruptedResolvedPaths, {
+    cancellationSignalName: "SIGTERM",
+    confirmPlanId: interruptedPreview.planId,
+    hostId: "interrupted-setup",
+    isCancelled: () => createCount >= 2,
+    simctlAdapter: interruptingAdapter,
+  }), (error) => error.payload?.reasonCode === "setup-interrupted" && error.exitCode === 143);
+  assert.equal(fs.existsSync(interruptedPaths.hostConfigPath), false);
+  assert.deepEqual(readJson(interruptedPaths.simctl.statePath).devices.map((device) => device.udid).sort(), baselineIds);
+});
+
+test("setup preserves devices and host config after the atomic host commit point", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "post-commit-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "post-commit-setup",
+    hostWriteFailStage: "after-rename",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.hostConfigCommitted === true);
+  assert.equal(readJson(paths.hostConfigPath).aliases.length, 6);
+  assert.ok(readJson(paths.simctl.statePath).devices.length >= 10);
 });
 
 test("host init --bootstrap-config names --ios-version when no runtime matches the starter iOS version", () => {

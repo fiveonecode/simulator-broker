@@ -136,7 +136,16 @@ private final class ProcessRunState: @unchecked Sendable {
         return
       }
 
-      let message = envelope.error ?? (stderrText.isEmpty ? "Broker CLI command failed." : stderrText)
+      var message = envelope.error ?? (stderrText.isEmpty ? "Broker CLI command failed." : stderrText)
+      if let failedStage = envelope.failedStage {
+        message += " Failed stage: \(failedStage)."
+      }
+      if let completedStages = envelope.completedStages, completedStages.isEmpty == false {
+        message += " Completed: \(completedStages.joined(separator: ", "))."
+      }
+      if let recoveryCommand = envelope.recoveryCommand {
+        message += " Recovery: \(recoveryCommand)"
+      }
       finish(.failure(BrokerCLICommandError.commandFailed(message)))
     } catch {
       finish(.failure(BrokerCLICommandError.invalidJSONResponse(cliPath)))
@@ -266,12 +275,76 @@ private final class ProcessRunState: @unchecked Sendable {
 }
 
 struct BrokerCLICommandEnvelope: Decodable, Sendable {
+  let completedStages: [String]?
   let error: String?
   let exitCode: Int?
+  let failedStage: String?
+  let hostCommitted: Bool?
   let ok: Bool?
   let reasonCode: String?
+  let recoveryCommand: String?
+  let setupPlan: BrokerSetupPlan?
   let started: Bool?
+  let status: String?
   let unchanged: Bool?
+
+  init(
+    completedStages: [String]? = nil,
+    error: String?,
+    exitCode: Int?,
+    failedStage: String? = nil,
+    hostCommitted: Bool? = nil,
+    ok: Bool?,
+    reasonCode: String?,
+    recoveryCommand: String? = nil,
+    setupPlan: BrokerSetupPlan? = nil,
+    started: Bool?,
+    status: String? = nil,
+    unchanged: Bool?
+  ) {
+    self.completedStages = completedStages
+    self.error = error
+    self.exitCode = exitCode
+    self.failedStage = failedStage
+    self.hostCommitted = hostCommitted
+    self.ok = ok
+    self.reasonCode = reasonCode
+    self.recoveryCommand = recoveryCommand
+    self.setupPlan = setupPlan
+    self.started = started
+    self.status = status
+    self.unchanged = unchanged
+  }
+
+  init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    completedStages = try container.decodeIfPresent([String].self, forKey: .completedStages)
+    error = try container.decodeIfPresent(String.self, forKey: .error)
+    exitCode = try container.decodeIfPresent(Int.self, forKey: .exitCode)
+    failedStage = try container.decodeIfPresent(String.self, forKey: .failedStage)
+    hostCommitted = try container.decodeIfPresent(Bool.self, forKey: .hostCommitted)
+    ok = try container.decodeIfPresent(Bool.self, forKey: .ok)
+    reasonCode = try container.decodeIfPresent(String.self, forKey: .reasonCode)
+    recoveryCommand = try container.decodeIfPresent(String.self, forKey: .recoveryCommand)
+    setupPlan = try? BrokerSetupPlan(from: decoder)
+    started = try container.decodeIfPresent(Bool.self, forKey: .started)
+    status = try container.decodeIfPresent(String.self, forKey: .status)
+    unchanged = try container.decodeIfPresent(Bool.self, forKey: .unchanged)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case completedStages
+    case error
+    case exitCode
+    case failedStage
+    case hostCommitted
+    case ok
+    case reasonCode
+    case recoveryCommand
+    case started
+    case status
+    case unchanged
+  }
 }
 
 enum BrokerCLICommandError: LocalizedError, Sendable {
@@ -486,6 +559,10 @@ private enum BrokerLocalCommandTimeouts {
 
   static func timeoutNanoseconds(for arguments: [String]) -> UInt64 {
     let flags = flagMap(from: arguments)
+    if let setupIndex = arguments.firstIndex(of: "setup") {
+      let isApply = arguments[(setupIndex + 1)...].contains("--apply")
+      return secondsToNanoseconds(isApply ? 7_200 : 600)
+    }
     if let commandGroup = localCommandGroup(in: arguments),
        commandGroup == ("service", "start") {
       let paths = runtimePaths(from: flags)

@@ -52,6 +52,8 @@ const UNAVAILABLE_REASON_CODES = new Set([
   "service-command-expired",
   "service-identity-mismatch",
   "service-unavailable",
+  "setup-health-check-failed",
+  "setup-prerequisite-failed",
   "reset-lock-timeout",
 ]);
 
@@ -74,6 +76,8 @@ const OVERRIDE_REQUIRED_REASON_CODES = new Set([
   "override-alias-mismatch",
   "override-lease-mismatch",
   "override-required",
+  "setup-confirmation-required",
+  "setup-plan-stale",
 ]);
 
 export function resolveBrokerExitCode(reasonCode, fallback = BROKER_EXIT_CODES.internal) {

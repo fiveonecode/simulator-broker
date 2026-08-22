@@ -39,6 +39,7 @@ const DEFAULT_LOCK_POLL_MS = 150;
 const LOCK_OWNER_PID_IDENTITY_TOLERANCE_MS = 15_000;
 const DEFAULT_RESET_SETTLE_MS = 250;
 const CAPACITY_SCHEMA_VERSION = 1;
+const SETUP_SCHEMA_VERSION = 1;
 const CAPACITY_RESET_POLICY_BY_CAPABILITY = Object.freeze({
   "automation-resettable": "erase-on-acquire",
   "build-clean": "erase-on-acquire",
@@ -992,9 +993,15 @@ function buildStarterAliasTemplates({
 function buildStarterProjectConfig({
   projectId,
   projectName,
-  iosVersion = "18",
+  iosVersion,
 } = {}) {
-  const normalizedIosVersion = validateIosVersion(iosVersion ?? "18", "starter-project-config.iosVersion");
+  const normalizedIosVersion = iosVersion === undefined || iosVersion === null
+    ? null
+    : validateIosVersion(iosVersion, "starter-project-config.iosVersion");
+  const uiRequirements = {
+    deviceFamily: "iPhone",
+    ...(normalizedIosVersion === null ? {} : { iosVersion: normalizedIosVersion }),
+  };
   return {
     projectId,
     projectName,
@@ -1010,10 +1017,7 @@ function buildStarterProjectConfig({
         displayName: "Agent UI Session",
         capability: "interactive-resettable",
         defaultActorType: "agent",
-        requires: {
-          deviceFamily: "iPhone",
-          iosVersion: normalizedIosVersion,
-        },
+        requires: uiRequirements,
       },
       {
         id: "agent-build-test",
@@ -1026,10 +1030,7 @@ function buildStarterProjectConfig({
         displayName: "CI UI Test",
         capability: "automation-resettable",
         defaultActorType: "ci",
-        requires: {
-          deviceFamily: "iPhone",
-          iosVersion: normalizedIosVersion,
-        },
+        requires: uiRequirements,
       },
       {
         id: "ci-build-test",
@@ -1304,6 +1305,491 @@ function readSimctlInventory(options = {}) {
     runtimesJson: simctl.listRuntimes(),
     simctl,
   };
+}
+
+function setupRuntimeBuildVersion(runtime) {
+  return runtime?.buildversion ?? runtime?.buildVersion ?? null;
+}
+
+function compareSetupRuntimes(left, right) {
+  const versionComparison = compareVersions(right.version, left.version);
+  if (versionComparison !== 0) {
+    return versionComparison;
+  }
+  const buildComparison = String(setupRuntimeBuildVersion(right) ?? "")
+    .localeCompare(String(setupRuntimeBuildVersion(left) ?? ""), undefined, { numeric: true });
+  if (buildComparison !== 0) {
+    return buildComparison;
+  }
+  return String(left.identifier).localeCompare(String(right.identifier));
+}
+
+function compatibleSetupDeviceTypes(runtime) {
+  const supportedDeviceTypes = Array.isArray(runtime?.supportedDeviceTypes)
+    ? runtime.supportedDeviceTypes
+    : [];
+  return {
+    iPad: supportedDeviceTypes.some((deviceType) => deviceType.productFamily === "iPad"),
+    iPhone: supportedDeviceTypes.some((deviceType) => deviceType.productFamily === "iPhone"),
+  };
+}
+
+function selectRuntimeForSetup(inventory, requestedVersion) {
+  const runtimesByIdentifier = new Map();
+  for (const runtime of inventory.runtimesJson?.runtimes ?? []) {
+    if (!isAvailableIosRuntime(runtime) || !runtimeMatchesRequestedVersion(runtime, requestedVersion)) {
+      continue;
+    }
+    const families = compatibleSetupDeviceTypes(runtime);
+    if (!families.iPhone || !families.iPad) {
+      continue;
+    }
+    const existing = runtimesByIdentifier.get(runtime.identifier);
+    if (!existing || compareSetupRuntimes(runtime, existing) < 0) {
+      runtimesByIdentifier.set(runtime.identifier, runtime);
+    }
+  }
+  const runtimes = [...runtimesByIdentifier.values()].sort(compareSetupRuntimes);
+  if (runtimes.length === 0) {
+    const qualifier = requestedVersion ? ` matching ${requestedVersion}` : "";
+    throw new BrokerError(`No available iOS runtime${qualifier} supports both iPhone and iPad setup devices.`, {
+      iosVersion: requestedVersion ?? null,
+      reasonCode: "runtime-not-found",
+    });
+  }
+  return runtimes[0];
+}
+
+function setupRuntimeSummary(runtime, requestedVersion) {
+  return {
+    buildVersion: setupRuntimeBuildVersion(runtime),
+    identifier: runtime.identifier,
+    selectionSource: requestedVersion ? "explicit" : "automatic",
+    version: runtime.version,
+  };
+}
+
+function setupDevicePlan(inventory, hostId, runtime) {
+  const { templates } = buildStarterAliasTemplates({
+    hostId,
+    iosVersion: runtime.version,
+  });
+  const deviceTypes = {
+    iPad: selectPreferredDeviceType(runtime, "iPad"),
+    iPhone: selectPreferredDeviceType(runtime, "iPhone"),
+  };
+  const deviceIndex = createDeviceIndex({
+    deviceTypesJson: inventory.deviceTypesJson,
+    devicesJson: inventory.devicesJson,
+    runtimesJson: inventory.runtimesJson,
+  });
+  const devices = templates.map((template) => {
+    const deviceType = deviceTypes[template.deviceFamily];
+    const reusable = [...deviceIndex.values()]
+      .filter((device) => device.isAvailable
+        && device.name === template.simulatorName
+        && device.runtimeIdentifier === runtime.identifier
+        && device.deviceTypeIdentifier === deviceType.identifier)
+      .sort((left, right) => String(left.udid).localeCompare(String(right.udid)))[0] ?? null;
+    return {
+      action: reusable ? "reuse" : "create",
+      alias: template.alias,
+      capabilities: template.capabilities,
+      deviceFamily: template.deviceFamily,
+      deviceTypeIdentifier: deviceType.identifier,
+      deviceTypeName: deviceType.name,
+      displayName: template.displayName,
+      resetPolicy: template.resetPolicy,
+      runtimeIdentifier: runtime.identifier,
+      runtimeVersion: runtime.version,
+      simulatorId: reusable?.udid ?? null,
+      simulatorName: template.simulatorName,
+    };
+  });
+  return {
+    devices,
+    deviceTypes,
+  };
+}
+
+function setupHostConfigDigest(hostConfig) {
+  return hostConfig ? sha256Digest(hostConfig) : null;
+}
+
+function setupPlanFingerprint({ configured, devices, hostConfig, hostId, runtime }) {
+  return sha256Digest({
+    devices: devices.map((device) => ({
+      action: device.action,
+      alias: device.alias,
+      capabilities: device.capabilities,
+      deviceFamily: device.deviceFamily,
+      deviceTypeIdentifier: device.deviceTypeIdentifier,
+      displayName: device.displayName,
+      resetPolicy: device.resetPolicy,
+      reusableSimulatorId: device.action === "reuse" ? device.simulatorId : null,
+      runtimeIdentifier: device.runtimeIdentifier,
+      runtimeVersion: device.runtimeVersion,
+      simulatorName: device.simulatorName,
+    })),
+    host: {
+      configured,
+      digest: setupHostConfigDigest(hostConfig),
+      hostId,
+    },
+    runtime: runtime ? {
+      buildVersion: runtime.buildVersion,
+      identifier: runtime.identifier,
+      version: runtime.version,
+    } : null,
+    schemaVersion: SETUP_SCHEMA_VERSION,
+  });
+}
+
+function setupExistingHostState(paths, inventory, options = {}) {
+  let hostConfig;
+  try {
+    hostConfig = readHostConfigOrThrow(paths);
+  } catch (error) {
+    if (!(error instanceof BrokerError)) {
+      throw error;
+    }
+    const hostId = options.hostId ?? null;
+    const planId = setupPlanFingerprint({
+      configured: true,
+      devices: [],
+      hostConfig: null,
+      hostId,
+      runtime: null,
+    });
+    return {
+      hostConfig: null,
+      preview: {
+        command: "setup",
+        confirmation: { createCount: 0, required: false, reuseCount: 0 },
+        devices: [],
+        host: { action: "keep", configured: true, hostId },
+        mode: "preview",
+        nextSteps: ["simbroker doctor"],
+        ok: true,
+        planId,
+        prerequisites: [{
+          details: error.payload,
+          id: "host-config",
+          status: "blocked",
+          summary: error.message,
+          remediationCommands: ["simbroker doctor"],
+        }],
+        runtime: null,
+        schemaVersion: SETUP_SCHEMA_VERSION,
+        service: { action: "blocked", running: false },
+        status: "blocked",
+      },
+    };
+  }
+
+  const deviceIndex = createDeviceIndex({
+    deviceTypesJson: inventory.deviceTypesJson,
+    devicesJson: inventory.devicesJson,
+    runtimesJson: inventory.runtimesJson,
+  });
+  const deviceTypes = new Map((inventory.deviceTypesJson?.devicetypes ?? [])
+    .map((deviceType) => [deviceType.identifier, deviceType]));
+  const issues = [];
+  let registry = null;
+  try {
+    registry = normalizeRegistry(
+      readJsonIfExists(paths.registryPath),
+      hostConfig,
+      nowIso(options.now),
+    );
+  } catch (error) {
+    issues.push({
+      id: "registry",
+      status: "blocked",
+      summary: "The existing broker registry is invalid and setup will not replace it automatically.",
+      details: error instanceof BrokerError ? error.payload : { message: error.message },
+      remediationCommands: ["simbroker doctor"],
+    });
+  }
+  const devices = hostConfig.aliases.map((alias) => {
+    const device = deviceIndex.get(alias.simulatorId) ?? null;
+    const deviceType = device ? deviceTypes.get(device.deviceTypeIdentifier) ?? null : null;
+    const registryHealth = registry?.aliases?.[alias.alias]?.health ?? "healthy";
+    const healthy = Boolean(device?.isAvailable)
+      && device.runtimeVersion === alias.iosVersion
+      && device.deviceFamily === alias.deviceFamily
+      && registryHealth !== "repair-needed"
+      && registryHealth !== "repairing";
+    if (!healthy) {
+      issues.push({
+        alias: alias.alias,
+        id: `alias-${alias.alias}`,
+        status: "blocked",
+        summary: registryHealth === "repair-needed" || registryHealth === "repairing"
+          ? `Managed alias ${alias.alias} requires repair before setup can continue.`
+          : `Managed alias ${alias.alias} does not resolve to its configured available Simulator.`,
+        remediationCommands: [`simbroker simulators repair --alias ${alias.alias}`],
+      });
+    }
+    return {
+      action: "reuse",
+      alias: alias.alias,
+      capabilities: alias.capabilities,
+      deviceFamily: alias.deviceFamily,
+      deviceTypeIdentifier: device?.deviceTypeIdentifier ?? null,
+      deviceTypeName: deviceType?.name ?? "Unavailable",
+      displayName: alias.displayName,
+      resetPolicy: alias.resetPolicy,
+      runtimeIdentifier: device?.runtimeIdentifier ?? null,
+      runtimeVersion: alias.iosVersion,
+      simulatorId: alias.simulatorId,
+      simulatorName: device?.name ?? alias.displayName,
+    };
+  });
+  const planId = setupPlanFingerprint({
+    configured: true,
+    devices,
+    hostConfig,
+    hostId: hostConfig.hostId,
+    runtime: null,
+  });
+  const blocked = issues.length > 0;
+  return {
+    hostConfig,
+    preview: {
+      command: "setup",
+      confirmation: { createCount: 0, required: false, reuseCount: devices.length },
+      devices,
+      host: { action: "keep", configured: true, hostId: hostConfig.hostId },
+      mode: "preview",
+      nextSteps: blocked
+        ? issues.flatMap((issue) => issue.remediationCommands)
+        : ["simbroker project init", "simbroker project validate"],
+      ok: true,
+      planId,
+      prerequisites: issues,
+      runtime: null,
+      schemaVersion: SETUP_SCHEMA_VERSION,
+      service: { action: blocked ? "blocked" : "start", running: false },
+      status: blocked ? "blocked" : "ready",
+    },
+  };
+}
+
+function buildSetupPlan(paths, options = {}) {
+  const inventory = readSimctlInventory(options);
+  if (fs.existsSync(paths.hostConfigPath)) {
+    return setupExistingHostState(paths, inventory, options);
+  }
+
+  const runtime = selectRuntimeForSetup(inventory, options.iosVersion);
+  const hostId = slugifyIdentifier(options.hostId ?? defaultHostId(), defaultHostId());
+  const { devices } = setupDevicePlan(inventory, hostId, runtime);
+  const runtimeSummary = setupRuntimeSummary(runtime, options.iosVersion);
+  const createCount = devices.filter((device) => device.action === "create").length;
+  const reuseCount = devices.length - createCount;
+  const planId = setupPlanFingerprint({
+    configured: false,
+    devices,
+    hostConfig: null,
+    hostId,
+    runtime: runtimeSummary,
+  });
+  return {
+    hostConfig: null,
+    inventory,
+    preview: {
+      command: "setup",
+      confirmation: { createCount, required: true, reuseCount },
+      devices,
+      host: { action: "create", configured: false, hostId },
+      mode: "preview",
+      nextSteps: [],
+      ok: true,
+      planId,
+      prerequisites: [],
+      runtime: runtimeSummary,
+      schemaVersion: SETUP_SCHEMA_VERSION,
+      service: { action: "start", running: false },
+      status: "changes_required",
+    },
+  };
+}
+
+export function previewSetupBroker(paths, options = {}) {
+  return buildSetupPlan(paths, options).preview;
+}
+
+function setupCancellationError(options) {
+  const signalName = options.cancellationSignalName ?? "SIGINT";
+  return new BrokerError("Setup was interrupted.", {
+    completedStages: options.completedStages ?? [],
+    failedStage: options.failedStage ?? "provisioning",
+    hostCommitted: options.hostCommitted === true,
+    reasonCode: "setup-interrupted",
+    recoveryCommand: "simbroker setup",
+    serviceRunning: false,
+    exitCode: signalName === "SIGTERM" ? 143 : 130,
+  });
+}
+
+function throwIfSetupCancelled(options, state = {}) {
+  if (options.signal?.aborted || options.isCancelled?.() === true) {
+    throw setupCancellationError({
+      ...options,
+      ...state,
+    });
+  }
+}
+
+function setupHostConfigFromPlan(plan, simulatorIdsByAlias) {
+  return {
+    aliases: plan.devices.map((device) => ({
+      alias: device.alias,
+      capabilities: device.capabilities,
+      deviceFamily: device.deviceFamily,
+      displayName: device.displayName,
+      iosVersion: device.runtimeVersion,
+      resetPolicy: device.resetPolicy,
+      simulatorId: simulatorIdsByAlias.get(device.alias),
+    })),
+    hostId: plan.host.hostId,
+    version: HOST_CONFIG_VERSION,
+  };
+}
+
+export function applySetupBroker(paths, options = {}) {
+  const timestamp = nowIso(options.now);
+  return withCapacityLock(paths, () => withLeaseMutationLock(paths, () => {
+    const { preview, inventory } = buildSetupPlan(paths, options);
+    if (!options.confirmPlanId) {
+      throw new BrokerError("Setup requires confirmation of the current plan.", {
+        currentPlanId: preview.planId,
+        failedStage: "confirmation",
+        reasonCode: "setup-confirmation-required",
+        recoveryCommand: "simbroker setup",
+      });
+    }
+    if (options.confirmPlanId !== preview.planId) {
+      throw new BrokerError("The setup plan changed. Preview it again before applying.", {
+        confirmedPlanId: options.confirmPlanId,
+        currentPlanId: preview.planId,
+        failedStage: "confirmation",
+        reasonCode: "setup-plan-stale",
+        recoveryCommand: "simbroker setup",
+      });
+    }
+    if (preview.status === "blocked") {
+      throw new BrokerError("Setup is blocked by the current host configuration.", {
+        failedStage: "planning",
+        prerequisites: preview.prerequisites,
+        reasonCode: "setup-prerequisite-failed",
+        recoveryCommand: "simbroker setup",
+      });
+    }
+
+    if (preview.host.configured) {
+      const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+      return {
+        command: "setup",
+        devices: { created: 0, reused: state.hostConfig.aliases.length, total: state.hostConfig.aliases.length },
+        host: { configured: true, created: false },
+        mode: "apply",
+        ok: true,
+        planId: preview.planId,
+        schemaVersion: SETUP_SCHEMA_VERSION,
+        status: "ready",
+      };
+    }
+
+    const simctl = inventory.simctl;
+    const baselineDeviceIds = new Set(readSimulatorDeviceIndex(simctl).keys());
+    const plannedSimulatorNames = new Set(preview.devices.map((device) => device.simulatorName));
+    const createdSimulatorIds = [];
+    const simulatorIdsByAlias = new Map();
+    let hostCommitted = false;
+    try {
+      for (const device of preview.devices) {
+        throwIfSetupCancelled(options, {
+          completedStages: createdSimulatorIds.length === 0 ? [] : ["devices-partial"],
+          failedStage: "devices",
+          hostCommitted,
+        });
+        if (device.action === "reuse") {
+          simulatorIdsByAlias.set(device.alias, device.simulatorId);
+          continue;
+        }
+        const simulatorId = simctl.createDevice(
+          device.simulatorName,
+          device.deviceTypeIdentifier,
+          device.runtimeIdentifier,
+        );
+        createdSimulatorIds.push(simulatorId);
+        simulatorIdsByAlias.set(device.alias, simulatorId);
+      }
+      throwIfSetupCancelled(options, {
+        completedStages: ["devices"],
+        failedStage: "host-config",
+        hostCommitted,
+      });
+      const hostConfig = setupHostConfigFromPlan(preview, simulatorIdsByAlias);
+      writeJsonAtomicDurable(paths.hostConfigPath, hostConfig, {
+        failStage: options.hostWriteFailStage,
+      });
+      fs.chmodSync(paths.hostConfigPath, 0o600);
+      hostCommitted = true;
+      const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+      appendEventRecord(paths, "host.initialized", {
+        alias: null,
+        leaseId: null,
+        payload: {
+          aliasCount: state.hostConfig.aliases.length,
+          bootstrapConfig: true,
+          hostId: state.hostConfig.hostId,
+          setupPlanId: preview.planId,
+        },
+        projectId: null,
+        purposeId: null,
+      }, timestamp);
+      return {
+        command: "setup",
+        devices: {
+          created: createdSimulatorIds.length,
+          reused: preview.devices.length - createdSimulatorIds.length,
+          total: preview.devices.length,
+        },
+        host: { configured: true, created: true },
+        mode: "apply",
+        ok: true,
+        planId: preview.planId,
+        schemaVersion: SETUP_SCHEMA_VERSION,
+        status: "ready",
+      };
+    } catch (error) {
+      hostCommitted = hostCommitted || error?.hostConfigCommitted === true || fs.existsSync(paths.hostConfigPath);
+      if (!hostCommitted) {
+        rollbackCreatedSimulators(simctl, createdSimulatorIds, {
+          baselineDeviceIds,
+          plannedSimulatorNames,
+        });
+      }
+      if (error instanceof BrokerError) {
+        error.payload.hostCommitted = hostCommitted;
+        error.payload.recoveryCommand ??= "simbroker setup";
+      }
+      throw error;
+    }
+  }, {
+    now: timestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  }), {
+    now: timestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.capacityLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  });
 }
 
 function syncRegistryWithSimctl(hostConfig, registry, options = {}) {

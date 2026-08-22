@@ -16,6 +16,15 @@ struct RootView: View {
     .focusedSceneValue(\.brokerSelectedPane, $store.selectedPane)
     .focusedSceneValue(\.brokerSelectedSimulatorAlias, $store.inspectedSimulatorAlias)
     .focusedSceneValue(\.brokerCommandAvailability, store.commandAvailability)
+    .sheet(item: $store.setupPlan, onDismiss: store.cancelGuidedSetup) { plan in
+      SetupPlanSheet(
+        onCancel: store.cancelGuidedSetup,
+        onConfirm: store.confirmGuidedSetup,
+        onStop: store.stopGuidedSetup,
+        phase: store.setupPhase,
+        plan: plan
+      )
+    }
   }
 
   private var navigationList: some View {
@@ -126,14 +135,8 @@ struct RootView: View {
     }
   }
 
-  private func startBrokerService() {
-    Task { @MainActor in
-      do {
-        try await store.startBrokerService()
-      } catch {
-        store.lastErrorMessage = error.localizedDescription
-      }
-    }
+  private func resumeGuidedSetup() {
+    store.requestGuidedSetup()
   }
 
   @ViewBuilder
@@ -175,8 +178,8 @@ struct RootView: View {
           color: .orange,
           message: "Broker commands are disabled because brokerd is not running. Start the service to enable pinning, release, and lifecycle actions.",
           symbolName: "bolt.slash.fill",
-          actionTitle: "Start brokerd",
-          onAction: startBrokerService,
+          actionTitle: "Finish setup",
+          onAction: resumeGuidedSetup,
           onDismiss: nil
         )
       } else {

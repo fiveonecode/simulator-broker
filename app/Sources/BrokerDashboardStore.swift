@@ -67,6 +67,8 @@ final class BrokerDashboardStore {
   private let refreshInterval: Duration
   private var refreshTask: Task<Void, Never>?
   private let runtimePaths: BrokerRuntimePaths
+  @ObservationIgnored private var setupTask: Task<Void, Never>?
+  private var setupGeneration = 0
   private var visibleRefreshCount = 0
 
   var inspectedEventId: String?
@@ -83,6 +85,9 @@ final class BrokerDashboardStore {
   var pendingLifecycleRequest: BrokerPendingLifecycleRequest?
   var pendingOverrideRequest: BrokerLifecycleOverrideRequest?
   var pendingReleaseLeaseRequest: BrokerPendingLeaseReleaseRequest?
+  var pendingSetupConfirmation: String?
+  var setupPhase: BrokerSetupPhase = .idle
+  var setupPlan: BrokerSetupPlan?
   var selectedPane: BrokerNavigationPane = .overview {
     didSet {
       if selectedPane != .overview {
@@ -387,10 +392,12 @@ final class BrokerDashboardStore {
     }
     feedbackClearTask?.cancel()
     refreshTask?.cancel()
+    setupTask?.cancel()
     feedbackClearTask = nil
     isRefreshing = false
     visibleRefreshCount = 0
     refreshTask = nil
+    setupTask = nil
   }
 
   func clearFeedback() {
@@ -517,90 +524,110 @@ final class BrokerDashboardStore {
     }
   }
 
-  func completeFirstTimeSetup() async throws {
-    let cliURL = try requireCLIURL()
-    try await performLocalAction {
-      _ = try await self.runSetupStep(name: "first-time-host-bootstrap") {
-        try await self.localCommandRunner.run(
-          cliPath: cliURL,
-          arguments: [
-            "host",
-            "init",
-            "--bootstrap-config",
-            "--host-config",
-            self.hostConfigPath,
-            "--state-root",
-            self.stateRootPath,
-          ]
-        )
-      }
-      let serviceResponse = try await self.runSetupStep(
-        name: "brokerd-start",
-        successDetail: { response in
-          response.unchanged == true ? "already-running" : "started"
+  func requestGuidedSetup() {
+    setupTask?.cancel()
+    setupGeneration += 1
+    let generation = setupGeneration
+    setupPhase = .previewing
+    isApplyingAction = true
+    lastErrorMessage = nil
+    setupTask = Task { [weak self] in
+      guard let self else { return }
+      defer {
+        if generation == setupGeneration {
+          isApplyingAction = false
+          setupTask = nil
         }
-      ) {
-        try await self.localCommandRunner.run(
-          cliPath: cliURL,
-          arguments: [
-            "service",
-            "start",
-            "--host-config",
-            self.hostConfigPath,
-            "--state-root",
-            self.stateRootPath,
-          ]
-        )
       }
-      return serviceResponse.unchanged == true
-        ? "Broker setup is already complete."
-        : "Broker setup completed and brokerd started."
+      do {
+        let plan = try await loadGuidedSetupPlan()
+        try Task.checkCancellation()
+        setupPlan = plan
+        if plan.status == .blocked {
+          pendingSetupConfirmation = nil
+          setupPhase = .awaitingConfirmation
+          return
+        }
+        if plan.confirmation.required {
+          pendingSetupConfirmation = plan.planId
+          setupPhase = .awaitingConfirmation
+          return
+        }
+        if plan.status == .ready {
+          setupPlan = nil
+          setupPhase = .idle
+          setActionMessage("Setup complete — brokerd is running and all managed simulators are healthy.")
+          return
+        }
+        try await applyGuidedSetup(plan)
+      } catch is CancellationError {
+        _ = await refresh(silent: true)
+        if generation == setupGeneration {
+          setupPhase = setupPlan == nil ? .idle : .awaitingConfirmation
+        }
+      } catch {
+        _ = await refresh(silent: true)
+        if generation == setupGeneration {
+          setupPhase = setupPlan == nil ? .idle : .awaitingConfirmation
+          lastActionMessage = nil
+          lastErrorMessage = error.localizedDescription
+        }
+      }
     }
   }
 
-  func refreshSnapshotArtifact() async throws {
-    let cliURL = try requireCLIURL()
-    try await performLocalAction {
-      _ = try await self.runSetupStep(name: "snapshot-refresh") {
-        try await self.localCommandRunner.run(
-          cliPath: cliURL,
-          arguments: [
-            "app",
-            "snapshot",
-            "--host-config",
-            self.hostConfigPath,
-            "--state-root",
-            self.stateRootPath,
-          ]
-        )
+  func confirmGuidedSetup() {
+    guard setupPhase == .awaitingConfirmation,
+          let setupPlan,
+          pendingSetupConfirmation == setupPlan.planId,
+          setupPlan.status != .blocked
+    else {
+      return
+    }
+    setupTask?.cancel()
+    setupGeneration += 1
+    let generation = setupGeneration
+    setupPhase = .applying
+    isApplyingAction = true
+    setupTask = Task { [weak self] in
+      guard let self else { return }
+      defer {
+        if generation == setupGeneration {
+          isApplyingAction = false
+          setupTask = nil
+        }
       }
-      return "Broker snapshot refreshed."
+      do {
+        try await applyGuidedSetup(setupPlan)
+      } catch is CancellationError {
+        _ = await refresh(silent: true)
+        if generation == setupGeneration {
+          setupPhase = .awaitingConfirmation
+        }
+      } catch {
+        _ = await refresh(silent: true)
+        if generation == setupGeneration {
+          setupPhase = .awaitingConfirmation
+          lastActionMessage = nil
+          lastErrorMessage = error.localizedDescription
+        }
+      }
     }
   }
 
-  func startBrokerService() async throws {
-    let cliURL = try requireCLIURL()
-    try await performLocalAction {
-      let response = try await self.runSetupStep(
-        name: "brokerd-start",
-        successDetail: { response in
-          response.unchanged == true ? "already-running" : "started"
-        }
-      ) {
-        try await self.localCommandRunner.run(
-          cliPath: cliURL,
-          arguments: [
-            "service",
-            "start",
-            "--host-config",
-            self.hostConfigPath,
-            "--state-root",
-            self.stateRootPath,
-          ]
-        )
-      }
-      return response.unchanged == true ? "brokerd is already running." : "brokerd started."
-    }
+  func cancelGuidedSetup() {
+    guard setupPhase != .applying else { return }
+    setupTask?.cancel()
+    setupTask = nil
+    pendingSetupConfirmation = nil
+    setupPlan = nil
+    setupPhase = .idle
+    isApplyingAction = false
+  }
+
+  func stopGuidedSetup() {
+    guard setupPhase == .applying else { return }
+    setupTask?.cancel()
   }
 
   func applyIdlePolicy(graceSeconds: Int) async throws {
@@ -883,24 +910,6 @@ final class BrokerDashboardStore {
     lastErrorMessage = nil
   }
 
-  private func performLocalAction(messageFactory: @escaping @Sendable () async throws -> String) async throws {
-    isApplyingAction = true
-    defer {
-      isApplyingAction = false
-    }
-
-    do {
-      let successMessage = try await messageFactory()
-      try await requireRefreshAfterMutation()
-      setActionMessage(successMessage)
-      lastErrorMessage = nil
-    } catch {
-      lastActionMessage = nil
-      lastErrorMessage = error.localizedDescription
-      throw error
-    }
-  }
-
   @discardableResult
   private func refresh(silent: Bool = false) async -> BrokerRefreshOutcome {
     let refreshMode = silent ? "silent" : "manual"
@@ -1139,6 +1148,66 @@ final class BrokerDashboardStore {
       )
       throw error
     }
+  }
+
+  private func guidedSetupPathArguments() -> [String] {
+    var arguments = [
+      "--host-config",
+      hostConfigPath,
+      "--state-root",
+      stateRootPath,
+    ]
+    if let serviceSocketURL = runtimePaths.serviceSocketURL {
+      arguments += ["--service-socket", serviceSocketURL.path]
+    }
+    return arguments
+  }
+
+  private func loadGuidedSetupPlan() async throws -> BrokerSetupPlan {
+    let cliURL = try requireCLIURL()
+    let response = try await runSetupStep(name: "guided-setup-preview") {
+      try await self.localCommandRunner.run(
+        cliPath: cliURL,
+        arguments: ["setup", "--json"] + self.guidedSetupPathArguments()
+      )
+    }
+    guard let plan = response.setupPlan else {
+      throw BrokerCLICommandError.invalidJSONResponse(cliURL)
+    }
+    return plan
+  }
+
+  private func applyGuidedSetup(_ plan: BrokerSetupPlan) async throws {
+    let cliURL = try requireCLIURL()
+    setupPhase = .applying
+    var arguments = [
+      "setup",
+      "--apply",
+      "--confirm",
+      plan.planId,
+    ]
+    if let hostId = plan.host.hostId {
+      arguments += ["--host-id", hostId]
+    }
+    if let runtime = plan.runtime {
+      arguments += ["--ios-version", runtime.version]
+    }
+    arguments += ["--json"] + guidedSetupPathArguments()
+    let commandArguments = arguments
+
+    let response = try await runSetupStep(name: "guided-setup-apply") {
+      try await self.localCommandRunner.run(cliPath: cliURL, arguments: commandArguments)
+    }
+    try Task.checkCancellation()
+    guard response.status == "ready" else {
+      throw BrokerCLICommandError.invalidJSONResponse(cliURL)
+    }
+    try await requireRefreshAfterMutation()
+    setupPlan = nil
+    pendingSetupConfirmation = nil
+    setupPhase = .idle
+    lastErrorMessage = nil
+    setActionMessage("Setup complete — brokerd is running and all managed simulators are healthy.")
   }
 
   private func logCommandStart(actionName: String, alias: String?) {
