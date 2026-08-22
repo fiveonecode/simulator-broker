@@ -9,7 +9,6 @@ import { createInterface } from "node:readline/promises";
 
 import { BROKER_EXIT_CODES, INTERNAL_ERROR_REASON_CODE, resolveBrokerExitCode } from "../../broker-core/error-contract.mjs";
 import {
-  applySetupBroker,
   BrokerError,
   HOST_BOOTSTRAP_DEVICE_WARNING,
   idlePolicyConfiguredBroker,
@@ -39,6 +38,7 @@ import {
   completeSetupPreview,
   evaluateSetupPrerequisites,
 } from "../setup-preflight.mjs";
+import { applySetupBrokerInWorker } from "../setup-provisioning.mjs";
 
 const BROKERD_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "brokerd.mjs");
 const SERVICE_CONTROL_FLAGS = new Set([
@@ -636,11 +636,18 @@ function setupOptions(flags) {
       reasonCode: "invalid-flag",
     });
   }
+  const iosVersion = setupValueFlag(flags, "ios-version");
+  if (iosVersion !== null && !/^\d+(?:\.\d+)?$/.test(iosVersion)) {
+    throw new BrokerError("Flag --ios-version must be an iOS major or exact major.minor version.", {
+      flag: "ios-version",
+      reasonCode: "invalid-flag",
+    });
+  }
   return {
     apply,
     confirmPlanId,
     hostId: setupValueFlag(flags, "host-id"),
-    iosVersion: setupValueFlag(flags, "ios-version"),
+    iosVersion,
   };
 }
 
@@ -705,8 +712,42 @@ async function buildSetupPreview(paths, options) {
   }
   return completeSetupPreview(corePreview, prerequisites, {
     serviceRunning: running,
-    snapshotReady: fs.existsSync(paths.appSnapshotPath),
+    snapshotReady: setupSnapshotReady(paths, corePreview),
   });
+}
+
+function setupSnapshotReady(paths, corePreview) {
+  if (!corePreview.host.configured || !fs.existsSync(paths.appSnapshotPath)) {
+    return false;
+  }
+  try {
+    const snapshot = JSON.parse(fs.readFileSync(paths.appSnapshotPath, "utf8"));
+    if (path.resolve(snapshot.hostConfigPath ?? "") !== path.resolve(paths.hostConfigPath)
+      || path.resolve(snapshot.stateRoot ?? "") !== path.resolve(paths.stateRoot)
+      || snapshot.hostId !== corePreview.host.hostId) {
+      return false;
+    }
+    const snapshotAliases = new Map(
+      (Array.isArray(snapshot.simulators) ? snapshot.simulators : [])
+        .map((simulator) => [simulator.alias, simulator]),
+    );
+    if (!corePreview.devices.every((device) => {
+      const snapshotDevice = snapshotAliases.get(device.alias);
+      return snapshotDevice
+        && snapshotDevice.simulatorId === device.simulatorId
+        && snapshotDevice.health !== "repair-needed"
+        && snapshotDevice.health !== "repairing";
+    })) {
+      return false;
+    }
+    const snapshotMtime = fs.statSync(paths.appSnapshotPath).mtimeMs;
+    const relevantStateMtime = [paths.hostConfigPath, paths.registryPath]
+      .filter((filePath) => fs.existsSync(filePath))
+      .reduce((latest, filePath) => Math.max(latest, fs.statSync(filePath).mtimeMs), 0);
+    return snapshotMtime >= relevantStateMtime;
+  } catch {
+    return false;
+  }
 }
 
 function shellQuoteArgument(value) {
@@ -775,13 +816,11 @@ async function applySetup(paths, options, cancellation) {
   let coreResult;
   try {
     checkCancellation();
-    coreResult = applySetupBroker(paths, {
-      cancellationSignalName: cancellation.signalName ?? "SIGINT",
+    coreResult = await applySetupBrokerInWorker(paths, {
       confirmPlanId: options.confirmPlanId,
       hostId: options.hostId ?? undefined,
       iosVersion: options.iosVersion ?? undefined,
-      isCancelled: () => cancellation.signalName !== null,
-    });
+    }, cancellation);
     hostCommitted = true;
     completedStages.push("host", "devices", "registry");
   } catch (error) {
@@ -936,9 +975,13 @@ async function runSetup(paths, flags) {
     }
   }
 
-  const cancellation = { signalName: null };
-  const handleSigint = () => { cancellation.signalName = "SIGINT"; };
-  const handleSigterm = () => { cancellation.signalName = "SIGTERM"; };
+  const cancellation = { requestProvisioningCancellation: null, signalName: null };
+  const recordSignal = (signalName) => {
+    cancellation.signalName = signalName;
+    cancellation.requestProvisioningCancellation?.(signalName);
+  };
+  const handleSigint = () => recordSignal("SIGINT");
+  const handleSigterm = () => recordSignal("SIGTERM");
   process.once("SIGINT", handleSigint);
   process.once("SIGTERM", handleSigterm);
   try {

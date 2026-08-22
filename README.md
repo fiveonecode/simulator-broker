@@ -32,6 +32,11 @@ setup. Homebrew does not create Simulator devices. `simbroker setup` first
 shows every prerequisite, the selected runtime, and the exact six-device plan;
 nothing changes until you confirm it. Node.js 20+ is still required at runtime.
 
+> **Next Alpha availability:** guided `simbroker setup` is currently available
+> from `main` and source installs. The published `0.1.0-alpha.2` Homebrew, npm,
+> and cask artifacts predate this command; use the clone installer below to try
+> it now, or wait for the next Alpha release.
+
 ```bash
 brew install fiveonecode/simulator-broker/simbroker
 simbroker --help

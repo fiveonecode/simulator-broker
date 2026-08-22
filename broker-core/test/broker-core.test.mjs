@@ -1043,6 +1043,31 @@ test("setup blocks an existing host whose registry marks an alias for repair", (
   assert.deepEqual(blocked.nextSteps, ["simbroker simulators repair --alias ui-1"]);
 });
 
+test("setup accepts major-only requirements on an existing healthy host and blocks a missing registry", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "existing-major-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "existing-major-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const hostConfig = readJson(paths.hostConfigPath);
+  hostConfig.aliases = hostConfig.aliases.map((alias) => ({ ...alias, iosVersion: "18" }));
+  writeJson(paths.hostConfigPath, hostConfig);
+
+  const healthy = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
+  assert.notEqual(healthy.status, "blocked");
+
+  fs.rmSync(resolvedPaths.registryPath);
+  const missingRegistry = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
+  assert.equal(missingRegistry.status, "blocked");
+  assert.ok(missingRegistry.prerequisites.some((issue) => issue.id === "registry"));
+});
+
 test("setup rolls back every pre-commit create failure and cooperative interruption", () => {
   for (let failurePosition = 1; failurePosition <= 6; failurePosition += 1) {
     const paths = makePaths();
@@ -1097,6 +1122,51 @@ test("setup rolls back every pre-commit create failure and cooperative interrupt
   }), (error) => error.payload?.reasonCode === "setup-interrupted" && error.exitCode === 143);
   assert.equal(fs.existsSync(interruptedPaths.hostConfigPath), false);
   assert.deepEqual(readJson(interruptedPaths.simctl.statePath).devices.map((device) => device.udid).sort(), baselineIds);
+});
+
+test("setup rollback deletes only attempt-attributed simulators", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const hostId = "attributed-rollback";
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const firstDevice = preview.devices[0];
+  const externalId = "EXTERNAL-SAME-NAME";
+  let createCount = 0;
+  const failingAdapter = {
+    ...paths.simctl.adapter,
+    createDevice(name, deviceTypeId, runtimeId) {
+      createCount += 1;
+      if (createCount === 1) {
+        const state = readJson(paths.simctl.statePath);
+        state.devices.push(createDeviceRecord({
+          deviceTypeIdentifier: deviceTypeId,
+          name: firstDevice.simulatorName,
+          runtimeIdentifier: runtimeId,
+          runtimeVersion: firstDevice.runtimeVersion,
+          udid: externalId,
+        }));
+        writeJson(paths.simctl.statePath, state);
+        paths.simctl.adapter.createDevice(name, deviceTypeId, runtimeId);
+        throw new Error("create returned an error after the side effect");
+      }
+      return paths.simctl.adapter.createDevice(name, deviceTypeId, runtimeId);
+    },
+  };
+
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId,
+    setupAttemptId: "ROLLBACK-TEST",
+    simctlAdapter: failingAdapter,
+  }), /after the side effect/);
+
+  const remaining = readJson(paths.simctl.statePath).devices;
+  assert.ok(remaining.some((device) => device.udid === externalId));
+  assert.equal(remaining.some((device) => device.name.includes("[setup ROLLBACK-TEST")), false);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
 });
 
 test("setup preserves devices and host config after the atomic host commit point", () => {

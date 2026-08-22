@@ -570,6 +570,107 @@ test("setup rejects missing or stale confirmation and irrelevant flags before mu
     assert.equal(rejected.status, 2, args[0]);
     assert.equal(rejected.json.reasonCode, "invalid-flag", args[0]);
   }
+
+  for (const iosVersion of ["banana", "26.4.1", "26.", ".4"]) {
+    const rejected = runCli(fixture, "setup", "--ios-version", iosVersion, "--json");
+    assert.equal(rejected.status, 2, iosVersion);
+    assert.equal(rejected.json.reasonCode, "invalid-flag", iosVersion);
+    assert.equal(rejected.json.flag, "ios-version", iosVersion);
+  }
+});
+
+test("setup treats a path-mismatched snapshot as finishing work", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "snapshot-validation");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "snapshot-validation",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
+  const snapshot = readJson(snapshotPath);
+  snapshot.hostConfigPath = path.join(root, "different-host.json");
+  writeJson(snapshotPath, snapshot);
+
+  const finishing = runCli(fixture, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required");
+  assert.equal(finishing.json.service.action, "keep");
+
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
+test("SIGTERM cooperatively cancels provisioning and rolls back pre-commit devices", async () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "signal-setup");
+  assert.equal(preview.status, 0, preview.stderr);
+  const baselineCount = readJson(fixture.simctl.statePath).devices.length;
+
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [
+      CLI_PATH,
+      "--host-config", fixture.hostConfigPath,
+      "--state-root", fixture.stateRoot,
+      "setup", "--apply", "--confirm", preview.json.planId,
+      "--host-id", "signal-setup", "--json",
+    ], {
+      env: {
+        ...process.env,
+        ...fixture.simctl.env,
+        SIMBROKER_SIMCTL_FIXTURE_CREATE_DELAY_MS: "750",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    const deadline = Date.now() + 10_000;
+    const poll = setInterval(() => {
+      try {
+        if (readJson(fixture.simctl.statePath).devices.length > baselineCount) {
+          clearInterval(poll);
+          child.kill("SIGTERM");
+        } else if (Date.now() > deadline) {
+          clearInterval(poll);
+          child.kill("SIGKILL");
+          reject(new Error("Timed out waiting for setup to create its first simulator."));
+        }
+      } catch {
+        // The fixture file is replaced atomically; retry until it is readable.
+      }
+    }, 20);
+    child.once("close", (status, signal) => {
+      clearInterval(poll);
+      resolve({ json: stdout ? JSON.parse(stdout) : null, signal, status, stderr });
+    });
+  });
+
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 143, result.stderr);
+  assert.equal(result.json.reasonCode, "setup-interrupted");
+  assert.equal(result.json.hostCommitted, false);
+  assert.equal(fs.existsSync(fixture.hostConfigPath), false);
+  assert.equal(readJson(fixture.simctl.statePath).devices.length, baselineCount);
 });
 
 test("global path flags reject valueless overrides before defaulting", () => {
@@ -831,6 +932,27 @@ test("doctor human formatter names unhealthy aliases and next commands", () => {
 
   assert.notEqual(text.trimStart()[0], "{");
   assert.match(text, /Status: needs attention/);
+  assert.match(text, /Alias ui-1: repair-needed/);
+  assert.match(text, /simbroker simulators repair --alias ui-1/);
+});
+
+test("setup human errors include doctor issues and exact alias repair commands", () => {
+  const text = format({
+    command: "setup",
+    completedStages: ["host", "service"],
+    doctorIssues: [{
+      alias: "ui-1",
+      health: "repair-needed",
+      reasonCode: "alias-unhealthy",
+    }],
+    error: "Setup health verification failed.",
+    failedStage: "health",
+    hostCommitted: true,
+    ok: false,
+    recoveryCommand: "simbroker setup",
+  });
+
+  assert.match(text, /Doctor issues:/);
   assert.match(text, /Alias ui-1: repair-needed/);
   assert.match(text, /simbroker simulators repair --alias ui-1/);
 });

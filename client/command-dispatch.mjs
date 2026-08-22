@@ -451,6 +451,9 @@ function formatSetupErrorText(payload) {
   if (payload.logPath) {
     lines.push(`Service log: ${payload.logPath}`);
   }
+  if (Array.isArray(payload.doctorIssues) && payload.doctorIssues.length > 0) {
+    lines.push("", "Doctor issues:", ...payload.doctorIssues.map(formatDoctorIssue));
+  }
   if (payload.recoveryCommand) {
     lines.push("", "Recovery:", `  ${payload.recoveryCommand}`);
   }

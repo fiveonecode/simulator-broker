@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { evaluateSetupPrerequisites } from "../setup-preflight.mjs";
+import { completeSetupPreview, evaluateSetupPrerequisites } from "../setup-preflight.mjs";
 
 function makePaths() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-"));
@@ -124,4 +124,26 @@ test("setup preflight distinguishes Xcode selection, first-launch, and simctl bl
     assert.equal(blocked.status, "blocked", scenario.blockedId);
     assert.ok(blocked.remediationCommands.length > 0, scenario.blockedId);
   }
+});
+
+test("blocked completion guidance comes from the combined prerequisite blockers", () => {
+  const preview = completeSetupPreview({
+    host: { configured: true },
+    nextSteps: ["simbroker project init", "simbroker project validate"],
+    prerequisites: [{
+      id: "service-identity",
+      remediationCommands: ["simbroker service stop", "simbroker setup"],
+      status: "blocked",
+      summary: "The running service uses different broker paths.",
+    }],
+    service: { action: "keep", running: true },
+    status: "blocked",
+  }, [], {
+    serviceRunning: false,
+    snapshotReady: false,
+  });
+
+  assert.equal(preview.status, "blocked");
+  assert.deepEqual(preview.nextSteps, ["simbroker service stop", "simbroker setup"]);
+  assert.equal(preview.nextSteps.includes("simbroker project init"), false);
 });

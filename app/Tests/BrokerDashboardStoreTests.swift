@@ -836,6 +836,20 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertEqual(invocationTotal, 2)
   }
 
+  func testSetupPlanSheetShowsApplyRecoveryAndDisablesStaleConfirmation() throws {
+    let plan = try makeSetupPlan()
+    let sheet = SetupPlanSheet(
+      errorMessage: "Setup failed during health. Recovery: simbroker setup",
+      onCancel: {},
+      onConfirm: {},
+      onStop: {},
+      phase: .awaitingConfirmation,
+      plan: plan
+    )
+
+    XCTAssertTrue(sheet.confirmationDisabled)
+  }
+
   func testCommandAvailabilityMatchesSelectedSimulatorState() throws {
     let snapshot = try loadFixture(named: "busy-snapshot")
     let loadedState = makeLoadedState(snapshot: snapshot)

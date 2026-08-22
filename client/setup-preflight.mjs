@@ -267,20 +267,24 @@ export function blockedSetupPreview(paths, prerequisites, options = {}) {
 }
 
 export function completeSetupPreview(corePreview, prerequisites, options = {}) {
+  const combinedPrerequisites = [...prerequisites, ...corePreview.prerequisites];
   const blocked = corePreview.status === "blocked"
-    || prerequisites.some((prerequisite) => prerequisite.status === "blocked");
+    || combinedPrerequisites.some((prerequisite) => prerequisite.status === "blocked");
   const serviceRunning = options.serviceRunning === true;
   const snapshotReady = options.snapshotReady === true;
   const finishingRequired = corePreview.host.configured && (!serviceRunning || !snapshotReady);
   const status = blocked
     ? "blocked"
     : (corePreview.host.configured && !finishingRequired ? "ready" : "changes_required");
+  const blockedRecovery = [...new Set(combinedPrerequisites
+    .filter((prerequisite) => prerequisite.status === "blocked")
+    .flatMap((prerequisite) => prerequisite.remediationCommands ?? []))];
   return {
     ...corePreview,
     nextSteps: status === "ready"
       ? ["simbroker project init", "simbroker project validate"]
-      : corePreview.nextSteps,
-    prerequisites: [...prerequisites, ...corePreview.prerequisites],
+      : (status === "blocked" ? blockedRecovery : corePreview.nextSteps),
+    prerequisites: combinedPrerequisites,
     service: {
       action: blocked ? "blocked" : (serviceRunning ? "keep" : "start"),
       running: serviceRunning,

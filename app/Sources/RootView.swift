@@ -18,6 +18,7 @@ struct RootView: View {
     .focusedSceneValue(\.brokerCommandAvailability, store.commandAvailability)
     .sheet(item: $store.setupPlan, onDismiss: store.cancelGuidedSetup) { plan in
       SetupPlanSheet(
+        errorMessage: store.lastErrorMessage,
         onCancel: store.cancelGuidedSetup,
         onConfirm: store.confirmGuidedSetup,
         onStop: store.stopGuidedSetup,

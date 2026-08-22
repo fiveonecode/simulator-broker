@@ -1497,11 +1497,17 @@ function setupExistingHostState(paths, inventory, options = {}) {
   const issues = [];
   let registry = null;
   try {
-    registry = normalizeRegistry(
-      readJsonIfExists(paths.registryPath),
-      hostConfig,
-      nowIso(options.now),
-    );
+    const persistedRegistry = readJsonIfExists(paths.registryPath);
+    if (persistedRegistry === null) {
+      issues.push({
+        id: "registry",
+        status: "blocked",
+        summary: "The existing broker registry is missing and setup will not recreate it during preview.",
+        remediationCommands: ["simbroker doctor"],
+      });
+    } else {
+      registry = normalizeRegistry(persistedRegistry, hostConfig, nowIso(options.now));
+    }
   } catch (error) {
     issues.push({
       id: "registry",
@@ -1516,7 +1522,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
     const deviceType = device ? deviceTypes.get(device.deviceTypeIdentifier) ?? null : null;
     const registryHealth = registry?.aliases?.[alias.alias]?.health ?? "healthy";
     const healthy = Boolean(device?.isAvailable)
-      && device.runtimeVersion === alias.iosVersion
+      && iosVersionSatisfies(device.runtimeVersion ?? "", alias.iosVersion)
       && device.deviceFamily === alias.deviceFamily
       && registryHealth !== "repair-needed"
       && registryHealth !== "repairing";
@@ -1621,7 +1627,7 @@ export function previewSetupBroker(paths, options = {}) {
 }
 
 function setupCancellationError(options) {
-  const signalName = options.cancellationSignalName ?? "SIGINT";
+  const signalName = options.getCancellationSignalName?.() ?? options.cancellationSignalName ?? "SIGINT";
   return new BrokerError("Setup was interrupted.", {
     completedStages: options.completedStages ?? [],
     failedStage: options.failedStage ?? "provisioning",
@@ -1704,7 +1710,8 @@ export function applySetupBroker(paths, options = {}) {
 
     const simctl = inventory.simctl;
     const baselineDeviceIds = new Set(readSimulatorDeviceIndex(simctl).keys());
-    const plannedSimulatorNames = new Set(preview.devices.map((device) => device.simulatorName));
+    const setupAttemptId = options.setupAttemptId ?? crypto.randomUUID();
+    const attributableSimulatorNames = new Set();
     const createdSimulatorIds = [];
     const simulatorIdsByAlias = new Map();
     let hostCommitted = false;
@@ -1719,13 +1726,32 @@ export function applySetupBroker(paths, options = {}) {
           simulatorIdsByAlias.set(device.alias, device.simulatorId);
           continue;
         }
-        const simulatorId = simctl.createDevice(
-          device.simulatorName,
-          device.deviceTypeIdentifier,
-          device.runtimeIdentifier,
-        );
-        createdSimulatorIds.push(simulatorId);
-        simulatorIdsByAlias.set(device.alias, simulatorId);
+        const temporaryName = `${device.simulatorName} [setup ${setupAttemptId} ${device.alias}]`;
+        attributableSimulatorNames.add(temporaryName);
+        let simulatorId = null;
+        try {
+          simulatorId = simctl.createDevice(
+            temporaryName,
+            device.deviceTypeIdentifier,
+            device.runtimeIdentifier,
+          );
+          createdSimulatorIds.push(simulatorId);
+          simctl.renameDevice(simulatorId, device.simulatorName);
+          simulatorIdsByAlias.set(device.alias, simulatorId);
+        } catch (error) {
+          if (simulatorId === null) {
+            const currentIndex = readSimulatorDeviceIndex(simctl);
+            for (const candidate of currentIndex.values()) {
+              if (!baselineDeviceIds.has(candidate.udid)
+                && candidate.name === temporaryName
+                && candidate.runtimeIdentifier === device.runtimeIdentifier
+                && candidate.deviceTypeIdentifier === device.deviceTypeIdentifier) {
+                createdSimulatorIds.push(candidate.udid);
+              }
+            }
+          }
+          throw error;
+        }
       }
       throwIfSetupCancelled(options, {
         completedStages: ["devices"],
@@ -1770,7 +1796,7 @@ export function applySetupBroker(paths, options = {}) {
       if (!hostCommitted) {
         rollbackCreatedSimulators(simctl, createdSimulatorIds, {
           baselineDeviceIds,
-          plannedSimulatorNames,
+          plannedSimulatorNames: attributableSimulatorNames,
         });
       }
       if (error instanceof BrokerError) {

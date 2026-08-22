@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SetupPlanSheet: View {
+  let errorMessage: String?
   let onCancel: () -> Void
   let onConfirm: () -> Void
   let onStop: () -> Void
@@ -48,8 +49,19 @@ struct SetupPlanSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
           }
 
-          if let errorMessage = plan.prerequisites.first(where: { $0.status == "blocked" })?.summary {
-            Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+          if let errorMessage {
+            GroupBox("Setup could not finish") {
+              Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel("Setup error: \(errorMessage)")
+            }
+          }
+
+          if let blockerMessage = plan.prerequisites.first(where: { $0.status == "blocked" })?.summary {
+            Label(blockerMessage, systemImage: "exclamationmark.triangle.fill")
               .foregroundStyle(.red)
           }
         }
@@ -75,7 +87,7 @@ struct SetupPlanSheet: View {
           Button(confirmTitle, action: onConfirm)
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
-            .disabled(plan.status == .blocked || plan.confirmation.required == false)
+            .disabled(confirmationDisabled)
         }
       }
       .padding()
@@ -92,6 +104,9 @@ struct SetupPlanSheet: View {
   }
 
   private var introduction: String {
+    if errorMessage != nil {
+      return "Setup stopped before it could finish. Review the recovery details below, then close this sheet and retry setup."
+    }
     if plan.status == .blocked {
       return "Setup cannot continue until the checks below are resolved. No changes have been made."
     }
@@ -99,10 +114,14 @@ struct SetupPlanSheet: View {
   }
 
   private var title: String {
-    plan.status == .blocked ? "Setup needs attention" : "Review first-time setup"
+    plan.status == .blocked || errorMessage != nil ? "Setup needs attention" : "Review first-time setup"
   }
 
   private var titleSymbol: String {
-    plan.status == .blocked ? "exclamationmark.triangle.fill" : "sparkles.rectangle.stack"
+    plan.status == .blocked || errorMessage != nil ? "exclamationmark.triangle.fill" : "sparkles.rectangle.stack"
+  }
+
+  var confirmationDisabled: Bool {
+    plan.status == .blocked || plan.confirmation.required == false || errorMessage != nil
   }
 }
