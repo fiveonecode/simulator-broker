@@ -1,8 +1,8 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.0`
-> **Last Updated:** `2026-08-22`
+> **Version:** `1.0.1`
+> **Last Updated:** `2026-08-23`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
 > **Target:** Next Alpha PR
@@ -130,8 +130,10 @@ records cannot change the ID.
 
 Apply acquires the capacity lock, then lease-mutation lock, rereads relevant
 state, recomputes, rejects stale confirmation before mutation, and applies only
-that plan. Host-init and setup provisioning share rollback helpers without
-nested lock acquisition or time-of-check/time-of-use gaps.
+that plan. The setup-specific capacity-lock wait covers the bounded provisioning
+budget so a concurrent loser reaches revalidation and returns `setup-plan-stale`
+after the winner commits. Host-init and setup provisioning share rollback
+helpers without nested lock acquisition or time-of-check/time-of-use gaps.
 
 ### REQ-007 — Apply and verification
 
@@ -145,7 +147,8 @@ Apply performs, in order:
 6. `brokerd` start or identity validation
 7. fresh snapshot through the active service
 8. doctor through the active service
-9. verification of path identity, expected fresh aliases, matching available
+9. verification of path identity, the exact committed host ID and
+   alias-to-Simulator-ID mapping, expected fresh aliases, matching available
    Simulator records, no `repair-needed`/`repairing`, and snapshot path identity
 10. `ready` completion
 
@@ -153,7 +156,11 @@ Apply performs, in order:
 
 - Before host commit, delete only devices created by that attempt; preserve
   reused/external devices and leave no claiming host/registry state.
-- After host commit, preserve host and devices; rerun `simbroker setup`.
+- After host commit, preserve host and devices; rerun `simbroker setup`. When
+  the host commit succeeded but initial registry persistence did not, setup
+  previews registry initialization as safe finishing work only when the host is
+  attributable to the canonical starter shape, then reconstructs it from the
+  committed host, lease, pin, and Simulator state during apply.
 - Service failure preserves host and reports log path and exact retry.
 - Health failure preserves host/service and reports doctor issues plus exact
   per-alias repair commands.
@@ -162,9 +169,9 @@ Apply performs, in order:
 - Existing healthy host is never replaced or expanded to six.
 - Lock/revalidation guarantees concurrent setup creates at most one host; the
   loser gets `setup-plan-stale`.
-- First SIGINT/SIGTERM is cooperative between Simulator operations and before
-  host commit, with exits 130/143; post-commit state is preserved. A second
-  termination may force exit.
+- First SIGINT/SIGTERM is cooperative during Simulator operations, service
+  startup, snapshot refresh, and doctor verification, with exits 130/143;
+  post-commit state is preserved. A second termination may force exit.
 
 No setup-session file is persisted. Recovery derives from host config,
 Simulator inventory, service metadata, snapshot, and doctor.
@@ -184,7 +191,9 @@ and says: `Setup complete — brokerd is running and all managed simulators are
 healthy.` Failure refreshes first, preserves the sheet, and shows completed
 stages and recovery.
 
-The `@MainActor @Observable` store owns setup plan, phase, pending confirmation,
+The app accepts only setup schema version 1 and rejects a future or otherwise
+unsupported version before presenting or applying its plan. The `@MainActor
+@Observable` store owns setup plan, phase, pending confirmation,
 and one stored task. Starting cancels the prior task; double confirm is
 prevented. Applying disables interactive dismissal and exposes text-labelled
 Stop, which cancels the CLI process. `CancellationError` is not a user failure.
@@ -275,6 +284,7 @@ where deterministic local tooling needs them.
 | `setup-plan-stale` | 5 |
 | `setup-prerequisite-failed` | 3 |
 | `setup-health-check-failed` | 3, or 4 with unhealthy alias |
+| `setup-committed-host-mismatch` | 1 |
 | `setup-interrupted` | 130/143 |
 
 Existing runtime, type, service identity/timeout, invalid config, and unhealthy
@@ -299,7 +309,8 @@ or reused devices are setup rollback targets.
 ## 6. Non-functional and security requirements
 
 - Every external command and lock wait is bounded; setup apply timeout covers
-  preflight, inventory, six creates, service, snapshot, and doctor.
+  preflight, inventory, six creates, concurrent provisioning contention,
+  service, snapshot, and doctor.
 - Canonical planning is deterministic and idempotent under inventory reorder.
 - Host/state artifacts remain current-user restricted and machine-local.
 - Output, specs, fixtures, screenshots, and commits remain public-safe; no
@@ -368,4 +379,5 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.1 | 2026-08-23 | `spec-steward`, `ios-dev` | Clarified registry recovery, concurrent setup waits, finishing-stage cancellation, schema rejection, and exact committed-host verification |
 | 1.0.0 | 2026-08-22 | `spec-steward`, `ios-dev` | Active guided setup implementation contract |

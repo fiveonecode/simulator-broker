@@ -70,6 +70,8 @@ struct BrokerSetupConfirmation: Decodable, Equatable, Sendable {
 }
 
 struct BrokerSetupPlan: Decodable, Equatable, Identifiable, Sendable {
+  static let supportedSchemaVersion = 1
+
   var id: String { planId }
 
   let command: String

@@ -1001,7 +1001,12 @@ test("setup rejects missing and stale confirmation before mutation and is idempo
   assert.equal(applied.status, "ready");
   assert.equal(applied.devices.total, 6);
   assert.equal(applied.devices.created, 6);
-  assert.equal(readJson(paths.hostConfigPath).aliases.length, 6);
+  const committedHost = readJson(paths.hostConfigPath);
+  assert.equal(committedHost.aliases.length, 6);
+  assert.deepEqual(applied.setupCommittedHostIdentity, {
+    hostId: committedHost.hostId,
+    simulators: committedHost.aliases.map(({ alias, simulatorId }) => ({ alias, simulatorId })),
+  });
 
   const secondPreview = previewSetupBroker(resolvedPaths, {
     simctlAdapter: paths.simctl.adapter,
@@ -1043,7 +1048,7 @@ test("setup blocks an existing host whose registry marks an alias for repair", (
   assert.deepEqual(blocked.nextSteps, ["simbroker simulators repair --alias ui-1"]);
 });
 
-test("setup accepts major-only requirements on an existing healthy host and blocks a missing registry", () => {
+test("setup accepts major-only requirements and reinitializes a missing registry", () => {
   const paths = makePaths();
   const resolvedPaths = brokerPaths(paths);
   const preview = previewSetupBroker(resolvedPaths, {
@@ -1064,8 +1069,74 @@ test("setup accepts major-only requirements on an existing healthy host and bloc
 
   fs.rmSync(resolvedPaths.registryPath);
   const missingRegistry = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
-  assert.equal(missingRegistry.status, "blocked");
+  assert.equal(missingRegistry.status, "changes_required");
   assert.ok(missingRegistry.prerequisites.some((issue) => issue.id === "registry"));
+  const recovered = applySetupBroker(resolvedPaths, {
+    confirmPlanId: missingRegistry.planId,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(recovered.status, "ready");
+  assert.equal(fs.existsSync(resolvedPaths.registryPath), true);
+});
+
+test("setup resumes registry initialization after a post-commit inventory failure", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "registry-resume-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  let failPostCommitInventory = true;
+  const failingAdapter = {
+    ...paths.simctl.adapter,
+    listDevices() {
+      if (failPostCommitInventory && fs.existsSync(paths.hostConfigPath)) {
+        failPostCommitInventory = false;
+        throw new Error("post-commit inventory failed");
+      }
+      return paths.simctl.adapter.listDevices();
+    },
+  };
+
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "registry-resume-setup",
+    simctlAdapter: failingAdapter,
+  }), /post-commit inventory failed/);
+  assert.equal(fs.existsSync(paths.hostConfigPath), true);
+  assert.equal(fs.existsSync(resolvedPaths.registryPath), false);
+
+  const recoveryPreview = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
+  assert.equal(recoveryPreview.status, "changes_required");
+  const recovered = applySetupBroker(resolvedPaths, {
+    confirmPlanId: recoveryPreview.planId,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(recovered.status, "ready");
+  assert.equal(fs.existsSync(resolvedPaths.registryPath), true);
+});
+
+test("setup keeps missing-registry recovery blocked for a non-starter host", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "non-starter-registry",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "non-starter-registry",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const hostConfig = readJson(paths.hostConfigPath);
+  hostConfig.aliases[0].displayName = "Custom Manual Device";
+  writeJson(paths.hostConfigPath, hostConfig);
+  fs.rmSync(resolvedPaths.registryPath);
+
+  const blocked = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
+
+  assert.equal(blocked.status, "blocked");
+  assert.deepEqual(blocked.nextSteps, ["simbroker doctor"]);
 });
 
 test("setup rolls back every pre-commit create failure and cooperative interruption", () => {

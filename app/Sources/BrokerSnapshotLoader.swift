@@ -279,7 +279,8 @@ actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
     }
 
     guard normalizedPath(service.stateRoot) == normalizedPath(paths.stateRoot.path),
-          normalizedPath(service.hostConfigPath) == normalizedPath(paths.hostConfigURL.path) else {
+          normalizedPath(service.hostConfigPath) == normalizedPath(paths.hostConfigURL.path),
+          configuredServiceSocketMatches(service.socketPath) else {
       return nil
     }
 
@@ -300,11 +301,19 @@ actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
 
     guard normalizedPath(liveService.stateRoot) == normalizedPath(paths.stateRoot.path),
           normalizedPath(liveService.hostConfigPath) == normalizedPath(paths.hostConfigURL.path),
-          normalizedPath(liveService.socketPath) == normalizedPath(service.socketPath) else {
+          normalizedPath(liveService.socketPath) == normalizedPath(service.socketPath),
+          configuredServiceSocketMatches(liveService.socketPath) else {
       return nil
     }
 
     return liveService
+  }
+
+  private func configuredServiceSocketMatches(_ socketPath: String) -> Bool {
+    guard let serviceSocketURL = paths.serviceSocketURL else {
+      return true
+    }
+    return normalizedPath(socketPath) == normalizedPath(serviceSocketURL.path)
   }
 
   private func loadSnapshot(hostConfigExists: Bool) throws -> BrokerAppSnapshot? {

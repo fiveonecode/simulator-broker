@@ -536,8 +536,14 @@ function serviceCommandRequestBody(request, options = {}) {
   return body;
 }
 
-function requestJson(paths, { body, method, requestPath, timeoutMs = 500 } = {}) {
+function requestJson(paths, { body, method, requestPath, signal, timeoutMs = 500 } = {}) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      const error = new Error("Broker service request was cancelled.");
+      error.code = "ESETUP_CANCELLED";
+      reject(error);
+      return;
+    }
     const payload = body === undefined ? null : JSON.stringify(body);
     const request = http.request({
       headers: payload ? {
@@ -588,6 +594,16 @@ function requestJson(paths, { body, method, requestPath, timeoutMs = 500 } = {})
       reject(error);
     });
 
+    const abortRequest = () => {
+      const error = new Error("Broker service request was cancelled.");
+      error.code = "ESETUP_CANCELLED";
+      request.destroy(error);
+    };
+    signal?.addEventListener("abort", abortRequest, { once: true });
+    request.once("close", () => {
+      signal?.removeEventListener("abort", abortRequest);
+    });
+
     if (payload) {
       request.write(payload);
     }
@@ -635,6 +651,7 @@ export async function probeService(paths, options = {}) {
     return await requestJson(paths, {
       method: "GET",
       requestPath: "/v1/service/status",
+      signal: options.signal,
       timeoutMs: options.timeoutMs ?? 250,
     });
   } catch (error) {
@@ -659,6 +676,7 @@ export async function executeServiceCommand(paths, request, options = {}) {
       body,
       method: "POST",
       requestPath: "/v1/command",
+      signal: options.signal,
       timeoutMs: serviceCommandTimeoutMs(request, timeoutOptions),
     });
   } catch (error) {

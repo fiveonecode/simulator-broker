@@ -272,18 +272,18 @@ function observeChildExit(child) {
   });
 }
 
-async function waitForSpawnedService(paths, child, { timeoutMs = 5000 } = {}) {
+async function waitForSpawnedService(paths, child, { signal, timeoutMs = 5000 } = {}) {
   const startedAt = Date.now();
   const childExit = observeChildExit(child);
   let lastExit = null;
   while (Date.now() - startedAt < timeoutMs) {
     const outcome = await Promise.race([
-      probeService(paths, { timeoutMs: 250 }).then((probe) => ({ probe })),
+      probeService(paths, { signal, timeoutMs: 250 }).then((probe) => ({ probe })),
       childExit.then((exit) => ({ exit })),
     ]);
     if (outcome.exit) {
       lastExit = outcome.exit;
-      const probe = await probeService(paths, { timeoutMs: 250 });
+      const probe = await probeService(paths, { signal, timeoutMs: 250 });
       if (probe) {
         return {
           childExit: null,
@@ -311,7 +311,7 @@ async function waitForSpawnedService(paths, child, { timeoutMs = 5000 } = {}) {
     ]);
     if (delay) {
       lastExit = delay;
-      const probe = await probeService(paths, { timeoutMs: 250 });
+      const probe = await probeService(paths, { signal, timeoutMs: 250 });
       if (probe) {
         return {
           childExit: null,
@@ -363,8 +363,8 @@ function terminateSpawnedService(child) {
   }
 }
 
-async function startService(paths) {
-  const running = await probeService(paths);
+async function startService(paths, { signal } = {}) {
+  const running = await probeService(paths, { signal });
   if (running) {
     assertServiceMatchesPaths(paths, running);
     return {
@@ -391,7 +391,19 @@ async function startService(paths) {
   child.unref();
   fs.closeSync(logFd);
 
-  const { childExit, probe } = await waitForSpawnedService(paths, child, { timeoutMs: serviceStartupTimeoutMs({ paths }) });
+  let startupOutcome;
+  try {
+    startupOutcome = await waitForSpawnedService(paths, child, {
+      signal,
+      timeoutMs: serviceStartupTimeoutMs({ paths }),
+    });
+  } catch (error) {
+    if (signal?.aborted) {
+      terminateSpawnedService(child);
+    }
+    throw error;
+  }
+  const { childExit, probe } = startupOutcome;
   if (childExit) {
     throw new BrokerError("Broker service exited before it became available.", {
       exitStatus: childExit.code,
@@ -847,10 +859,11 @@ async function applySetup(paths, options, cancellation) {
   let serviceResult;
   try {
     checkCancellation();
-    serviceResult = await startService(paths);
+    serviceResult = await startService(paths, { signal: cancellation.signal });
     serviceRunning = true;
     completedStages.push("service");
   } catch (error) {
+    checkCancellation();
     throw decorateSetupFailure(error, "service-start", completedStages, hostCommitted, false);
   }
 
@@ -862,15 +875,40 @@ async function applySetup(paths, options, cancellation) {
       group: "app",
       options: { eventLimit: 50 },
       type: "command",
-    }, { expectedServiceIdentity: serviceResult.service });
+    }, {
+      expectedServiceIdentity: serviceResult.service,
+      signal: cancellation.signal,
+    });
     if (path.resolve(snapshot.hostConfigPath) !== path.resolve(paths.hostConfigPath)
       || path.resolve(snapshot.stateRoot) !== path.resolve(paths.stateRoot)) {
       throw new BrokerError("The refreshed snapshot belongs to different broker paths.", {
         reasonCode: "service-identity-mismatch",
       });
     }
+    const expectedHostIdentity = coreResult.setupCommittedHostIdentity;
+    const expectedSimulatorIds = new Map(
+      (expectedHostIdentity?.simulators ?? []).map(({ alias, simulatorId }) => [alias, simulatorId]),
+    );
+    const actualSimulatorIds = new Map(
+      (snapshot.simulators ?? []).map(({ alias, simulatorId }) => [alias, simulatorId]),
+    );
+    const mismatchedSimulatorAliases = [...new Set([
+      ...expectedSimulatorIds.keys(),
+      ...actualSimulatorIds.keys(),
+    ])]
+      .filter((alias) => actualSimulatorIds.get(alias) !== expectedSimulatorIds.get(alias))
+      .sort();
+    if (snapshot.hostId !== expectedHostIdentity?.hostId || mismatchedSimulatorAliases.length > 0) {
+      throw new BrokerError("The refreshed snapshot no longer matches the host committed by setup.", {
+        actualHostId: snapshot.hostId ?? null,
+        expectedHostId: expectedHostIdentity?.hostId ?? null,
+        mismatchedSimulatorAliases,
+        reasonCode: "setup-committed-host-mismatch",
+      });
+    }
     completedStages.push("snapshot");
   } catch (error) {
+    checkCancellation();
     throw decorateSetupFailure(error, "snapshot-refresh", completedStages, hostCommitted, serviceRunning);
   }
 
@@ -882,7 +920,10 @@ async function applySetup(paths, options, cancellation) {
       group: "doctor",
       options: {},
       type: "command",
-    }, { expectedServiceIdentity: serviceResult.service });
+    }, {
+      expectedServiceIdentity: serviceResult.service,
+      signal: cancellation.signal,
+    });
     const expectedAliases = new Set(["manual-1", "ui-1", "ui-2", "build-1", "build-2", "ipad-1"]);
     const snapshotAliases = new Set((snapshot.simulators ?? []).map((simulator) => simulator.alias));
     const missingExpectedAliases = coreResult.host.created
@@ -899,11 +940,13 @@ async function applySetup(paths, options, cancellation) {
     }
     completedStages.push("health");
   } catch (error) {
+    checkCancellation();
     throw decorateSetupFailure(error, "health", completedStages, hostCommitted, serviceRunning);
   }
 
+  const { setupCommittedHostIdentity: _setupCommittedHostIdentity, ...publicCoreResult } = coreResult;
   return {
-    ...coreResult,
+    ...publicCoreResult,
     health: { issueCount: 0, ok: true },
     nextSteps: [],
     service: {
@@ -992,9 +1035,15 @@ async function runSetup(paths, flags) {
     }
   }
 
-  const cancellation = { requestProvisioningCancellation: null, signalName: null };
+  const cancellationController = new AbortController();
+  const cancellation = {
+    requestProvisioningCancellation: null,
+    signal: cancellationController.signal,
+    signalName: null,
+  };
   const recordSignal = (signalName) => {
     cancellation.signalName = signalName;
+    cancellationController.abort();
     cancellation.requestProvisioningCancellation?.(signalName);
   };
   const handleSigint = () => recordSignal("SIGINT");

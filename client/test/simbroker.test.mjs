@@ -719,6 +719,76 @@ test("SIGTERM cooperatively cancels provisioning and rolls back pre-commit devic
   assert.equal(readJson(fixture.simctl.statePath).devices.length, baselineCount);
 });
 
+test("SIGTERM interrupts setup while service startup is waiting", async (t) => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  fs.mkdirSync(paths.serviceLockDir, { recursive: true });
+  fs.writeFileSync(paths.serviceLockOwnerPath, `${JSON.stringify({
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    token: "setup-cancellation-test",
+  })}\n`);
+  t.after(() => {
+    fs.rmSync(paths.serviceLockDir, { force: true, recursive: true });
+    runCli(fixture, "service", "stop");
+  });
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "service-wait-signal");
+  assert.equal(preview.status, 0, preview.stderr);
+
+  const startedAt = Date.now();
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [
+      CLI_PATH,
+      "setup", "--apply", "--confirm", preview.json.planId,
+      "--host-id", "service-wait-signal", "--json",
+      "--host-config", fixture.hostConfigPath,
+      "--state-root", fixture.stateRoot,
+    ], {
+      env: {
+        ...process.env,
+        ...fixture.simctl.env,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    const deadline = Date.now() + 10_000;
+    const poll = setInterval(() => {
+      if (fs.existsSync(fixture.hostConfigPath) && fs.existsSync(paths.serviceLogPath)) {
+        clearInterval(poll);
+        child.kill("SIGTERM");
+      } else if (Date.now() > deadline) {
+        clearInterval(poll);
+        child.kill("SIGKILL");
+        reject(new Error("Timed out waiting for setup service startup."));
+      }
+    }, 10);
+    child.once("close", (status, signal) => {
+      clearInterval(poll);
+      resolve({ json: stdout ? JSON.parse(stdout) : null, signal, status, stderr });
+    });
+  });
+
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 143, result.stderr);
+  assert.equal(result.json.reasonCode, "setup-interrupted");
+  assert.equal(result.json.hostCommitted, true);
+  assert.ok(Date.now() - startedAt < 5_000);
+});
+
 test("global path flags reject valueless overrides before defaulting", () => {
   const fixture = makeFixture();
 
@@ -2349,6 +2419,35 @@ test("service client rejects malformed JSON responses through BrokerError", asyn
       error.payload?.reasonCode === "service-unavailable"
         && /JSON/.test(error.message),
   );
+});
+
+test("service command waits abort immediately when setup cancellation fires", async (t) => {
+  const root = makeTempDir();
+  const socketPath = path.join(root, "cancelled-command.sock");
+  let requestReceivedResolve;
+  const requestReceived = new Promise((resolve) => {
+    requestReceivedResolve = resolve;
+  });
+  const server = http.createServer((_request, _response) => {
+    requestReceivedResolve();
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await listen(server, socketPath);
+  const paths = resolveBrokerPaths({
+    serviceSocketPath: socketPath,
+    stateRoot: path.join(root, "state"),
+  });
+  const abortController = new AbortController();
+  const command = executeServiceCommand(
+    paths,
+    { command: "status", group: "doctor", options: {} },
+    { signal: abortController.signal, timeoutMs: 60_000 },
+  );
+
+  await requestReceived;
+  abortController.abort();
+
+  await assert.rejects(command, (error) => error.payload?.reasonCode === "service-unavailable");
 });
 
 test("service client rejects aborted event streams", async (t) => {

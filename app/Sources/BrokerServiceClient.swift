@@ -920,6 +920,10 @@ struct BrokerServiceCommandClient: BrokerCommandSending {
 
   func send(_ request: BrokerCommandRequest) async throws -> BrokerCommandEnvelope {
     let metadata = try loadServiceMetadata()
+    try validateServiceIdentity(
+      metadata,
+      expectedSocketPath: paths.serviceSocketURL?.path ?? metadata.socketPath
+    )
     let service = try await validateLiveServiceIdentity(metadata: metadata)
     let timeoutBudget = request.timeoutBudget(paths: paths)
     let response = try await transport.perform(
@@ -977,7 +981,10 @@ struct BrokerServiceCommandClient: BrokerCommandSending {
       throw BrokerServiceCommandClientError.invalidJSONResponse
     }
 
-    try validateServiceIdentity(service, expectedSocketPath: metadata.socketPath)
+    try validateServiceIdentity(
+      service,
+      expectedSocketPath: paths.serviceSocketURL?.path ?? metadata.socketPath
+    )
     return service
   }
 

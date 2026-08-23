@@ -1182,6 +1182,9 @@ final class BrokerDashboardStore {
     guard let plan = response.setupPlan else {
       throw BrokerCLICommandError.invalidJSONResponse(cliURL)
     }
+    guard plan.schemaVersion == BrokerSetupPlan.supportedSchemaVersion else {
+      throw BrokerCLICommandError.invalidJSONResponse(cliURL)
+    }
     return plan
   }
 

@@ -13,7 +13,7 @@ import {
   mergeLeaseRuntimeMetadata,
 } from "./containment.mjs";
 import { resolveBrokerExitCode } from "./error-contract.mjs";
-import { createDeviceIndex, resolveSimctlAdapter } from "./simctl.mjs";
+import { SIMCTL_COMMAND_TIMEOUT_MS, createDeviceIndex, resolveSimctlAdapter } from "./simctl.mjs";
 
 export const DEFAULT_HOST_CONFIG_PATH = path.join(os.homedir(), "Library/Application Support/SimulatorBroker/host-config.json");
 export const DEFAULT_STATE_ROOT = path.join(os.homedir(), "Library/Application Support/SimulatorBroker/state");
@@ -40,6 +40,8 @@ const LOCK_OWNER_PID_IDENTITY_TOLERANCE_MS = 15_000;
 const DEFAULT_RESET_SETTLE_MS = 250;
 const CAPACITY_SCHEMA_VERSION = 1;
 const SETUP_SCHEMA_VERSION = 1;
+// Covers one six-alias setup's planning, create/rename, state refresh, and bounded rollback work.
+const SETUP_CAPACITY_LOCK_TIMEOUT_MS = 30 * SIMCTL_COMMAND_TIMEOUT_MS;
 const CAPACITY_RESET_POLICY_BY_CAPABILITY = Object.freeze({
   "automation-resettable": "erase-on-acquire",
   "build-clean": "erase-on-acquire",
@@ -1399,6 +1401,36 @@ function setupRuntimeSummary(runtime, requestedVersion) {
   };
 }
 
+function recoverableStarterHost(hostConfig, deviceIndex) {
+  if (hostConfig.aliases.length === 0) {
+    return false;
+  }
+  const iosVersions = new Set(hostConfig.aliases.map((alias) => alias.iosVersion));
+  if (iosVersions.size !== 1) {
+    return false;
+  }
+  const iosVersion = hostConfig.aliases[0].iosVersion;
+  const { templates } = buildStarterAliasTemplates({
+    hostId: hostConfig.hostId,
+    iosVersion,
+  });
+  if (hostConfig.aliases.length !== templates.length) {
+    return false;
+  }
+  const aliases = new Map(hostConfig.aliases.map((alias) => [alias.alias, alias]));
+  return templates.every((template) => {
+    const alias = aliases.get(template.alias);
+    const device = alias ? deviceIndex.get(alias.simulatorId) : null;
+    return alias !== undefined
+      && JSON.stringify(alias.capabilities) === JSON.stringify(template.capabilities)
+      && alias.deviceFamily === template.deviceFamily
+      && alias.displayName === template.displayName
+      && alias.iosVersion === template.iosVersion
+      && alias.resetPolicy === template.resetPolicy
+      && device?.name === template.simulatorName;
+  });
+}
+
 function setupDevicePlan(inventory, hostId, runtime) {
   const { templates } = buildStarterAliasTemplates({
     hostId,
@@ -1526,15 +1558,27 @@ function setupExistingHostState(paths, inventory, options = {}) {
     .map((deviceType) => [deviceType.identifier, deviceType]));
   const issues = [];
   let registry = null;
+  let registryNeedsInitialization = false;
   try {
     const persistedRegistry = readJsonIfExists(paths.registryPath);
     if (persistedRegistry === null) {
-      issues.push({
-        id: "registry",
-        status: "blocked",
-        summary: "The existing broker registry is missing and setup will not recreate it during preview.",
-        remediationCommands: ["simbroker doctor"],
-      });
+      if (recoverableStarterHost(hostConfig, deviceIndex)) {
+        registryNeedsInitialization = true;
+        registry = normalizeRegistry(null, hostConfig, nowIso(options.now));
+        issues.push({
+          id: "registry",
+          status: "ready",
+          summary: "The broker registry is missing and will be initialized from the committed starter host during setup.",
+          remediationCommands: [],
+        });
+      } else {
+        issues.push({
+          id: "registry",
+          status: "blocked",
+          summary: "The existing broker registry is missing and setup cannot attribute it to a committed starter host.",
+          remediationCommands: ["simbroker doctor"],
+        });
+      }
     } else {
       registry = normalizeRegistry(persistedRegistry, hostConfig, nowIso(options.now));
     }
@@ -1589,7 +1633,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
     hostId: hostConfig.hostId,
     runtime: null,
   });
-  const blocked = issues.length > 0;
+  const blocked = issues.some((issue) => issue.status === "blocked");
   return {
     hostConfig,
     preview: {
@@ -1600,14 +1644,14 @@ function setupExistingHostState(paths, inventory, options = {}) {
       mode: "preview",
       nextSteps: blocked
         ? issues.flatMap((issue) => issue.remediationCommands)
-        : ["simbroker project init", "simbroker project validate"],
+        : (registryNeedsInitialization ? [] : ["simbroker project init", "simbroker project validate"]),
       ok: true,
       planId,
       prerequisites: issues,
       runtime: null,
       schemaVersion: SETUP_SCHEMA_VERSION,
       service: { action: blocked ? "blocked" : "start", running: false },
-      status: blocked ? "blocked" : "ready",
+      status: blocked ? "blocked" : (registryNeedsInitialization ? "changes_required" : "ready"),
     },
   };
 }
@@ -1694,6 +1738,13 @@ function setupHostConfigFromPlan(plan, simulatorIdsByAlias) {
   };
 }
 
+function setupCommittedHostIdentity(hostConfig) {
+  return {
+    hostId: hostConfig.hostId,
+    simulators: hostConfig.aliases.map(({ alias, simulatorId }) => ({ alias, simulatorId })),
+  };
+}
+
 export function applySetupBroker(paths, options = {}) {
   const timestamp = nowIso(options.now);
   return withCapacityLock(paths, () => withLeaseMutationLock(paths, () => {
@@ -1727,6 +1778,7 @@ export function applySetupBroker(paths, options = {}) {
     if (preview.host.configured) {
       const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
       return {
+        setupCommittedHostIdentity: setupCommittedHostIdentity(state.hostConfig),
         command: "setup",
         devices: { created: 0, reused: state.hostConfig.aliases.length, total: state.hostConfig.aliases.length },
         host: { configured: true, created: false },
@@ -1808,6 +1860,7 @@ export function applySetupBroker(paths, options = {}) {
         purposeId: null,
       }, timestamp);
       return {
+        setupCommittedHostIdentity: setupCommittedHostIdentity(state.hostConfig),
         command: "setup",
         devices: {
           created: createdSimulatorIds.length,
@@ -1846,7 +1899,8 @@ export function applySetupBroker(paths, options = {}) {
     now: timestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
-    timeoutMs: options.capacityLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+    reclaimTimeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
+    timeoutMs: options.capacityLockTimeoutMilliseconds ?? SETUP_CAPACITY_LOCK_TIMEOUT_MS,
   });
 }
 
@@ -3172,6 +3226,7 @@ function withCapacityLock(paths, work, {
   processSampler = processExists === defaultProcessExists ? defaultProcessSampler : null,
   pollMs = DEFAULT_LOCK_POLL_MS,
   timeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
+  reclaimTimeoutMs = timeoutMs,
   wait = true,
 } = {}) {
   ensureStatePaths(paths);
@@ -3200,14 +3255,14 @@ function withCapacityLock(paths, work, {
       const lockSnapshot = readLockSnapshot(paths.capacityLockDir, paths.capacityLockOwnerPath, {
         processExists,
         processSampler,
-        timeoutMs,
+        timeoutMs: reclaimTimeoutMs,
       });
       if (lockSnapshot.released
         || ((lockSnapshot.staleOwner || lockSnapshot.abandonedOwner)
           && reclaimStaleLock(paths.capacityLockDir, paths.capacityLockOwnerPath, lockSnapshot, {
             processExists,
             processSampler,
-            timeoutMs,
+            timeoutMs: reclaimTimeoutMs,
           }))) {
         continue;
       }

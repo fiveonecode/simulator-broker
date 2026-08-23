@@ -678,6 +678,50 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertEqual(invocations.count, 1)
   }
 
+  func testGuidedSetupRejectsUnsupportedSchemaBeforePresentingOrApplying() async throws {
+    let runtimePaths = BrokerRuntimePaths(
+      stateRoot: URL(fileURLWithPath: "/tmp/simbroker-future-schema-state"),
+      hostConfigURL: URL(fileURLWithPath: "/tmp/simbroker-future-schema-host.json"),
+      configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker")
+    )
+    let localRunner = RecordingLocalCommandRunner()
+    await localRunner.enqueue(
+      BrokerCLICommandEnvelope(
+        error: nil,
+        exitCode: 0,
+        ok: true,
+        reasonCode: nil,
+        setupPlan: try makeSetupPlan(schemaVersion: 2),
+        started: nil,
+        status: "changes_required",
+        unchanged: nil
+      )
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: BrokerLoadedState(
+        paths: runtimePaths,
+        tooling: BrokerToolingState(cliPath: runtimePaths.configuredCLIURL, hostConfigExists: false, installMetadata: nil),
+        service: nil,
+        snapshot: nil
+      )),
+      commandClient: RecordingCommandClient(),
+      localCommandRunner: localRunner,
+      runtimePaths: runtimePaths
+    )
+
+    store.requestGuidedSetup()
+    try await waitUntil {
+      await MainActor.run { store.isApplyingAction == false }
+    }
+
+    XCTAssertEqual(store.setupPhase, .idle)
+    XCTAssertNil(store.setupPlan)
+    XCTAssertNil(store.pendingSetupConfirmation)
+    XCTAssertNotNil(store.lastErrorMessage)
+    let invocations = await localRunner.invocations()
+    XCTAssertEqual(invocations.count, 1)
+  }
+
   func testGuidedSetupCancelLeavesPreviewUnapplied() async throws {
     let runtimePaths = BrokerRuntimePaths(
       stateRoot: URL(fileURLWithPath: "/tmp/simbroker-cancel-state"),
@@ -1706,7 +1750,8 @@ private func makeSetupPlan(
   confirmationRequired: Bool = true,
   hostConfigured: Bool = false,
   includeRuntime: Bool = true,
-  createCount: Int = 6
+  createCount: Int = 6,
+  schemaVersion: Int = 1
 ) throws -> BrokerSetupPlan {
   let prerequisiteStatus = status == "blocked" ? "blocked" : "ready"
   let runtime = includeRuntime ? """
@@ -1721,7 +1766,7 @@ private func makeSetupPlan(
   {
     "ok": true,
     "command": "setup",
-    "schemaVersion": 1,
+    "schemaVersion": \(schemaVersion),
     "mode": "preview",
     "status": "\(status)",
     "planId": "sha256:app-plan",
