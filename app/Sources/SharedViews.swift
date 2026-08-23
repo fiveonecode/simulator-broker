@@ -474,7 +474,11 @@ struct BrokerSetupView: View {
       return BrokerMissingCLISetupCopy.manualFallbackCommands
     case .needsHostBootstrap, .needsServiceStart, .readOnlySnapshot, .needsSnapshotRefresh, .ready:
       return [
-        formatter.command("setup --host-config \"\(store.hostConfigPath)\" --state-root \"\(store.stateRootPath)\""),
+        formatter.setupCommand(
+          hostConfigPath: store.hostConfigPath,
+          stateRootPath: store.stateRootPath,
+          serviceSocketPath: store.serviceSocketPath
+        ),
       ]
     }
   }

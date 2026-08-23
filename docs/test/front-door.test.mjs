@@ -109,10 +109,13 @@ test("newcomer docs enforce one guided machine setup and version-agnostic projec
   const gettingStarted = readRepoFile("docs/getting-started.md");
   const packageReadme = readRepoFile("packages/simbroker/README.md");
   const brokerCore = readRepoFile("broker-core/index.mjs");
+  const installSmoke = readRepoFile("scripts/install_smoke.sh");
 
   for (const body of [readme, gettingStarted, packageReadme]) {
     assert.ok(body.includes("simbroker setup"));
   }
+  assert.match(packageReadme, /published `0\.1\.0-alpha\.2` package predates\s*> guided setup/);
+  assert.match(packageReadme, /available from `main` and source\s*> installs/);
   for (const body of [readme, gettingStarted]) {
     assert.equal(
       body.includes("simbroker host init --bootstrap-config\nsimbroker service start"),
@@ -125,6 +128,15 @@ test("newcomer docs enforce one guided machine setup and version-agnostic projec
     /function buildStarterProjectConfig\([\s\S]{0,160}iosVersion = ["']18["']/.test(brokerCore),
     false,
     "new project scaffolds must not restore a hardcoded iOS version",
+  );
+  assert.equal(
+    installSmoke.includes("service_started"),
+    false,
+    "install smoke cleanup must attempt an idempotent service stop even when setup apply fails",
+  );
+  assert.match(
+    installSmoke,
+    /if \[\[ "\$service_stopped" -eq 0 && -x "\$cli_path" \]\]; then[\s\S]*?service stop/,
   );
 });
 

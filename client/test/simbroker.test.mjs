@@ -495,6 +495,52 @@ test("setup JSON preview and confirmed apply create six aliases, start brokerd, 
   assert.equal(stopped.status, 0, stopped.stderr);
 });
 
+test("setup identity blockers provide a stop command for the running service paths", (t) => {
+  const fixture = makeFixture();
+  t.after(() => {
+    runCli(fixture, "service", "stop");
+  });
+
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  assert.equal(runCli(fixture, "service", "start").status, 0);
+  const otherHostConfigPath = path.join(fixture.root, "other-host-config.json");
+  fs.copyFileSync(fixture.hostConfigPath, otherHostConfigPath);
+  const mismatchedFixture = {
+    ...fixture,
+    hostConfigPath: otherHostConfigPath,
+  };
+
+  const preview = runCli(mismatchedFixture, "setup", "--json");
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.equal(preview.json.status, "blocked");
+  const serviceIdentity = preview.json.prerequisites.find(({ id }) => id === "service-identity");
+  assert.ok(serviceIdentity, JSON.stringify(preview.json, null, 2));
+  const serviceSocketPath = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  }).serviceSocketPath;
+  assert.deepEqual(serviceIdentity.remediationCommands, [
+    `simbroker service stop --host-config '${fixture.hostConfigPath}' --state-root '${fixture.stateRoot}' --service-socket '${serviceSocketPath}'`,
+    "simbroker setup",
+  ]);
+
+  const stopped = spawnSync(process.execPath, [
+    CLI_PATH,
+    "service", "stop",
+    "--host-config", fixture.hostConfigPath,
+    "--state-root", fixture.stateRoot,
+    "--service-socket", serviceSocketPath,
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ...fixture.simctl.env,
+    },
+  });
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.equal(runCli(fixture, "service", "status").json.running, false);
+});
+
 test("concurrent confirmed setup allows one commit without duplicate devices", async () => {
   const root = makeTempDir();
   const fixture = {

@@ -14,7 +14,6 @@ app_process_name="SimulatorBrokerApp"
 launched_app_pids_path="$tmp_root/launched-app-pids.txt"
 lease_acquired=0
 lease_released=0
-service_started=0
 service_stopped=0
 preexisting_simulators_path="$tmp_root/preexisting-simulators.txt"
 default_install_metadata_path="${HOME}/Library/Application Support/SimulatorBroker/install/install.json"
@@ -181,7 +180,7 @@ cleanup_broker_resources() {
       > "$(artifact_path lease-release-cleanup.json)" 2>&1 || true
   fi
 
-  if [[ "$service_started" -eq 1 && "$service_stopped" -eq 0 && -x "$cli_path" ]]; then
+  if [[ "$service_stopped" -eq 0 && -x "$cli_path" ]]; then
     "$cli_path" \
       --host-config "$host_config_path" \
       --state-root "$state_root" \
@@ -344,7 +343,6 @@ setup_plan_id="$(node -e '
   process.stdout.write(payload.planId);
 ' "$(artifact_path setup-preview.json)")"
 log_command setup-apply simbroker setup --apply --confirm "$setup_plan_id" --host-id install-smoke-host --json
-service_started=1
 node -e '
   const fs = require("node:fs");
   const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));

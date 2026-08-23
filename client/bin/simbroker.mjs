@@ -670,6 +670,23 @@ function setupPrerequisiteFromError(error) {
   };
 }
 
+function serviceIdentityRecoveryCommands(error) {
+  const actual = error?.payload?.actual;
+  if ([actual?.hostConfigPath, actual?.stateRoot, actual?.socketPath]
+    .every((value) => typeof value === "string" && value.length > 0)) {
+    return [
+      [
+        "simbroker service stop",
+        "--host-config", shellQuoteArgument(actual.hostConfigPath),
+        "--state-root", shellQuoteArgument(actual.stateRoot),
+        "--service-socket", shellQuoteArgument(actual.socketPath),
+      ].join(" "),
+      "simbroker setup",
+    ];
+  }
+  return ["simbroker service status --json", "simbroker setup"];
+}
+
 async function buildSetupPreview(paths, options) {
   const prerequisites = evaluateSetupPrerequisites(paths);
   if (prerequisites.some((prerequisite) => prerequisite.status === "blocked")) {
@@ -702,7 +719,7 @@ async function buildSetupPreview(paths, options) {
         prerequisites: [...corePreview.prerequisites, {
           details: error?.payload ?? { error: error?.message ?? String(error) },
           id: "service-identity",
-          remediationCommands: ["simbroker service stop", "simbroker setup"],
+          remediationCommands: serviceIdentityRecoveryCommands(error),
           status: "blocked",
           summary: error?.message ?? "The running broker service uses different paths.",
         }],

@@ -357,6 +357,10 @@ final class BrokerDashboardStore {
     loadedState?.paths.stateRoot.path ?? runtimePaths.stateRoot.path
   }
 
+  var serviceSocketPath: String? {
+    runtimePaths.serviceSocketURL?.path
+  }
+
   func start() {
     guard refreshTask == nil else {
       return
