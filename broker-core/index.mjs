@@ -1520,6 +1520,7 @@ function setupStateContainsLeaseOrPinRecords(paths) {
         && fs.readdirSync(directoryPath, { withFileTypes: true })
           .some((entry) => entry.isFile() && entry.name.endsWith(".json")));
   } catch {
+    // Unreadable mutation state is not safe to reinterpret as an untouched setup.
     return true;
   }
 }
