@@ -272,15 +272,36 @@ function observeChildExit(child) {
   });
 }
 
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("Operation was aborted.");
+  }
+}
+
+function abortOutcome(signal) {
+  if (!signal) {
+    return new Promise(() => {});
+  }
+  if (signal.aborted) {
+    return Promise.resolve({ aborted: true });
+  }
+  return new Promise((resolve) => {
+    signal.addEventListener("abort", () => resolve({ aborted: true }), { once: true });
+  });
+}
 async function waitForSpawnedService(paths, child, { signal, timeoutMs = 5000 } = {}) {
   const startedAt = Date.now();
   const childExit = observeChildExit(child);
+  const aborted = abortOutcome(signal);
   let lastExit = null;
   while (Date.now() - startedAt < timeoutMs) {
+    throwIfAborted(signal);
     const outcome = await Promise.race([
       probeService(paths, { signal, timeoutMs: 250 }).then((probe) => ({ probe })),
       childExit.then((exit) => ({ exit })),
+      aborted,
     ]);
+    throwIfAborted(signal);
     if (outcome.exit) {
       lastExit = outcome.exit;
       const probe = await probeService(paths, { signal, timeoutMs: 250 });
@@ -308,7 +329,9 @@ async function waitForSpawnedService(paths, child, { signal, timeoutMs = 5000 } 
     const delay = await Promise.race([
       sleep(100).then(() => null),
       childExit.then((exit) => exit),
+      aborted,
     ]);
+    throwIfAborted(signal);
     if (delay) {
       lastExit = delay;
       const probe = await probeService(paths, { signal, timeoutMs: 250 });
@@ -364,6 +387,7 @@ function terminateSpawnedService(child) {
 }
 
 async function startService(paths, { signal } = {}) {
+  throwIfAborted(signal);
   const running = await probeService(paths, { signal });
   if (running) {
     assertServiceMatchesPaths(paths, running);
@@ -376,6 +400,7 @@ async function startService(paths, { signal } = {}) {
   }
 
   ensurePrivateDir(paths.stateRoot);
+  throwIfAborted(signal);
   const logFd = fs.openSync(paths.serviceLogPath, "a", 0o600);
   ensurePrivateFile(paths.serviceLogPath);
   const child = spawn(process.execPath, [
@@ -404,6 +429,7 @@ async function startService(paths, { signal } = {}) {
     throw error;
   }
   const { childExit, probe } = startupOutcome;
+  throwIfAborted(signal);
   if (childExit) {
     throw new BrokerError("Broker service exited before it became available.", {
       exitStatus: childExit.code,
@@ -799,12 +825,12 @@ function setupApplyCommand(preview, flags, options) {
   return parts.join(" ");
 }
 
-function setupInterruptedError(signalName, completedStages, hostCommitted) {
+function setupInterruptedError(signalName, completedStages, hostCommitted, failedStage) {
   return new BrokerError("Setup was interrupted.", {
     command: "setup",
     completedStages,
     exitCode: signalName === "SIGTERM" ? 143 : 130,
-    failedStage: completedStages.at(-1) ?? "preflight",
+    failedStage,
     hostCommitted,
     reasonCode: "setup-interrupted",
     recoveryCommand: "simbroker setup",
@@ -834,11 +860,12 @@ function decorateSetupFailure(error, stage, completedStages, hostCommitted, serv
 
 async function applySetup(paths, options, cancellation) {
   const completedStages = ["preflight", "confirmation"];
+  let activeStage = "provisioning";
   let hostCommitted = fs.existsSync(paths.hostConfigPath);
   let serviceRunning = false;
   const checkCancellation = () => {
     if (cancellation.signalName !== null) {
-      throw setupInterruptedError(cancellation.signalName, completedStages, hostCommitted);
+      throw setupInterruptedError(cancellation.signalName, completedStages, hostCommitted, activeStage);
     }
   };
 
@@ -857,9 +884,11 @@ async function applySetup(paths, options, cancellation) {
   }
 
   let serviceResult;
+  activeStage = "service-start";
   try {
     checkCancellation();
     serviceResult = await startService(paths, { signal: cancellation.signal });
+    checkCancellation();
     serviceRunning = true;
     completedStages.push("service");
   } catch (error) {
@@ -868,6 +897,7 @@ async function applySetup(paths, options, cancellation) {
   }
 
   let snapshot;
+  activeStage = "snapshot-refresh";
   try {
     checkCancellation();
     snapshot = await executeServiceCommand(paths, {
@@ -879,6 +909,7 @@ async function applySetup(paths, options, cancellation) {
       expectedServiceIdentity: serviceResult.service,
       signal: cancellation.signal,
     });
+    checkCancellation();
     if (path.resolve(snapshot.hostConfigPath) !== path.resolve(paths.hostConfigPath)
       || path.resolve(snapshot.stateRoot) !== path.resolve(paths.stateRoot)) {
       throw new BrokerError("The refreshed snapshot belongs to different broker paths.", {
@@ -913,6 +944,7 @@ async function applySetup(paths, options, cancellation) {
   }
 
   let health;
+  activeStage = "health";
   try {
     checkCancellation();
     health = await executeServiceCommand(paths, {
@@ -924,6 +956,7 @@ async function applySetup(paths, options, cancellation) {
       expectedServiceIdentity: serviceResult.service,
       signal: cancellation.signal,
     });
+    checkCancellation();
     const expectedAliases = new Set(["manual-1", "ui-1", "ui-2", "build-1", "build-2", "ipad-1"]);
     const snapshotAliases = new Set((snapshot.simulators ?? []).map((simulator) => simulator.alias));
     const missingExpectedAliases = coreResult.host.created
@@ -1042,8 +1075,11 @@ async function runSetup(paths, flags) {
     signalName: null,
   };
   const recordSignal = (signalName) => {
+    if (cancellation.signalName !== null) {
+      return;
+    }
     cancellation.signalName = signalName;
-    cancellationController.abort();
+    cancellationController.abort(new Error(`Setup received ${signalName}.`));
     cancellation.requestProvisioningCancellation?.(signalName);
   };
   const handleSigint = () => recordSignal("SIGINT");

@@ -40,8 +40,12 @@ const LOCK_OWNER_PID_IDENTITY_TOLERANCE_MS = 15_000;
 const DEFAULT_RESET_SETTLE_MS = 250;
 const CAPACITY_SCHEMA_VERSION = 1;
 const SETUP_SCHEMA_VERSION = 1;
-// Covers one six-alias setup's planning, create/rename, state refresh, and bounded rollback work.
-const SETUP_CAPACITY_LOCK_TIMEOUT_MS = 30 * SIMCTL_COMMAND_TIMEOUT_MS;
+// Covers fresh-plan inventory, six create/rename pairs, post-commit state load,
+// and the largest late-failure attribution/delete rollback while the lock is held.
+const SETUP_MAX_SIMCTL_COMMANDS_UNDER_CAPACITY_LOCK = 30;
+const SETUP_CAPACITY_LOCK_TIMEOUT_MS =
+  (SETUP_MAX_SIMCTL_COMMANDS_UNDER_CAPACITY_LOCK * SIMCTL_COMMAND_TIMEOUT_MS)
+  + DEFAULT_LOCK_TIMEOUT_MS;
 const CAPACITY_RESET_POLICY_BY_CAPABILITY = Object.freeze({
   "automation-resettable": "erase-on-acquire",
   "build-clean": "erase-on-acquire",
@@ -1401,36 +1405,6 @@ function setupRuntimeSummary(runtime, requestedVersion) {
   };
 }
 
-function recoverableStarterHost(hostConfig, deviceIndex) {
-  if (hostConfig.aliases.length === 0) {
-    return false;
-  }
-  const iosVersions = new Set(hostConfig.aliases.map((alias) => alias.iosVersion));
-  if (iosVersions.size !== 1) {
-    return false;
-  }
-  const iosVersion = hostConfig.aliases[0].iosVersion;
-  const { templates } = buildStarterAliasTemplates({
-    hostId: hostConfig.hostId,
-    iosVersion,
-  });
-  if (hostConfig.aliases.length !== templates.length) {
-    return false;
-  }
-  const aliases = new Map(hostConfig.aliases.map((alias) => [alias.alias, alias]));
-  return templates.every((template) => {
-    const alias = aliases.get(template.alias);
-    const device = alias ? deviceIndex.get(alias.simulatorId) : null;
-    return alias !== undefined
-      && JSON.stringify(alias.capabilities) === JSON.stringify(template.capabilities)
-      && alias.deviceFamily === template.deviceFamily
-      && alias.displayName === template.displayName
-      && alias.iosVersion === template.iosVersion
-      && alias.resetPolicy === template.resetPolicy
-      && device?.name === template.simulatorName;
-  });
-}
-
 function setupDevicePlan(inventory, hostId, runtime) {
   const { templates } = buildStarterAliasTemplates({
     hostId,
@@ -1507,6 +1481,49 @@ function setupPlanFingerprint({ configured, devices, hostConfig, hostId, runtime
   });
 }
 
+function sameStringArray(left, right) {
+  return Array.isArray(left)
+    && Array.isArray(right)
+    && left.length === right.length
+    && left.every((value, index) => value === right[index]);
+}
+
+function setupHostMatchesCommittedStarterPlan(hostConfig, devices) {
+  if (hostConfig.pendingRetirements.length > 0 || hostConfig.aliases.length !== 6) {
+    return false;
+  }
+  const iosVersion = hostConfig.aliases[0]?.iosVersion;
+  if (!iosVersion || hostConfig.aliases.some((alias) => alias.iosVersion !== iosVersion)) {
+    return false;
+  }
+  const { templates } = buildStarterAliasTemplates({ hostId: hostConfig.hostId, iosVersion });
+  const aliasesById = new Map(hostConfig.aliases.map((alias) => [alias.alias, alias]));
+  const devicesByAlias = new Map(devices.map((device) => [device.alias, device]));
+  return templates.every((template) => {
+    const alias = aliasesById.get(template.alias);
+    const device = devicesByAlias.get(template.alias);
+    return alias
+      && device
+      && alias.deviceFamily === template.deviceFamily
+      && alias.displayName === template.displayName
+      && alias.resetPolicy === template.resetPolicy
+      && sameStringArray(alias.capabilities, template.capabilities)
+      && device.simulatorId === alias.simulatorId
+      && device.simulatorName === template.simulatorName;
+  });
+}
+
+function setupStateContainsLeaseOrPinRecords(paths) {
+  try {
+    return [paths.leasesDir, paths.pinsDir].some((directoryPath) =>
+      fs.existsSync(directoryPath)
+        && fs.readdirSync(directoryPath, { withFileTypes: true })
+          .some((entry) => entry.isFile() && entry.name.endsWith(".json")));
+  } catch {
+    return true;
+  }
+}
+
 function setupExistingHostState(paths, inventory, options = {}) {
   let hostConfig;
   try {
@@ -1558,27 +1575,13 @@ function setupExistingHostState(paths, inventory, options = {}) {
     .map((deviceType) => [deviceType.identifier, deviceType]));
   const issues = [];
   let registry = null;
-  let registryNeedsInitialization = false;
+  let registryInitializationRequired = false;
+  let registryMissing = false;
   try {
     const persistedRegistry = readJsonIfExists(paths.registryPath);
     if (persistedRegistry === null) {
-      if (recoverableStarterHost(hostConfig, deviceIndex)) {
-        registryNeedsInitialization = true;
-        registry = normalizeRegistry(null, hostConfig, nowIso(options.now));
-        issues.push({
-          id: "registry",
-          status: "ready",
-          summary: "The broker registry is missing and will be initialized from the committed starter host during setup.",
-          remediationCommands: [],
-        });
-      } else {
-        issues.push({
-          id: "registry",
-          status: "blocked",
-          summary: "The existing broker registry is missing and setup cannot attribute it to a committed starter host.",
-          remediationCommands: ["simbroker doctor"],
-        });
-      }
+      registryMissing = true;
+      registry = normalizeRegistry(null, hostConfig, nowIso(options.now));
     } else {
       registry = normalizeRegistry(persistedRegistry, hostConfig, nowIso(options.now));
     }
@@ -1626,6 +1629,25 @@ function setupExistingHostState(paths, inventory, options = {}) {
       simulatorName: device?.name ?? alias.displayName,
     };
   });
+  if (registryMissing) {
+    const canResumeRegistryInitialization = issues.length === 0
+      && setupHostMatchesCommittedStarterPlan(hostConfig, devices)
+      && !setupStateContainsLeaseOrPinRecords(paths);
+    registryInitializationRequired = canResumeRegistryInitialization;
+    issues.push(canResumeRegistryInitialization
+      ? {
+        id: "registry",
+        status: "info",
+        summary: "The committed starter host registry will be initialized when setup resumes.",
+        remediationCommands: [],
+      }
+      : {
+        id: "registry",
+        status: "blocked",
+        summary: "The existing broker registry is missing and setup will not recreate it automatically.",
+        remediationCommands: ["simbroker doctor"],
+      });
+  }
   const planId = setupPlanFingerprint({
     configured: true,
     devices,
@@ -1644,14 +1666,14 @@ function setupExistingHostState(paths, inventory, options = {}) {
       mode: "preview",
       nextSteps: blocked
         ? issues.flatMap((issue) => issue.remediationCommands)
-        : (registryNeedsInitialization ? [] : ["simbroker project init", "simbroker project validate"]),
+        : (registryInitializationRequired ? [] : ["simbroker project init", "simbroker project validate"]),
       ok: true,
       planId,
       prerequisites: issues,
       runtime: null,
       schemaVersion: SETUP_SCHEMA_VERSION,
       service: { action: blocked ? "blocked" : "start", running: false },
-      status: blocked ? "blocked" : (registryNeedsInitialization ? "changes_required" : "ready"),
+      status: blocked ? "blocked" : (registryInitializationRequired ? "changes_required" : "ready"),
     },
   };
 }
@@ -1891,11 +1913,21 @@ export function applySetupBroker(paths, options = {}) {
       throw failure;
     }
   }, {
+    checkCancellation: () => throwIfSetupCancelled(options, {
+      completedStages: [],
+      failedStage: "confirmation",
+      hostCommitted: false,
+    }),
     now: timestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
   }), {
+    checkCancellation: () => throwIfSetupCancelled(options, {
+      completedStages: [],
+      failedStage: "confirmation",
+      hostCommitted: false,
+    }),
     now: timestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
@@ -3221,6 +3253,7 @@ function lockOwnerProcessIsLive(owner, { observedAt, processExists, processSampl
 }
 
 function withCapacityLock(paths, work, {
+  checkCancellation = null,
   now = nowIso(),
   processExists = defaultProcessExists,
   processSampler = processExists === defaultProcessExists ? defaultProcessSampler : null,
@@ -3233,6 +3266,7 @@ function withCapacityLock(paths, work, {
   const startedAt = Date.now();
 
   while (true) {
+    checkCancellation?.();
     try {
       fs.mkdirSync(paths.capacityLockDir);
       fs.chmodSync(paths.capacityLockDir, 0o700);
@@ -3273,6 +3307,7 @@ function withCapacityLock(paths, work, {
         });
       }
 
+      checkCancellation?.();
       sleepSync(pollMs);
     }
   }
@@ -3285,6 +3320,7 @@ function withCapacityLock(paths, work, {
 }
 
 function withLeaseMutationLock(paths, work, {
+  checkCancellation = null,
   now = nowIso(),
   processExists = defaultProcessExists,
   processSampler = processExists === defaultProcessExists ? defaultProcessSampler : null,
@@ -3296,6 +3332,7 @@ function withLeaseMutationLock(paths, work, {
   const startedAt = Date.now();
 
   while (true) {
+    checkCancellation?.();
     try {
       fs.mkdirSync(paths.leaseLockDir);
       fs.chmodSync(paths.leaseLockDir, 0o700);
@@ -3336,6 +3373,7 @@ function withLeaseMutationLock(paths, work, {
         });
       }
 
+      checkCancellation?.();
       sleepSync(pollMs);
     }
   }

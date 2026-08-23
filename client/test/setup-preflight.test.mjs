@@ -147,3 +147,24 @@ test("blocked completion guidance comes from the combined prerequisite blockers"
   assert.deepEqual(preview.nextSteps, ["simbroker service stop", "simbroker setup"]);
   assert.equal(preview.nextSteps.includes("simbroker project init"), false);
 });
+
+test("core finishing work remains required when service and snapshot are already ready", () => {
+  const preview = completeSetupPreview({
+    host: { configured: true },
+    nextSteps: [],
+    prerequisites: [{
+      id: "registry",
+      remediationCommands: [],
+      status: "info",
+      summary: "The starter registry will be initialized.",
+    }],
+    service: { action: "keep", running: true },
+    status: "changes_required",
+  }, [], {
+    serviceRunning: true,
+    snapshotReady: true,
+  });
+
+  assert.equal(preview.status, "changes_required");
+  assert.equal(preview.service.action, "keep");
+});

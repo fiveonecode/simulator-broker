@@ -159,8 +159,9 @@ Apply performs, in order:
 - After host commit, preserve host and devices; rerun `simbroker setup`. When
   the host commit succeeded but initial registry persistence did not, setup
   previews registry initialization as safe finishing work only when the host is
-  attributable to the canonical starter shape, then reconstructs it from the
-  committed host, lease, pin, and Simulator state during apply.
+  attributable to the canonical starter shape and no lease, pin, or pending
+  retirement state exists, then reconstructs it from the committed host and
+  Simulator state during apply.
 - Service failure preserves host and reports log path and exact retry.
 - Health failure preserves host/service and reports doctor issues plus exact
   per-alias repair commands.

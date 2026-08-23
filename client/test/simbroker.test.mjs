@@ -238,6 +238,66 @@ function runCliAsync(fixture, envOverrides, ...args) {
   });
 }
 
+function spawnCliControllable(fixture, envOverrides, ...args) {
+  const child = spawn(process.execPath, [
+    CLI_PATH,
+    "--host-config", fixture.hostConfigPath,
+    "--state-root", fixture.stateRoot,
+    ...args,
+  ], {
+    env: {
+      ...process.env,
+      ...fixture.simctl?.env,
+      ...envOverrides,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const result = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (status, signal) => {
+      resolve({
+        json: stdout ? JSON.parse(stdout) : null,
+        signal,
+        status,
+        stderr,
+        stdout,
+      });
+    });
+  });
+  return { child, result };
+}
+
+async function waitUntil(predicate, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for test condition.");
+}
+
+function holdServiceStartLock(fixture) {
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  fs.mkdirSync(paths.serviceLockDir, { recursive: true });
+  writeJson(paths.serviceLockOwnerPath, {
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    token: "test-held-service-start-lock",
+  });
+  return paths;
+}
+
 function runCliAsyncWithTimeout(fixture, envOverrides, timeoutMs, ...args) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [
@@ -560,6 +620,7 @@ test("concurrent confirmed setup allows one commit without duplicate devices", a
 
   assert.ok(winner, results.map((result) => result.stderr).join("\n"));
   assert.equal(winner.json.status, "ready");
+  assert.equal(Object.hasOwn(winner.json, "expectedHost"), false);
   assert.ok(loser, results.map((result) => result.stderr).join("\n"));
   assert.equal(loser.json.reasonCode, "setup-plan-stale");
   assert.equal(readJson(fixture.hostConfigPath).aliases.length, 6);
@@ -654,6 +715,43 @@ test("setup treats a path-mismatched snapshot as finishing work", () => {
   assert.equal(finishing.json.status, "changes_required");
   assert.equal(finishing.json.service.action, "keep");
 
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
+test("setup resumes a missing registry for an exact untouched starter host", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "registry-resume");
+  const applied = runCli(
+    fixture,
+    "setup", "--apply", "--confirm", preview.json.planId,
+    "--host-id", "registry-resume", "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  fs.rmSync(paths.registryPath);
+
+  const recoveryPreview = runCli(fixture, "setup", "--json");
+  assert.equal(recoveryPreview.status, 0, recoveryPreview.stderr);
+  assert.equal(recoveryPreview.json.status, "changes_required");
+  assert.ok(recoveryPreview.json.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "info"));
+
+  const recovered = runCli(
+    fixture,
+    "setup", "--apply", "--confirm", recoveryPreview.json.planId, "--json",
+  );
+  assert.equal(recovered.status, 0, recovered.stderr);
+  assert.equal(recovered.json.devices.created, 0);
+  assert.equal(fs.existsSync(paths.registryPath), true);
   assert.equal(runCli(fixture, "service", "stop").status, 0);
 });
 
@@ -787,6 +885,37 @@ test("SIGTERM interrupts setup while service startup is waiting", async (t) => {
   assert.equal(result.json.reasonCode, "setup-interrupted");
   assert.equal(result.json.hostCommitted, true);
   assert.ok(Date.now() - startedAt < 5_000);
+});
+
+test("setup rejects a snapshot whose host changed after provisioning", async () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "identity-race");
+  const paths = holdServiceStartLock(fixture);
+  fs.rmSync(paths.serviceLogPath, { force: true });
+  const invocation = spawnCliControllable(
+    fixture,
+    {},
+    "setup", "--apply", "--confirm", preview.json.planId,
+    "--host-id", "identity-race", "--json",
+  );
+  await waitUntil(() => fs.existsSync(fixture.hostConfigPath) && fs.existsSync(paths.serviceLogPath));
+  const replacedHost = readJson(fixture.hostConfigPath);
+  replacedHost.hostId = "replacement-host";
+  writeJson(fixture.hostConfigPath, replacedHost);
+  fs.rmSync(paths.serviceLockDir, { force: true, recursive: true });
+
+  const result = await invocation.result;
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.json.reasonCode, "setup-committed-host-mismatch");
+  assert.equal(result.json.expectedHostId, "identity-race");
+  assert.equal(result.json.actualHostId, "replacement-host");
+  assert.equal(result.json.hostCommitted, true);
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
 });
 
 test("global path flags reject valueless overrides before defaulting", () => {

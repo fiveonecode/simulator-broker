@@ -87,4 +87,44 @@ struct BrokerSetupPlan: Decodable, Equatable, Identifiable, Sendable {
   let schemaVersion: Int
   let service: BrokerSetupServicePlan
   let status: BrokerSetupStatus
+
+  init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+    guard schemaVersion == Self.supportedSchemaVersion else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .schemaVersion,
+        in: container,
+        debugDescription: "Unsupported setup schema version \(schemaVersion)."
+      )
+    }
+    command = try container.decode(String.self, forKey: .command)
+    confirmation = try container.decode(BrokerSetupConfirmation.self, forKey: .confirmation)
+    devices = try container.decode([BrokerSetupDevicePlan].self, forKey: .devices)
+    host = try container.decode(BrokerSetupHostPlan.self, forKey: .host)
+    mode = try container.decode(String.self, forKey: .mode)
+    nextSteps = try container.decode([String].self, forKey: .nextSteps)
+    ok = try container.decode(Bool.self, forKey: .ok)
+    planId = try container.decode(String.self, forKey: .planId)
+    prerequisites = try container.decode([BrokerSetupPrerequisite].self, forKey: .prerequisites)
+    runtime = try container.decodeIfPresent(BrokerSetupRuntimePlan.self, forKey: .runtime)
+    service = try container.decode(BrokerSetupServicePlan.self, forKey: .service)
+    status = try container.decode(BrokerSetupStatus.self, forKey: .status)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case command
+    case confirmation
+    case devices
+    case host
+    case mode
+    case nextSteps
+    case ok
+    case planId
+    case prerequisites
+    case runtime
+    case schemaVersion
+    case service
+    case status
+  }
 }

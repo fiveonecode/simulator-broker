@@ -1048,7 +1048,7 @@ test("setup blocks an existing host whose registry marks an alias for repair", (
   assert.deepEqual(blocked.nextSteps, ["simbroker simulators repair --alias ui-1"]);
 });
 
-test("setup accepts major-only requirements and reinitializes a missing registry", () => {
+test("setup accepts major-only requirements but does not recreate an arbitrary missing registry", () => {
   const paths = makePaths();
   const resolvedPaths = brokerPaths(paths);
   const preview = previewSetupBroker(resolvedPaths, {
@@ -1067,16 +1067,18 @@ test("setup accepts major-only requirements and reinitializes a missing registry
   const healthy = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
   assert.notEqual(healthy.status, "blocked");
 
+  hostConfig.aliases[0].displayName = "Custom Manual iPhone";
+  writeJson(paths.hostConfigPath, hostConfig);
   fs.rmSync(resolvedPaths.registryPath);
   const missingRegistry = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
-  assert.equal(missingRegistry.status, "changes_required");
-  assert.ok(missingRegistry.prerequisites.some((issue) => issue.id === "registry"));
-  const recovered = applySetupBroker(resolvedPaths, {
+  assert.equal(missingRegistry.status, "blocked");
+  assert.ok(missingRegistry.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
     confirmPlanId: missingRegistry.planId,
     simctlAdapter: paths.simctl.adapter,
-  });
-  assert.equal(recovered.status, "ready");
-  assert.equal(fs.existsSync(resolvedPaths.registryPath), true);
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(resolvedPaths.registryPath), false);
 });
 
 test("setup resumes registry initialization after a post-commit inventory failure", () => {
@@ -1311,6 +1313,19 @@ test("setup preserves devices and host config after the atomic host commit point
   }), (error) => error.hostConfigCommitted === true);
   assert.equal(readJson(paths.hostConfigPath).aliases.length, 6);
   assert.ok(readJson(paths.simctl.statePath).devices.length >= 10);
+
+  const recoveryPreview = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.notEqual(recoveryPreview.status, "blocked");
+  assert.ok(recoveryPreview.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "info"));
+  const recovered = applySetupBroker(resolvedPaths, {
+    confirmPlanId: recoveryPreview.planId,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(recovered.devices.created, 0);
+  assert.equal(fs.existsSync(resolvedPaths.registryPath), true);
 });
 
 test("host init --bootstrap-config names --ios-version when no runtime matches the starter iOS version", () => {

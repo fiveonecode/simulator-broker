@@ -272,7 +272,8 @@ export function completeSetupPreview(corePreview, prerequisites, options = {}) {
     || combinedPrerequisites.some((prerequisite) => prerequisite.status === "blocked");
   const serviceRunning = options.serviceRunning === true;
   const snapshotReady = options.snapshotReady === true;
-  const finishingRequired = corePreview.host.configured && (!serviceRunning || !snapshotReady);
+  const finishingRequired = corePreview.host.configured
+    && (corePreview.status === "changes_required" || !serviceRunning || !snapshotReady);
   const status = blocked
     ? "blocked"
     : (corePreview.host.configured && !finishingRequired ? "ready" : "changes_required");
