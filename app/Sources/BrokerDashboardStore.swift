@@ -567,7 +567,9 @@ final class BrokerDashboardStore {
       } catch is CancellationError {
         _ = await refresh(silent: true)
         if generation == setupGeneration {
-          setupPhase = setupPlan == nil ? .idle : .awaitingConfirmation
+          pendingSetupConfirmation = nil
+          setupPlan = nil
+          setupPhase = .idle
         }
       } catch {
         _ = await refresh(silent: true)
@@ -606,7 +608,9 @@ final class BrokerDashboardStore {
       } catch is CancellationError {
         _ = await refresh(silent: true)
         if generation == setupGeneration {
-          setupPhase = .awaitingConfirmation
+          pendingSetupConfirmation = nil
+          self.setupPlan = nil
+          setupPhase = .idle
         }
       } catch {
         _ = await refresh(silent: true)

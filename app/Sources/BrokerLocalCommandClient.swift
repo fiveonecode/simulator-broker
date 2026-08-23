@@ -152,7 +152,10 @@ private final class ProcessRunState: @unchecked Sendable {
     }
   }
 
-  func terminateAndFail(_ error: Error) {
+  func terminateAndFail(
+    _ error: Error,
+    escalationNanoseconds: UInt64 = processTerminationEscalationNanoseconds
+  ) {
     var shouldInstallEscalationTask = false
     lock.lock()
     if completedResult == nil {
@@ -167,7 +170,7 @@ private final class ProcessRunState: @unchecked Sendable {
     if shouldInstallEscalationTask {
       installKillEscalationTask(Task { [weak self] in
         do {
-          try await Task.sleep(nanoseconds: processTerminationEscalationNanoseconds)
+          try await Task.sleep(nanoseconds: escalationNanoseconds)
         } catch {
           return
         }
@@ -459,6 +462,10 @@ struct ProcessBrokerLocalCommandRunner: BrokerLocalCommandRunning {
     timeoutNanoseconds ?? BrokerLocalCommandTimeouts.timeoutNanoseconds(for: arguments)
   }
 
+  func resolvedCancellationEscalationNanoseconds(for arguments: [String]) -> UInt64 {
+    BrokerLocalCommandTimeouts.cancellationEscalationNanoseconds(for: arguments)
+  }
+
   func run(cliPath: URL, arguments: [String]) async throws -> BrokerCLICommandEnvelope {
     guard FileManager.default.isExecutableFile(atPath: cliPath.path) else {
       throw BrokerCLICommandError.missingCLI(cliPath)
@@ -484,6 +491,7 @@ struct ProcessBrokerLocalCommandRunner: BrokerLocalCommandRunning {
       processTreeResolver: processTreeResolver
     )
     let effectiveTimeoutNanoseconds = resolvedTimeoutNanoseconds(for: arguments)
+    let cancellationEscalationNanoseconds = resolvedCancellationEscalationNanoseconds(for: arguments)
 
     return try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in
@@ -518,7 +526,10 @@ struct ProcessBrokerLocalCommandRunner: BrokerLocalCommandRunning {
         })
       }
     } onCancel: {
-      state.terminateAndFail(CancellationError())
+      state.terminateAndFail(
+        CancellationError(),
+        escalationNanoseconds: cancellationEscalationNanoseconds
+      )
     }
   }
 }
@@ -537,6 +548,8 @@ private enum BrokerLocalCommandTimeouts {
   private static let serviceStartLockProcessSamplerInvocations = 2
   private static let serviceStartStateLoads = 2
   private static let simctlCommandTimeoutSeconds = 120
+  private static let setupCancellationOperationCount = serviceStartHostAliasCount + 1
+  private static let setupCancellationOverheadSeconds = 60
   private static let simctlInventoryCommandsPerStateLoad = 3
   private static let staleContainmentProcessSamplerInvocations = 8
   private static let stateLoadBudgetSeconds = (simctlInventoryCommandsPerStateLoad * simctlCommandTimeoutSeconds)
@@ -576,6 +589,17 @@ private enum BrokerLocalCommandTimeouts {
     }
     let paths = runtimePaths(from: flags)
     return secondsToNanoseconds((request.timeoutBudget(paths: paths).transferTimeoutSeconds * commandTransferWindowCount) + commandLauncherOverheadSeconds)
+  }
+
+  static func cancellationEscalationNanoseconds(for arguments: [String]) -> UInt64 {
+    if let setupIndex = arguments.firstIndex(of: "setup"),
+       arguments[(setupIndex + 1)...].contains("--apply") {
+      return secondsToNanoseconds(
+        (setupCancellationOperationCount * simctlCommandTimeoutSeconds)
+          + setupCancellationOverheadSeconds
+      )
+    }
+    return processTerminationEscalationNanoseconds
   }
 
   private static func secondsToNanoseconds(_ seconds: Int) -> UInt64 {

@@ -448,6 +448,9 @@ function formatSetupErrorText(payload) {
   if (payload.hostCommitted === true) {
     lines.push("The host configuration was committed and has been preserved.");
   }
+  if (Number.isInteger(payload.rollbackFailureCount) && payload.rollbackFailureCount > 0) {
+    lines.push(`Rollback cleanup was incomplete for ${payload.rollbackFailureCount} Simulator operation(s).`);
+  }
   if (payload.logPath) {
     lines.push(`Service log: ${payload.logPath}`);
   }

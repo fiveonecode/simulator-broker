@@ -1169,6 +1169,61 @@ test("setup rollback deletes only attempt-attributed simulators", () => {
   assert.equal(fs.existsSync(paths.hostConfigPath), false);
 });
 
+test("setup rollback attempts every created device and preserves the provisioning failure", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const hostId = "complete-rollback-attempt";
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const baselineIds = new Set(readJson(paths.simctl.statePath).devices.map((device) => device.udid));
+  const attemptedDeletes = [];
+  let createCount = 0;
+  let failedDeleteId = null;
+  const failingAdapter = {
+    ...paths.simctl.adapter,
+    createDevice(name, deviceTypeId, runtimeId) {
+      createCount += 1;
+      const simulatorId = paths.simctl.adapter.createDevice(name, deviceTypeId, runtimeId);
+      if (createCount === 4) {
+        throw new Error("primary provisioning failure");
+      }
+      return simulatorId;
+    },
+    deleteDevice(simulatorId) {
+      attemptedDeletes.push(simulatorId);
+      if (failedDeleteId === null) {
+        failedDeleteId = simulatorId;
+        throw new Error("one rollback delete failed");
+      }
+      return paths.simctl.adapter.deleteDevice(simulatorId);
+    },
+  };
+
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId,
+    simctlAdapter: failingAdapter,
+  }), (error) => {
+    assert.match(error.message, /primary provisioning failure/);
+    assert.equal(error.payload?.rollbackFailureCount, 1);
+    assert.deepEqual(error.payload?.rollbackFailures, [{
+      error: "one rollback delete failed",
+      operation: "delete",
+      simulatorId: failedDeleteId,
+    }]);
+    return true;
+  });
+
+  assert.equal(new Set(attemptedDeletes).size, 4);
+  const remainingCreatedIds = readJson(paths.simctl.statePath).devices
+    .map((device) => device.udid)
+    .filter((simulatorId) => !baselineIds.has(simulatorId));
+  assert.deepEqual(remainingCreatedIds, [failedDeleteId]);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+});
+
 test("setup preserves devices and host config after the atomic host commit point", () => {
   const paths = makePaths();
   const resolvedPaths = brokerPaths(paths);

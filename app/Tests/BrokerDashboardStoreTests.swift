@@ -771,7 +771,7 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertNil(store.setupPlan)
   }
 
-  func testStoppingGuidedSetupPreservesPlanWithoutPresentingCancellationAsFailure() async throws {
+  func testStoppingGuidedSetupClearsStalePlanWithoutPresentingCancellationAsFailure() async throws {
     let runtimePaths = BrokerRuntimePaths(
       stateRoot: URL(fileURLWithPath: "/tmp/simbroker-stop-state"),
       hostConfigURL: URL(fileURLWithPath: "/tmp/simbroker-stop-host.json"),
@@ -797,9 +797,10 @@ final class BrokerDashboardStoreTests: XCTestCase {
     store.confirmGuidedSetup()
     try await waitUntil { await localRunner.applyStarted() }
     store.stopGuidedSetup()
-    try await waitUntil { await MainActor.run { store.setupPhase == .awaitingConfirmation && store.isApplyingAction == false } }
+    try await waitUntil { await MainActor.run { store.setupPhase == .idle && store.isApplyingAction == false } }
 
-    XCTAssertNotNil(store.setupPlan)
+    XCTAssertNil(store.setupPlan)
+    XCTAssertNil(store.pendingSetupConfirmation)
     XCTAssertNil(store.lastErrorMessage)
   }
 

@@ -1003,6 +1003,27 @@ test("setup human errors include doctor issues and exact alias repair commands",
   assert.match(text, /simbroker simulators repair --alias ui-1/);
 });
 
+test("setup human errors report incomplete rollback without exposing simulator ids", () => {
+  const text = format({
+    command: "setup",
+    error: "Primary provisioning failure.",
+    failedStage: "provisioning",
+    hostCommitted: false,
+    ok: false,
+    recoveryCommand: "simbroker setup",
+    rollbackFailureCount: 2,
+    rollbackFailures: [{
+      error: "delete failed",
+      operation: "delete",
+      simulatorId: "PRIVATE-SIMULATOR-ID",
+    }],
+  });
+
+  assert.match(text, /Rollback cleanup was incomplete for 2 Simulator operation\(s\)\./);
+  assert.equal(text.includes("PRIVATE-SIMULATOR-ID"), false);
+  assert.match(text, /simbroker setup/);
+});
+
 test("doctor human output reports missing registry and next commands", () => {
   const fixture = makeFixture();
 

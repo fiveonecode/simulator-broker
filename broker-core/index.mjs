@@ -1222,18 +1222,48 @@ function readSimulatorDeviceIndex(simctl) {
 
 function rollbackCreatedSimulators(simctl, createdSimulatorIds, options = {}) {
   const rollbackIds = new Set(createdSimulatorIds);
+  const failures = [];
   if (options.baselineDeviceIds && options.plannedSimulatorNames) {
-    const currentIndex = readSimulatorDeviceIndex(simctl);
-    for (const device of currentIndex.values()) {
-      if (!options.baselineDeviceIds.has(device.udid) && options.plannedSimulatorNames.has(device.name)) {
-        rollbackIds.add(device.udid);
+    try {
+      const currentIndex = readSimulatorDeviceIndex(simctl);
+      for (const device of currentIndex.values()) {
+        if (!options.baselineDeviceIds.has(device.udid) && options.plannedSimulatorNames.has(device.name)) {
+          rollbackIds.add(device.udid);
+        }
       }
+    } catch (error) {
+      failures.push({ error, operation: "inventory", simulatorId: null });
     }
   }
 
   for (const simulatorId of [...rollbackIds].reverse()) {
-    simctl.deleteDevice(simulatorId);
+    try {
+      simctl.deleteDevice(simulatorId);
+    } catch (error) {
+      failures.push({ error, operation: "delete", simulatorId });
+    }
   }
+  return failures;
+}
+
+function attachRollbackFailures(error, failures) {
+  if (failures.length === 0) {
+    return error;
+  }
+  const payload = error?.payload && typeof error.payload === "object"
+    ? error.payload
+    : { reasonCode: error?.reasonCode ?? "internal-error" };
+  payload.rollbackFailureCount = failures.length;
+  payload.rollbackFailures = failures.map((failure) => ({
+    error: failure.error?.message ?? String(failure.error),
+    operation: failure.operation,
+    simulatorId: failure.simulatorId,
+  }));
+  if (error && (typeof error === "object" || typeof error === "function")) {
+    error.payload = payload;
+    return error;
+  }
+  return new BrokerError(String(error), payload);
 }
 
 function buildProvisionedStarterHostConfig(options = {}) {
@@ -1268,11 +1298,11 @@ function buildProvisionedStarterHostConfig(options = {}) {
       hostConfig,
     };
   } catch (error) {
-    rollbackCreatedSimulators(simctl, createdSimulatorIds, {
+    const rollbackFailures = rollbackCreatedSimulators(simctl, createdSimulatorIds, {
       baselineDeviceIds,
       plannedSimulatorNames,
     });
-    throw error;
+    throw attachRollbackFailures(error, rollbackFailures);
   }
 }
 
@@ -1793,17 +1823,19 @@ export function applySetupBroker(paths, options = {}) {
       };
     } catch (error) {
       hostCommitted = hostCommitted || error?.hostConfigCommitted === true || fs.existsSync(paths.hostConfigPath);
+      let failure = error;
       if (!hostCommitted) {
-        rollbackCreatedSimulators(simctl, createdSimulatorIds, {
+        const rollbackFailures = rollbackCreatedSimulators(simctl, createdSimulatorIds, {
           baselineDeviceIds,
           plannedSimulatorNames: attributableSimulatorNames,
         });
+        failure = attachRollbackFailures(failure, rollbackFailures);
       }
-      if (error instanceof BrokerError) {
-        error.payload.hostCommitted = hostCommitted;
-        error.payload.recoveryCommand ??= "simbroker setup";
+      if (failure instanceof BrokerError) {
+        failure.payload.hostCommitted = hostCommitted;
+        failure.payload.recoveryCommand ??= "simbroker setup";
       }
-      throw error;
+      throw failure;
     }
   }, {
     now: timestamp,
@@ -4147,8 +4179,8 @@ export function initBroker(paths, options = {}) {
           hostConfigCreated = true;
         } catch (error) {
           const simctl = resolveSimctlAdapter(options);
-          rollbackCreatedSimulators(simctl, provisioned.createdSimulatorIds);
-          throw error;
+          const rollbackFailures = rollbackCreatedSimulators(simctl, provisioned.createdSimulatorIds);
+          throw attachRollbackFailures(error, rollbackFailures);
         }
         if (previousHostConfig !== null) {
           const simctl = resolveSimctlAdapter(options);
