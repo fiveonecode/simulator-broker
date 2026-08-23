@@ -147,7 +147,7 @@ Apply performs, in order:
 6. `brokerd` start or identity validation
 7. fresh snapshot through the active service
 8. doctor through the active service
-9. verification of path identity, the exact committed host ID and
+9. post-doctor snapshot revalidation of path identity, the exact committed host ID and
    alias-to-Simulator-ID mapping, expected fresh aliases, matching available
    Simulator records, no `repair-needed`/`repairing`, and snapshot path identity
 10. `ready` completion
@@ -159,9 +159,10 @@ Apply performs, in order:
 - After host commit, preserve host and devices; rerun `simbroker setup`. When
   the host commit succeeded but initial registry persistence did not, setup
   previews registry initialization as safe finishing work only when the host is
-  attributable to the canonical starter shape and no lease, pin, or pending
-  retirement state exists, then reconstructs it from the committed host and
-  Simulator state during apply.
+  attributable to the canonical starter shape, every alias records the exact
+  runtime version used by its Simulator, every Simulator uses the setup-selected
+  runtime and device type, and no lease, pin, or pending retirement state exists,
+  then reconstructs it from the committed host and Simulator state during apply.
 - Service failure preserves host and reports log path and exact retry.
 - Health failure preserves host/service and reports doctor issues plus exact
   per-alias repair commands.
@@ -380,5 +381,6 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.2 | 2026-08-23 | `spec-steward`, `ios-dev` | Required exact setup-selected runtime/device identity for registry recovery and post-doctor committed-host revalidation |
 | 1.0.1 | 2026-08-23 | `spec-steward`, `ios-dev` | Clarified registry recovery, concurrent setup waits, finishing-stage cancellation, schema rejection, and exact committed-host verification |
 | 1.0.0 | 2026-08-22 | `spec-steward`, `ios-dev` | Active guided setup implementation contract |

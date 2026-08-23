@@ -1488,12 +1488,31 @@ function sameStringArray(left, right) {
     && left.every((value, index) => value === right[index]);
 }
 
-function setupHostMatchesCommittedStarterPlan(hostConfig, devices) {
+function setupHostMatchesCommittedStarterPlan(hostConfig, devices, inventory) {
   if (hostConfig.pendingRetirements.length > 0 || hostConfig.aliases.length !== 6) {
     return false;
   }
   const iosVersion = hostConfig.aliases[0]?.iosVersion;
   if (!iosVersion || hostConfig.aliases.some((alias) => alias.iosVersion !== iosVersion)) {
+    return false;
+  }
+  const runtimeIdentifiers = new Set(devices.map((device) => device.runtimeIdentifier));
+  if (runtimeIdentifiers.size !== 1) {
+    return false;
+  }
+  const runtimeIdentifier = [...runtimeIdentifiers][0];
+  let runtime;
+  let setupDeviceTypes;
+  try {
+    runtime = selectRuntimeForSetup(inventory, iosVersion);
+    if (runtime.identifier !== runtimeIdentifier || runtime.version !== iosVersion) {
+      return false;
+    }
+    setupDeviceTypes = {
+      iPad: selectPreferredDeviceType(runtime, "iPad").identifier,
+      iPhone: selectPreferredDeviceType(runtime, "iPhone").identifier,
+    };
+  } catch {
     return false;
   }
   const { templates } = buildStarterAliasTemplates({ hostId: hostConfig.hostId, iosVersion });
@@ -1509,7 +1528,10 @@ function setupHostMatchesCommittedStarterPlan(hostConfig, devices) {
       && alias.resetPolicy === template.resetPolicy
       && sameStringArray(alias.capabilities, template.capabilities)
       && device.simulatorId === alias.simulatorId
-      && device.simulatorName === template.simulatorName;
+      && device.simulatorName === template.simulatorName
+      && device.runtimeIdentifier === runtime.identifier
+      && device.runtimeVersion === runtime.version
+      && device.deviceTypeIdentifier === setupDeviceTypes[template.deviceFamily];
   });
 }
 
@@ -1632,7 +1654,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
   });
   if (registryMissing) {
     const canResumeRegistryInitialization = issues.length === 0
-      && setupHostMatchesCommittedStarterPlan(hostConfig, devices)
+      && setupHostMatchesCommittedStarterPlan(hostConfig, devices, inventory)
       && !setupStateContainsLeaseOrPinRecords(paths);
     registryInitializationRequired = canResumeRegistryInitialization;
     issues.push(canResumeRegistryInitialization

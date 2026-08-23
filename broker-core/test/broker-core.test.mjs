@@ -1061,11 +1061,19 @@ test("setup accepts major-only requirements but does not recreate an arbitrary m
     simctlAdapter: paths.simctl.adapter,
   });
   const hostConfig = readJson(paths.hostConfigPath);
+  const registry = readJson(resolvedPaths.registryPath);
   hostConfig.aliases = hostConfig.aliases.map((alias) => ({ ...alias, iosVersion: "18" }));
   writeJson(paths.hostConfigPath, hostConfig);
 
   const healthy = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
   assert.notEqual(healthy.status, "blocked");
+
+  fs.rmSync(resolvedPaths.registryPath);
+  const ambiguousMissingRegistry = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
+  assert.equal(ambiguousMissingRegistry.status, "blocked");
+  assert.ok(ambiguousMissingRegistry.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+  writeJson(resolvedPaths.registryPath, registry);
 
   hostConfig.aliases[0].displayName = "Custom Manual iPhone";
   writeJson(paths.hostConfigPath, hostConfig);
@@ -1079,6 +1087,58 @@ test("setup accepts major-only requirements but does not recreate an arbitrary m
     simctlAdapter: paths.simctl.adapter,
   }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
   assert.equal(fs.existsSync(resolvedPaths.registryPath), false);
+});
+
+test("setup missing-registry recovery requires the selected runtime and device types", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "registry-identity",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "registry-identity",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  fs.rmSync(resolvedPaths.registryPath);
+
+  const state = readJson(paths.simctl.statePath);
+  const selectedRuntimeId = state.runtimes[0].identifier;
+  const alternateRuntimeId = `${selectedRuntimeId}-Alternate`;
+  state.runtimes.push({ ...state.runtimes[0], identifier: alternateRuntimeId });
+  state.devices = state.devices.map((device) => ({
+    ...device,
+    runtimeIdentifier: alternateRuntimeId,
+  }));
+  writeJson(paths.simctl.statePath, state);
+
+  const runtimeMismatch = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
+  assert.equal(runtimeMismatch.status, "blocked");
+  assert.ok(runtimeMismatch.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+
+  const nonPreferredDeviceType = {
+    identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation",
+    name: "iPhone SE (3rd generation)",
+    productFamily: "iPhone",
+  };
+  state.devicetypes.push(nonPreferredDeviceType);
+  state.runtimes[0].supportedDeviceTypes.push(nonPreferredDeviceType);
+  const configuredSimulatorId = readJson(paths.hostConfigPath).aliases[0].simulatorId;
+  state.devices = state.devices.map((device) => ({
+    ...device,
+    deviceTypeIdentifier: device.udid === configuredSimulatorId
+      ? nonPreferredDeviceType.identifier
+      : device.deviceTypeIdentifier,
+    runtimeIdentifier: selectedRuntimeId,
+  }));
+  writeJson(paths.simctl.statePath, state);
+
+  const deviceTypeMismatch = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
+  assert.equal(deviceTypeMismatch.status, "blocked");
+  assert.ok(deviceTypeMismatch.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
 });
 
 test("setup resumes registry initialization after a post-commit inventory failure", () => {

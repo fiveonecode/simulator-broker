@@ -837,6 +837,29 @@ function setupInterruptedError(signalName, completedStages, hostCommitted, faile
   });
 }
 
+function assertSetupCommittedHostIdentity(snapshot, expectedHostIdentity) {
+  const expectedSimulatorIds = new Map(
+    (expectedHostIdentity?.simulators ?? []).map(({ alias, simulatorId }) => [alias, simulatorId]),
+  );
+  const actualSimulatorIds = new Map(
+    (snapshot.simulators ?? []).map(({ alias, simulatorId }) => [alias, simulatorId]),
+  );
+  const mismatchedSimulatorAliases = [...new Set([
+    ...expectedSimulatorIds.keys(),
+    ...actualSimulatorIds.keys(),
+  ])]
+    .filter((alias) => actualSimulatorIds.get(alias) !== expectedSimulatorIds.get(alias))
+    .sort();
+  if (snapshot.hostId !== expectedHostIdentity?.hostId || mismatchedSimulatorAliases.length > 0) {
+    throw new BrokerError("The refreshed snapshot no longer matches the host committed by setup.", {
+      actualHostId: snapshot.hostId ?? null,
+      expectedHostId: expectedHostIdentity?.hostId ?? null,
+      mismatchedSimulatorAliases,
+      reasonCode: "setup-committed-host-mismatch",
+    });
+  }
+}
+
 function decorateSetupFailure(error, stage, completedStages, hostCommitted, serviceRunning) {
   if (error instanceof BrokerError) {
     error.payload.command = "setup";
@@ -917,26 +940,7 @@ async function applySetup(paths, options, cancellation) {
       });
     }
     const expectedHostIdentity = coreResult.setupCommittedHostIdentity;
-    const expectedSimulatorIds = new Map(
-      (expectedHostIdentity?.simulators ?? []).map(({ alias, simulatorId }) => [alias, simulatorId]),
-    );
-    const actualSimulatorIds = new Map(
-      (snapshot.simulators ?? []).map(({ alias, simulatorId }) => [alias, simulatorId]),
-    );
-    const mismatchedSimulatorAliases = [...new Set([
-      ...expectedSimulatorIds.keys(),
-      ...actualSimulatorIds.keys(),
-    ])]
-      .filter((alias) => actualSimulatorIds.get(alias) !== expectedSimulatorIds.get(alias))
-      .sort();
-    if (snapshot.hostId !== expectedHostIdentity?.hostId || mismatchedSimulatorAliases.length > 0) {
-      throw new BrokerError("The refreshed snapshot no longer matches the host committed by setup.", {
-        actualHostId: snapshot.hostId ?? null,
-        expectedHostId: expectedHostIdentity?.hostId ?? null,
-        mismatchedSimulatorAliases,
-        reasonCode: "setup-committed-host-mismatch",
-      });
-    }
+    assertSetupCommittedHostIdentity(snapshot, expectedHostIdentity);
     completedStages.push("snapshot");
   } catch (error) {
     checkCancellation();
@@ -957,6 +961,14 @@ async function applySetup(paths, options, cancellation) {
       signal: cancellation.signal,
     });
     checkCancellation();
+    const postDoctorSnapshot = JSON.parse(fs.readFileSync(paths.appSnapshotPath, "utf8"));
+    if (path.resolve(postDoctorSnapshot.hostConfigPath) !== path.resolve(paths.hostConfigPath)
+      || path.resolve(postDoctorSnapshot.stateRoot) !== path.resolve(paths.stateRoot)) {
+      throw new BrokerError("The post-doctor snapshot belongs to different broker paths.", {
+        reasonCode: "service-identity-mismatch",
+      });
+    }
+    assertSetupCommittedHostIdentity(postDoctorSnapshot, coreResult.setupCommittedHostIdentity);
     const expectedAliases = new Set(["manual-1", "ui-1", "ui-2", "build-1", "build-2", "ipad-1"]);
     const snapshotAliases = new Set((snapshot.simulators ?? []).map((simulator) => simulator.alias));
     const missingExpectedAliases = coreResult.host.created
