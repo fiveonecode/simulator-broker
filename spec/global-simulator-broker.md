@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.15.0`
-> **Last Updated:** `2026-08-22`
+> **Version:** `0.15.1`
+> **Last Updated:** `2026-08-24`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -240,7 +240,7 @@ Current implementation slice:
 - setup plan/phase/pending confirmation/stored task live in the `@MainActor`
   store; Stop cancels the CLI process, cancellation refreshes state without a
   generic error, and the setup timeout includes preflight, provisioning,
-  service, snapshot, and doctor instead of the 30-second fallback
+  bounded rollback, service, snapshot, and doctor instead of the 30-second fallback
 - repo onboarding guidance in the app when the machine is ready but no broker-aware repo has been registered yet
 
 ## 5. Ownership metadata that the extracted system should add
@@ -557,6 +557,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.15.1 | 2026-08-24 | Clarified that guided setup apply timeout covers bounded rollback as well as provisioning and finishing stages. |
 | 0.15.0 | 2026-08-22 | Added the shared guided setup/runtime/confirmation/recovery/app contract and version-agnostic project scaffolding default. |
 | 0.14.1 | 2026-08-18 | Help and doctor default to human-readable text; `--json` keeps the stable machine payload. |
 | 0.14.0 | 2026-08-10 | Replaced lease rotation with deterministic warm reuse, required boot-on-acquire, and added opt-in public-safe idle lifecycle, scheduler, cleanup, app, and verification contracts. |

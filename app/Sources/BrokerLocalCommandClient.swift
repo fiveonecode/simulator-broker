@@ -516,13 +516,21 @@ struct ProcessBrokerLocalCommandRunner: BrokerLocalCommandRunning {
           return
         }
 
-        state.installTimeoutTask(Task { [state, cliPath, effectiveTimeoutNanoseconds] in
+        state.installTimeoutTask(Task { [
+          state,
+          cliPath,
+          effectiveTimeoutNanoseconds,
+          cancellationEscalationNanoseconds
+        ] in
           do {
             try await Task.sleep(nanoseconds: effectiveTimeoutNanoseconds)
           } catch {
             return
           }
-          state.terminateAndFail(BrokerCLICommandError.processTimedOut(cliPath))
+          state.terminateAndFail(
+            BrokerCLICommandError.processTimedOut(cliPath),
+            escalationNanoseconds: cancellationEscalationNanoseconds
+          )
         })
       }
     } onCancel: {
@@ -550,6 +558,8 @@ private enum BrokerLocalCommandTimeouts {
   private static let simctlCommandTimeoutSeconds = 120
   private static let setupCancellationOperationCount = serviceStartHostAliasCount + 1
   private static let setupCancellationOverheadSeconds = 60
+  private static let setupMaxSimctlCommandsUnderCapacityLock = 30
+  private static let setupPreviewTimeoutSeconds = 600
   private static let simctlInventoryCommandsPerStateLoad = 3
   private static let staleContainmentProcessSamplerInvocations = 8
   private static let stateLoadBudgetSeconds = (simctlInventoryCommandsPerStateLoad * simctlCommandTimeoutSeconds)
@@ -574,7 +584,10 @@ private enum BrokerLocalCommandTimeouts {
     let flags = flagMap(from: arguments)
     if let setupIndex = arguments.firstIndex(of: "setup") {
       let isApply = arguments[(setupIndex + 1)...].contains("--apply")
-      return secondsToNanoseconds(isApply ? 7_200 : 600)
+      if isApply == false {
+        return secondsToNanoseconds(setupPreviewTimeoutSeconds)
+      }
+      return secondsToNanoseconds(setupApplyTimeoutSeconds(paths: runtimePaths(from: flags)))
     }
     if let commandGroup = localCommandGroup(in: arguments),
        commandGroup == ("service", "start") {
@@ -604,6 +617,32 @@ private enum BrokerLocalCommandTimeouts {
 
   private static func secondsToNanoseconds(_ seconds: Int) -> UInt64 {
     UInt64(max(1, seconds)) * 1_000_000_000
+  }
+
+  private static func setupCapacityLockTimeoutSeconds() -> Int {
+    (setupMaxSimctlCommandsUnderCapacityLock * simctlCommandTimeoutSeconds)
+      + defaultLockTimeoutSeconds
+  }
+
+  private static func setupFinishingStageBudgetSeconds(paths: BrokerRuntimePaths?) -> Int {
+    let hostAliasCount = serviceStartHostAliasCount(from: paths)
+    let snapshotTransferTimeoutSeconds = BrokerCommandRequest(command: "snapshot", group: "app", options: [:])
+      .timeoutBudget(paths: paths)
+      .transferTimeoutSeconds
+    let doctorTransferTimeoutSeconds = BrokerCommandRequest(command: "status", group: "doctor", options: [:])
+      .timeoutBudget(paths: paths)
+      .transferTimeoutSeconds
+    return serviceStartTimeoutSeconds(paths: paths, hostAliasCount: hostAliasCount)
+      + snapshotTransferTimeoutSeconds
+      + doctorTransferTimeoutSeconds
+  }
+
+  private static func setupApplyTimeoutSeconds(paths: BrokerRuntimePaths?) -> Int {
+    let lockHeldProvisioningBudget = setupCapacityLockTimeoutSeconds()
+    return lockHeldProvisioningBudget
+      + lockHeldProvisioningBudget
+      + setupFinishingStageBudgetSeconds(paths: paths)
+      + commandLauncherOverheadSeconds
   }
 
   private static func serviceStartTimeoutSeconds(paths: BrokerRuntimePaths?, hostAliasCount: Int) -> Int {

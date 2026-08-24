@@ -1,8 +1,8 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.1`
-> **Last Updated:** `2026-08-23`
+> **Version:** `1.0.3`
+> **Last Updated:** `2026-08-24`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
 > **Target:** Next Alpha PR
@@ -25,8 +25,8 @@ an idempotent rerun that creates no duplicate devices.
 ### In scope
 
 - bounded prerequisite inspection for Node.js 20+, macOS 14+, full Xcode,
-  first-launch completion, `simctl`, installed runtimes/inventory, writable
-  destinations, and informational disk availability
+  first-launch completion, `simctl`, installed runtimes/inventory, searchable
+  writable directory destinations, and informational disk availability
 - newest-compatible or explicitly selected installed iOS runtime
 - deterministic six-device create/reuse preview and plan ID
 - lock-scoped confirmed provisioning, atomic host commit, rollback, recovery,
@@ -83,7 +83,8 @@ Before planning, setup performs bounded, read-only checks:
 5. `xcrun --find simctl` succeeds.
 6. `simctl list --json runtimes`, `devices`, and `devicetypes` are valid.
 7. One available iOS runtime supports both starter families.
-8. Nearest existing host-config/state-root ancestors are writable.
+8. Nearest existing host-config/state-root ancestors are searchable, writable
+   directories. An existing state root must itself be a directory.
 9. Disk availability is reported as bytes and formatted GiB when supported.
 
 Setup never executes the remediation commands. Blockers provide exact manual
@@ -312,7 +313,8 @@ or reused devices are setup rollback targets.
 
 - Every external command and lock wait is bounded; setup apply timeout covers
   preflight, inventory, six creates, concurrent provisioning contention,
-  service, snapshot, and doctor.
+  bounded rollback, service, snapshot, and doctor, and the app uses the same
+  cooperative escalation window on timeout as on cancellation.
 - Canonical planning is deterministic and idempotent under inventory reorder.
 - Host/state artifacts remain current-user restricted and machine-local.
 - Output, specs, fixtures, screenshots, and commits remain public-safe; no
@@ -381,6 +383,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.3 | 2026-08-24 | `spec-steward`, `ios-dev` | Required searchable writable directory ancestors, post-doctor snapshot health, and derived apply timeout plus cooperative timeout escalation |
 | 1.0.2 | 2026-08-23 | `spec-steward`, `ios-dev` | Required exact setup-selected runtime/device identity for registry recovery and post-doctor committed-host revalidation |
 | 1.0.1 | 2026-08-23 | `spec-steward`, `ios-dev` | Clarified registry recovery, concurrent setup waits, finishing-stage cancellation, schema rejection, and exact committed-host verification |
 | 1.0.0 | 2026-08-22 | `spec-steward`, `ios-dev` | Active guided setup implementation contract |

@@ -124,6 +124,44 @@ final class BrokerLocalCommandClientTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: markerURL.path))
   }
 
+  func testSetupApplyTimeoutAllowsCooperativeRollbackBeforeEscalation() async throws {
+    let tempRoot = try makeTempRoot()
+    let scriptURL = tempRoot.appending(path: "cooperative-setup-timeout-command.sh")
+    let markerURL = tempRoot.appending(path: "rollback-complete.txt")
+    let readyURL = tempRoot.appending(path: "setup-ready.txt")
+    try [
+      "#!/bin/sh",
+      "set -eu",
+      "marker_path=\"$5\"",
+      "ready_path=\"$6\"",
+      "trap 'sleep 2; printf rollback-complete > \"$marker_path\"; exit 0' TERM",
+      "printf ready > \"$ready_path\"",
+      "while true; do",
+      "  sleep 1",
+      "done",
+      "",
+    ].joined(separator: "\n").write(to: scriptURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+    do {
+      _ = try await withTimeout(seconds: 5) {
+        try await ProcessBrokerLocalCommandRunner(timeoutNanoseconds: 500_000_000).run(
+          cliPath: scriptURL,
+          arguments: [
+            "setup", "--apply", "--confirm", "sha256:test", markerURL.path, readyURL.path,
+          ]
+        )
+      }
+      XCTFail("Expected timeout to throw.")
+    } catch let BrokerCLICommandError.processTimedOut(url) {
+      XCTAssertEqual(url, scriptURL)
+    }
+
+    try await waitUntil {
+      FileManager.default.fileExists(atPath: markerURL.path)
+    }
+  }
+
   func testProcessRunnerTerminatesLongRunningCommandAfterTimeout() async throws {
     let tempRoot = try makeTempRoot()
     let scriptURL = try writeLongRunningCommand(in: tempRoot)
@@ -171,7 +209,7 @@ final class BrokerLocalCommandClientTests: XCTestCase {
     )
     XCTAssertEqual(
       runner.resolvedTimeoutNanoseconds(for: ["setup", "--apply", "--confirm", "sha256:test", "--json"]),
-      7_200 * 1_000_000_000
+      10_765 * 1_000_000_000
     )
     XCTAssertEqual(
       runner.resolvedCancellationEscalationNanoseconds(for: ["setup", "--json"]),

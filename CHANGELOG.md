@@ -12,7 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Guided, deterministic `simbroker setup` preview and confirmed apply for
   prerequisite checks, newest-compatible runtime selection, the six-device
   starter pool, atomic provisioning, `brokerd` startup, snapshot refresh, and
-  health verification.
+  health verification. Setup blocks file-shaped destination ancestors before
+  mutation, rechecks the post-doctor snapshot for unavailable or
+  `repair-needed` aliases, and gives the macOS app a lock/rollback/finishing
+  timeout with the same cooperative escalation window used on Stop.
 - A macOS setup-plan sheet with all six aliases, runtime/build and disk details,
   remediation commands, exact plan confirmation, cooperative Stop, and
   cancellation-aware task ownership.

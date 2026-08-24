@@ -4,7 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { completeSetupPreview, evaluateSetupPrerequisites } from "../setup-preflight.mjs";
+import {
+  completeSetupPreview,
+  evaluateSetupPrerequisites,
+  inspectSetupPostDoctorSnapshot,
+} from "../setup-preflight.mjs";
 
 function makePaths() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-"));
@@ -124,6 +128,108 @@ test("setup preflight distinguishes Xcode selection, first-launch, and simctl bl
     assert.equal(blocked.status, "blocked", scenario.blockedId);
     assert.ok(blocked.remediationCommands.length > 0, scenario.blockedId);
   }
+});
+
+test("setup preflight accepts an existing writable host-config file", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-host-file-"));
+  const hostConfigPath = path.join(root, "host.json");
+  fs.writeFileSync(hostConfigPath, "{}\n");
+  const paths = {
+    hostConfigPath,
+    stateRoot: path.join(root, "state"),
+  };
+  const prerequisites = evaluateSetupPrerequisites(paths, {
+    commandRunner: readyCommandRunner,
+    env: {},
+    nodeVersion: "20.0.0",
+    platform: "darwin",
+  });
+  const hostConfig = prerequisites.find((prerequisite) => prerequisite.id === "host-config-path");
+  assert.equal(hostConfig.status, "ready");
+});
+
+test("setup preflight blocks destinations whose ancestor is a regular file", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-file-"));
+  const blockingFile = path.join(root, "existing-file");
+  fs.writeFileSync(blockingFile, "not-a-directory\n");
+  const paths = {
+    hostConfigPath: path.join(blockingFile, "host.json"),
+    stateRoot: path.join(root, "state"),
+  };
+  const prerequisites = evaluateSetupPrerequisites(paths, {
+    commandRunner: readyCommandRunner,
+    env: {},
+    nodeVersion: "20.0.0",
+    platform: "darwin",
+  });
+  const hostConfig = prerequisites.find((prerequisite) => prerequisite.id === "host-config-path");
+  assert.equal(hostConfig.status, "blocked");
+  assert.match(hostConfig.summary, /searchable, writable directory/);
+});
+
+test("setup preflight blocks an existing state root that is a regular file", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-state-file-"));
+  const stateRoot = path.join(root, "state-file");
+  fs.writeFileSync(stateRoot, "not-a-directory\n");
+  const paths = {
+    hostConfigPath: path.join(root, "config", "host.json"),
+    stateRoot,
+  };
+  const prerequisites = evaluateSetupPrerequisites(paths, {
+    commandRunner: readyCommandRunner,
+    env: {},
+    nodeVersion: "20.0.0",
+    platform: "darwin",
+  });
+  const stateRootCheck = prerequisites.find((prerequisite) => prerequisite.id === "state-root-path");
+  assert.equal(stateRootCheck.status, "blocked");
+  assert.match(stateRootCheck.summary, /not a directory/);
+});
+
+test("post-doctor snapshot inspection rejects unavailable or repair-needed aliases", () => {
+  const healthy = inspectSetupPostDoctorSnapshot({
+    overview: { unhealthyAliases: 0 },
+    simulators: [
+      { alias: "manual-1", health: "healthy", simulatorId: "SIM-1" },
+      { alias: "ui-1", health: "healthy", simulatorId: "SIM-2" },
+      { alias: "ui-2", health: "healthy", simulatorId: "SIM-3" },
+      { alias: "build-1", health: "healthy", simulatorId: "SIM-4" },
+      { alias: "build-2", health: "healthy", simulatorId: "SIM-5" },
+      { alias: "ipad-1", health: "healthy", simulatorId: "SIM-6" },
+    ],
+  }, { requireStarterAliases: true });
+  assert.equal(healthy.ok, true);
+
+  const repairNeeded = inspectSetupPostDoctorSnapshot({
+    overview: { unhealthyAliases: 0 },
+    simulators: [
+      { alias: "manual-1", health: "healthy", simulatorId: "SIM-1" },
+      { alias: "ui-1", health: "repair-needed", simulatorId: "SIM-2" },
+    ],
+  });
+  assert.equal(repairNeeded.ok, false);
+  assert.deepEqual(repairNeeded.unhealthyAliases.map((simulator) => simulator.alias), ["ui-1"]);
+
+  const unavailable = inspectSetupPostDoctorSnapshot({
+    overview: { unhealthyAliases: 0 },
+    simulators: [
+      { alias: "ui-1", available: false, health: "healthy", simulatorId: "SIM-2" },
+    ],
+  });
+  assert.equal(unavailable.ok, false);
+
+  const missingAliases = inspectSetupPostDoctorSnapshot({
+    overview: { unhealthyAliases: 0 },
+    simulators: [{ alias: "ui-1", health: "healthy", simulatorId: "SIM-2" }],
+  }, { requireStarterAliases: true });
+  assert.equal(missingAliases.ok, false);
+  assert.deepEqual(missingAliases.missingExpectedAliases, [
+    "manual-1",
+    "ui-2",
+    "build-1",
+    "build-2",
+    "ipad-1",
+  ]);
 });
 
 test("blocked completion guidance comes from the combined prerequisite blockers", () => {

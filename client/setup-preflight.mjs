@@ -28,6 +28,15 @@ function numericVersionAtLeast(version, requiredMajor) {
   return Number.isInteger(major) && major >= requiredMajor;
 }
 
+export const SETUP_STARTER_ALIASES = Object.freeze([
+  "manual-1",
+  "ui-1",
+  "ui-2",
+  "build-1",
+  "build-2",
+  "ipad-1",
+]);
+
 function nearestExistingAncestor(destination) {
   let candidate = path.resolve(destination);
   while (!fs.existsSync(candidate)) {
@@ -40,21 +49,66 @@ function nearestExistingAncestor(destination) {
   return candidate;
 }
 
-function pathPrerequisite(id, destination, summary) {
-  const ancestor = nearestExistingAncestor(destination);
+function blockedPathPrerequisite(id, destination, checkedPath, summary) {
+  return {
+    details: { checkedPath, destination },
+    id,
+    remediationCommands: [],
+    status: "blocked",
+    summary,
+  };
+}
+
+function pathPrerequisite(id, destination, summary, { existingMustBeDirectory = false } = {}) {
+  const resolvedDestination = path.resolve(destination);
+  const ancestor = nearestExistingAncestor(resolvedDestination);
   if (!ancestor) {
     return {
-      details: { destination },
+      details: { destination: resolvedDestination },
       id,
       remediationCommands: [],
       status: "blocked",
       summary: `No existing ancestor was found for ${summary}.`,
     };
   }
+
+  let checkedPath = ancestor;
   try {
-    fs.accessSync(ancestor, fs.constants.W_OK);
+    const ancestorStats = fs.statSync(ancestor);
+    const destinationExists = ancestor === resolvedDestination;
+    if (existingMustBeDirectory && destinationExists && ancestorStats.isDirectory() !== true) {
+      return blockedPathPrerequisite(
+        id,
+        resolvedDestination,
+        ancestor,
+        `${summary} exists and is not a directory.`,
+      );
+    }
+    if (ancestorStats.isDirectory() !== true) {
+      if (destinationExists && existingMustBeDirectory !== true) {
+        const parent = path.dirname(ancestor);
+        checkedPath = parent;
+        fs.accessSync(parent, fs.constants.W_OK | fs.constants.X_OK);
+        fs.accessSync(ancestor, fs.constants.W_OK);
+        return {
+          details: { checkedPath: parent, destination: resolvedDestination },
+          id,
+          remediationCommands: [],
+          status: "ready",
+          summary: `${summary} is writable.`,
+        };
+      }
+      return blockedPathPrerequisite(
+        id,
+        resolvedDestination,
+        ancestor,
+        `${summary} is not under a searchable, writable directory.`,
+      );
+    }
+
+    fs.accessSync(ancestor, fs.constants.W_OK | fs.constants.X_OK);
     return {
-      details: { checkedPath: ancestor, destination },
+      details: { checkedPath: ancestor, destination: resolvedDestination },
       id,
       remediationCommands: [],
       status: "ready",
@@ -62,13 +116,33 @@ function pathPrerequisite(id, destination, summary) {
     };
   } catch {
     return {
-      details: { checkedPath: ancestor, destination },
+      details: { checkedPath, destination: resolvedDestination },
       id,
-      remediationCommands: [`chmod u+w "${ancestor}"`],
+      remediationCommands: [`chmod u+wx "${checkedPath}"`],
       status: "blocked",
       summary: `${summary} is not writable by the current user.`,
     };
   }
+}
+
+export function inspectSetupPostDoctorSnapshot(snapshot, { requireStarterAliases = false } = {}) {
+  const simulators = Array.isArray(snapshot?.simulators) ? snapshot.simulators : [];
+  const snapshotAliases = new Set(simulators.map((simulator) => simulator.alias));
+  const missingExpectedAliases = requireStarterAliases
+    ? SETUP_STARTER_ALIASES.filter((alias) => snapshotAliases.has(alias) !== true)
+    : [];
+  const unhealthyAliases = simulators.filter((simulator) => (
+    simulator.available === false
+    || simulator.isAvailable === false
+    || simulator.health === "repair-needed"
+    || simulator.health === "repairing"
+  ));
+  const overviewUnhealthy = Number(snapshot?.overview?.unhealthyAliases ?? 0) > 0;
+  return {
+    missingExpectedAliases,
+    ok: missingExpectedAliases.length === 0 && unhealthyAliases.length === 0 && overviewUnhealthy !== true,
+    unhealthyAliases,
+  };
 }
 
 function diskPrerequisite(stateRoot) {
@@ -114,7 +188,9 @@ function fixturePrerequisites(paths, options) {
     { id: "xcode-first-launch", status: "ready", summary: "Xcode first-launch tasks are complete.", remediationCommands: [] },
     { id: "simctl", status: "ready", summary: "The simctl command is available.", remediationCommands: [] },
     pathPrerequisite("host-config-path", paths.hostConfigPath, "The host configuration destination"),
-    pathPrerequisite("state-root-path", paths.stateRoot, "The broker state destination"),
+    pathPrerequisite("state-root-path", paths.stateRoot, "The broker state destination", {
+      existingMustBeDirectory: true,
+    }),
     diskPrerequisite(paths.stateRoot),
   ];
 }
@@ -220,6 +296,7 @@ export function evaluateSetupPrerequisites(paths, options = {}) {
     "state-root-path",
     paths.stateRoot,
     "The broker state destination",
+    { existingMustBeDirectory: true },
   ));
   prerequisites.push(diskPrerequisite(paths.stateRoot));
   return prerequisites;

@@ -37,6 +37,7 @@ import {
   blockedSetupPreview,
   completeSetupPreview,
   evaluateSetupPrerequisites,
+  inspectSetupPostDoctorSnapshot,
 } from "../setup-preflight.mjs";
 import { applySetupBrokerInWorker } from "../setup-provisioning.mjs";
 
@@ -969,17 +970,21 @@ async function applySetup(paths, options, cancellation) {
       });
     }
     assertSetupCommittedHostIdentity(postDoctorSnapshot, coreResult.setupCommittedHostIdentity);
-    const expectedAliases = new Set(["manual-1", "ui-1", "ui-2", "build-1", "build-2", "ipad-1"]);
-    const snapshotAliases = new Set((snapshot.simulators ?? []).map((simulator) => simulator.alias));
-    const missingExpectedAliases = coreResult.host.created
-      ? [...expectedAliases].filter((alias) => !snapshotAliases.has(alias))
-      : [];
-    if (!health.ok || missingExpectedAliases.length > 0) {
-      const unhealthyIssue = (health.issues ?? []).some((issue) => issue.alias);
+    const postDoctorHealth = inspectSetupPostDoctorSnapshot(postDoctorSnapshot, {
+      requireStarterAliases: coreResult.host.created === true,
+    });
+    if (!health.ok || !postDoctorHealth.ok) {
+      const snapshotIssues = postDoctorHealth.unhealthyAliases.map((simulator) => ({
+        alias: simulator.alias,
+        health: simulator.health ?? "repair-needed",
+        reasonCode: "alias-unhealthy",
+      }));
+      const doctorIssues = (health.issues ?? []).length > 0 ? health.issues : snapshotIssues;
+      const unhealthyIssue = doctorIssues.some((issue) => issue.alias);
       throw new BrokerError("Broker health verification failed after setup.", {
-        doctorIssues: health.issues ?? [],
+        doctorIssues,
         exitCode: unhealthyIssue ? BROKER_EXIT_CODES.repairNeeded : BROKER_EXIT_CODES.unavailable,
-        missingExpectedAliases,
+        missingExpectedAliases: postDoctorHealth.missingExpectedAliases,
         reasonCode: "setup-health-check-failed",
       });
     }
