@@ -236,6 +236,17 @@ function readCapacityTransactions(resolvedPaths) {
     .map((entry) => readJson(path.join(resolvedPaths.capacityTransactionsDir, entry)));
 }
 
+const FIXTURE_CONTROLLER_PID = 2_147_483_646;
+
+function unusedFixturePid(preferred, taken = []) {
+  const blocked = new Set([process.pid, ...taken]);
+  let pid = preferred;
+  while (blocked.has(pid) || pid <= 1) {
+    pid += 1;
+  }
+  return pid;
+}
+
 function makeProcessFixture(records) {
   const table = records.map((record) => ({
     alive: true,
@@ -252,6 +263,7 @@ function makeProcessFixture(records) {
   return {
     actions,
     controller: {
+      currentPid: FIXTURE_CONTROLLER_PID,
       killPid(pid, signal) {
         actions.push({ pid, signal, target: "pid" });
         const record = table.find((candidate) => candidate.pid === pid);
@@ -6674,11 +6686,66 @@ test("forced-abort avoids command process-group termination when the requester i
   writeBaseHostConfig(paths.hostConfigPath);
   writeBaseProject(paths.projectFilePath);
   const resolvedPaths = brokerPaths(paths);
+  const ownerPid = unusedFixturePid(1000);
+  const commandPid = unusedFixturePid(2000, [ownerPid]);
+  const requesterPid = process.pid;
+  const processes = makeProcessFixture([
+    { command: "bash", pgid: ownerPid, pid: ownerPid, ppid: 1, rssBytes: 2 * 1024 * 1024 },
+    { command: "xcodebuild test SIM-UI-1", pgid: commandPid, pid: commandPid, ppid: ownerPid, rssBytes: 40 * 1024 * 1024 },
+    { command: "node client/bin/simbroker.mjs lease contain", pgid: commandPid, pid: requesterPid, ppid: commandPid, rssBytes: 5 * 1024 * 1024 },
+  ]);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-cleanup",
+    actorType: "agent",
+    ownerPgid: ownerPid,
+    ownerPid,
+    processExists: (pid) => pid === ownerPid,
+    processSampler: liveProcessSampler({ command: "with-broker-lease", pgid: ownerPid, pid: ownerPid }),
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  registerLeaseProcessBroker(resolvedPaths, {
+    command: "xcodebuild test",
+    commandPgid: commandPid,
+    commandPid,
+    leaseId: lease.leaseId,
+    processExists: (pid) => pid === ownerPid,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const result = containLeaseBroker(resolvedPaths, {
+    leaseId: lease.leaseId,
+    processController: processes.controller,
+    processExists: (pid) => pid === ownerPid,
+    processSampler: processes.sampler,
+    reason: "forced-abort",
+    requesterPid,
+    simctlAdapter: paths.simctl.adapter,
+    termWaitMs: 0,
+  });
+
+  assert.equal(result.contained, true);
+  assert.equal(processes.controller.currentPid, FIXTURE_CONTROLLER_PID);
+  assert.notEqual(processes.controller.currentPid, requesterPid);
+  assert.equal(processes.isAlive(requesterPid), true);
+  assert.equal(processes.isAlive(commandPid), false);
+  assert.equal(result.cleanupActions.some((action) => action.target === "process-group" && action.pgid === commandPid), false);
+  assert.ok(result.cleanupActions.some((action) => action.pid === requesterPid && action.skipped === true && action.why === "active-containment-requester"));
+});
+
+test("forced-abort records current-broker-process when the controller pid is lease-owned", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
   const processes = makeProcessFixture([
     { command: "bash", pgid: 1000, pid: 1000, ppid: 1, rssBytes: 2 * 1024 * 1024 },
-    { command: "xcodebuild test SIM-UI-1", pgid: 2000, pid: 2000, ppid: 1000, rssBytes: 40 * 1024 * 1024 },
-    { command: "node client/bin/simbroker.mjs lease contain", pgid: 2000, pid: 2500, ppid: 2000, rssBytes: 5 * 1024 * 1024 },
+    { command: "xcodebuild test SIM-UI-1", pgid: 1000, pid: 2000, ppid: 1000, rssBytes: 40 * 1024 * 1024 },
   ]);
+  processes.controller.currentPid = 2000;
 
   initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
   const lease = acquireLeaseBroker(resolvedPaths, {
@@ -6693,7 +6760,6 @@ test("forced-abort avoids command process-group termination when the requester i
   }).lease;
   registerLeaseProcessBroker(resolvedPaths, {
     command: "xcodebuild test",
-    commandPgid: 2000,
     commandPid: 2000,
     leaseId: lease.leaseId,
     processExists: (pid) => pid === 1000,
@@ -6707,16 +6773,13 @@ test("forced-abort avoids command process-group termination when the requester i
     processExists: (pid) => pid === 1000,
     processSampler: processes.sampler,
     reason: "forced-abort",
-    requesterPid: 2500,
     simctlAdapter: paths.simctl.adapter,
     termWaitMs: 0,
   });
 
   assert.equal(result.contained, true);
-  assert.equal(processes.isAlive(2500), true);
-  assert.equal(processes.isAlive(2000), false);
-  assert.equal(result.cleanupActions.some((action) => action.target === "process-group" && action.pgid === 2000), false);
-  assert.ok(result.cleanupActions.some((action) => action.pid === 2500 && action.skipped === true && action.why === "active-containment-requester"));
+  assert.equal(processes.isAlive(2000), true);
+  assert.ok(result.cleanupActions.some((action) => action.pid === 2000 && action.skipped === true && action.why === "current-broker-process"));
 });
 
 test("forced-abort does not group-kill when the owner process group is unknown", () => {

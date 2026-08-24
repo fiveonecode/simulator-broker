@@ -76,7 +76,10 @@ A first extracted implementation slice now exists:
   checkout must not spawn one `git cat-file` per file. `simbroker service
   start` must fail as soon as the spawned `brokerd` exits without becoming
   ready; it must not keep polling for `serviceStartupTimeoutMs` just because
-  the startup lock directory still exists.
+  the startup lock directory still exists. Broker-core process-table
+  fixtures inject `processController.currentPid` so hardcoded fixture
+  PIDs cannot match the GitHub Actions test-runner pid. Containment still
+  skips the live `process.pid` when `currentPid` is omitted.
 - tagged versions such as `v0.1.0-alpha.2` attach the CLI tarball, the
   packable `simbroker-<version>.tgz`, and the notarized
   `Simulator-Broker-<version>.zip` to a GitHub Release. The CLI and npm

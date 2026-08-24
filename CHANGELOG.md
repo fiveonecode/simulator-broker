@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adapter, client tests run with `--test-concurrency=1` on Ubuntu CI, and
   `service start` stops waiting when spawned `brokerd` exits even if a
   startup lock directory remains.
+- Broker-core process fixtures inject a synthetic controller pid so Ubuntu
+  CI cannot classify a fixture requester as `current-broker-process` when
+  the test-runner pid lands on a hardcoded fixture pid such as `2500`.
 - New project scaffolds require an iPhone for UI purposes without pinning an
   iOS version unless `--ios-version` is explicit.
 - Homebrew CLI and app metadata now require macOS 14 Sonoma, matching the app
