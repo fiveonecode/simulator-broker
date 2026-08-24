@@ -2437,6 +2437,28 @@ test("service start stops waiting when the spawned brokerd exits before readines
   assert.equal(result.json.reasonCode, "service-unavailable");
 });
 
+test("service start stops waiting when brokerd exits even if a startup lock directory remains", async () => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  fs.writeFileSync(path.join(fixture.stateRoot, "idle-policy.json"), "{not-json\n");
+  fs.mkdirSync(paths.serviceLockDir, { recursive: true });
+  writeJson(paths.serviceLockOwnerPath, {
+    pid: 999999999,
+    startedAt: new Date().toISOString(),
+    token: "dead-startup-lock",
+  });
+
+  const result = await runCliAsyncWithTimeout(fixture, {}, 4000, "service", "start");
+
+  assert.equal(result.timedOut, false, result.stderr);
+  assert.equal(result.status, 3);
+  assert.equal(result.json.reasonCode, "service-unavailable");
+});
+
 test("service probe treats request timeout as unavailable instead of missing", async (t) => {
   const root = makeTempDir();
   const socketPath = path.join(root, "busy.sock");

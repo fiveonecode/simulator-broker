@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Ubuntu Node CI no longer treats `git diff-files` exit `1` as “scan every
+  index blob”, in-process `brokerd` tests inject the fixture `simctl`
+  adapter, client tests run with `--test-concurrency=1` on Ubuntu CI, and
+  `service start` stops waiting when spawned `brokerd` exits even if a
+  startup lock directory remains.
 - New project scaffolds require an iPhone for UI purposes without pinning an
   iOS version unless `--ios-version` is explicit.
 - Homebrew CLI and app metadata now require macOS 14 Sonoma, matching the app

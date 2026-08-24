@@ -179,6 +179,18 @@ function cliArgs(fixture, extraArgs) {
   ];
 }
 
+function applySimctlFixtureEnv(t, fixture) {
+  const originalFixtureState = process.env.SIMBROKER_SIMCTL_FIXTURE_STATE;
+  process.env.SIMBROKER_SIMCTL_FIXTURE_STATE = fixture.simctl.statePath;
+  t.after(() => {
+    if (originalFixtureState === undefined) {
+      delete process.env.SIMBROKER_SIMCTL_FIXTURE_STATE;
+    } else {
+      process.env.SIMBROKER_SIMCTL_FIXTURE_STATE = originalFixtureState;
+    }
+  });
+}
+
 function runCli(fixture, ...args) {
   const result = spawnSync(process.execPath, cliArgs(fixture, args), {
     encoding: "utf8",
@@ -688,6 +700,7 @@ test("concurrent service starts converge on one live brokerd", async (t) => {
 
 test("brokerd binds the service socket with restrictive permissions", async (t) => {
   const fixture = makeFixture();
+  applySimctlFixtureEnv(t, fixture);
   const paths = resolveBrokerPaths({
     hostConfigPath: fixture.hostConfigPath,
     projectFilePath: fixture.projectFilePath,
@@ -726,6 +739,7 @@ test("brokerd binds the service socket with restrictive permissions", async (t) 
 
 test("service shutdown closes incomplete command requests", async (t) => {
   const fixture = makeFixture();
+  applySimctlFixtureEnv(t, fixture);
   assert.equal(runCli(fixture, "host", "init").status, 0);
   const paths = resolveBrokerPaths({
     hostConfigPath: fixture.hostConfigPath,
@@ -773,6 +787,7 @@ test("service shutdown closes incomplete command requests", async (t) => {
 
 test("service shutdown closes connections before HTTP headers complete", async (t) => {
   const fixture = makeFixture();
+  applySimctlFixtureEnv(t, fixture);
   assert.equal(runCli(fixture, "host", "init").status, 0);
   const paths = resolveBrokerPaths({
     hostConfigPath: fixture.hostConfigPath,
@@ -813,6 +828,7 @@ test("service shutdown closes connections before HTTP headers complete", async (
 
 test("brokerd rejects oversized command request bodies", async (t) => {
   const fixture = makeFixture();
+  applySimctlFixtureEnv(t, fixture);
   assert.equal(runCli(fixture, "host", "init").status, 0);
   const paths = resolveBrokerPaths({
     hostConfigPath: fixture.hostConfigPath,

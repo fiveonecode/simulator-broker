@@ -64,10 +64,19 @@ A first extracted implementation slice now exists:
 - public GitHub-hosted Ubuntu CI runs `verify:public-surface`, the managed-skill
   ownership check, `test:broker-core`, `test:client`, and
   `test:harness-adoption`; it does not
-  run `test:app`. The job budget is 30 minutes. Broker tests that build an
-  app snapshot must inject the fixture `simctl` adapter. The default
-  public-surface scan reads index blobs only for dirty or missing worktree
-  files so a clean checkout does not spawn one `git cat-file` per file.
+  run `test:app`. The job budget is 30 minutes. Do not raise that budget to
+  hide a hung `simctl` or `brokerd` startup wait. Broker tests that build an
+  app snapshot, including in-process `startBrokerService`, must inject the
+  fixture `simctl` adapter (`SIMBROKER_SIMCTL_FIXTURE_STATE` or an explicit
+  adapter / snapshot writer). Ubuntu CI runs client tests with
+  `node --test --test-concurrency=1` so client files that mutate process env
+  or spawn `brokerd` cannot interleave. The default public-surface scan reads index
+  blobs only for dirty or missing worktree files. `git diff-files` exit `1`
+  is the dirty-name list; only a real git failure fails the scan. A clean
+  checkout must not spawn one `git cat-file` per file. `simbroker service
+  start` must fail as soon as the spawned `brokerd` exits without becoming
+  ready; it must not keep polling for `serviceStartupTimeoutMs` just because
+  the startup lock directory still exists.
 - tagged versions such as `v0.1.0-alpha.2` attach the CLI tarball, the
   packable `simbroker-<version>.tgz`, and the notarized
   `Simulator-Broker-<version>.zip` to a GitHub Release. The CLI and npm

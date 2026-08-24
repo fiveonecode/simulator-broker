@@ -1,7 +1,7 @@
 # Public Node test surface. Ubuntu, no npm install (the repo has no runtime
 # dependencies), and no macOS app suite. timeout-minutes is 30 because a
 # prior 20-minute budget was consumed by per-file git cat-file in
-# verify:public-surface on a clean checkout.
+# verify:public-surface. Do not raise it to hide a hung simctl/brokerd wait.
 name: Node tests
 
 on:
@@ -38,7 +38,7 @@ jobs:
         run: npm run test:broker-core
 
       - name: client tests
-        run: npm run test:client
+        run: node --test --test-concurrency=1 client/test/*.test.mjs
 
       - name: harness-adoption tests
         run: npm run test:harness-adoption
