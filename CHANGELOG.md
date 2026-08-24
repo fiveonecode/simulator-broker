@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Guided setup binds existing-host confirmation to the requested `--host-id`,
+  uses the separate device-type inventory when a runtime omits
+  `supportedDeviceTypes`, and fails closed when known-projects or lease/pin
+  JSON cannot be loaded instead of reporting `ready`.
 - Ubuntu Node CI no longer treats `git diff-files` exit `1` as “scan every
   index blob”, in-process `brokerd` tests inject the fixture `simctl`
   adapter, client tests run with `--test-concurrency=1` on Ubuntu CI, and

@@ -718,6 +718,36 @@ test("setup treats a path-mismatched snapshot as finishing work", () => {
   assert.equal(runCli(fixture, "service", "stop").status, 0);
 });
 
+test("setup blocks when known-projects JSON is malformed after a healthy snapshot", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "corrupt-catalog");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "corrupt-catalog",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+
+  const knownProjectsPath = path.join(fixture.stateRoot, "known-projects.json");
+  fs.writeFileSync(knownProjectsPath, "{not-json\n");
+  const blocked = runCli(fixture, "setup", "--json");
+  assert.equal(blocked.status, 0, blocked.stderr);
+  assert.equal(blocked.json.status, "blocked");
+  assert.ok(blocked.json.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+});
+
 test("setup resumes a missing registry for an exact untouched starter host", () => {
   const root = makeTempDir();
   const fixture = {

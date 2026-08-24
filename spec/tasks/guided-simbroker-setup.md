@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.3`
+> **Version:** `1.0.4`
 > **Last Updated:** `2026-08-24`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -103,7 +103,10 @@ Without override, choose the numerically newest available iOS runtime that
 supports both iPhone and iPad starter types. `--ios-version 26` chooses newest
 compatible 26.x; `26.4` chooses exactly 26.4. Ignore unavailable and non-iOS
 runtimes. Sort numeric version, build version, then identifier deterministically.
-No qualifying runtime produces a blocked preview with manual install guidance.
+When a runtime record omits `supportedDeviceTypes` or the array is empty, derive
+family compatibility and preferred starter types from the separately collected
+`devicetypes` inventory, matching capacity planning. No qualifying runtime
+produces a blocked preview with manual install guidance.
 
 ### REQ-005 — Starter device plan
 
@@ -125,7 +128,9 @@ Same-named incompatible devices are never adopted.
 The SHA-256 plan ID canonicalizes schema version, requested host ID,
 host-config existence/relevant digest, selected runtime identifier/version/build,
 selected device type IDs, all target alias definitions/names, matching reusable
-identities, and create/reuse actions. It excludes timestamps, disk, formatting,
+identities, and create/reuse actions. For an existing host, the fingerprint still
+includes the requested `--host-id`; an explicit ID that does not match the
+configured host is blocked. It excludes timestamps, disk, formatting,
 service state, and unrelated inventory. Equivalent inventory order and duplicate
 records cannot change the ID.
 
@@ -168,7 +173,9 @@ Apply performs, in order:
 - Health failure preserves host/service and reports doctor issues plus exact
   per-alias repair commands.
 - Existing invalid/unhealthy host is blocked without repair/replacement,
-  lease/pin mutation, or retirement.
+  lease/pin mutation, or retirement. Invalid known-projects or lease/pin JSON
+  is the same class of existing-host failure: diagnose with `simbroker doctor`,
+  do not report `ready`.
 - Existing healthy host is never replaced or expanded to six.
 - Lock/revalidation guarantees concurrent setup creates at most one host; the
   loser gets `setup-plan-stale`.
@@ -383,6 +390,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.4 | 2026-08-24 | `spec-steward`, `ios-dev` | Bound existing-host confirmation to the requested host ID, reused the device-type inventory when runtime records omit supported types, and failed closed on unreadable known-projects/lease JSON |
 | 1.0.3 | 2026-08-24 | `spec-steward`, `ios-dev` | Required searchable writable directory ancestors, post-doctor snapshot health, and derived apply timeout plus cooperative timeout escalation |
 | 1.0.2 | 2026-08-23 | `spec-steward`, `ios-dev` | Required exact setup-selected runtime/device identity for registry recovery and post-doctor committed-host revalidation |
 | 1.0.1 | 2026-08-23 | `spec-steward`, `ios-dev` | Clarified registry recovery, concurrent setup waits, finishing-stage cancellation, schema rejection, and exact committed-host verification |

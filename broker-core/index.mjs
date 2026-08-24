@@ -1360,14 +1360,31 @@ function compareSetupRuntimes(left, right) {
   return String(left.identifier).localeCompare(String(right.identifier));
 }
 
-function compatibleSetupDeviceTypes(runtime) {
-  const supportedDeviceTypes = Array.isArray(runtime?.supportedDeviceTypes)
+function runtimeSupportedDeviceTypes(runtime, inventory) {
+  const runtimeDeviceTypes = Array.isArray(runtime?.supportedDeviceTypes)
     ? runtime.supportedDeviceTypes
     : [];
+  if (runtimeDeviceTypes.length > 0) {
+    return runtimeDeviceTypes;
+  }
+  return Array.isArray(inventory?.deviceTypesJson?.devicetypes)
+    ? inventory.deviceTypesJson.devicetypes
+    : [];
+}
+
+function compatibleSetupDeviceTypes(runtime, inventory) {
+  const supportedDeviceTypes = runtimeSupportedDeviceTypes(runtime, inventory);
   return {
     iPad: supportedDeviceTypes.some((deviceType) => deviceType.productFamily === "iPad"),
     iPhone: supportedDeviceTypes.some((deviceType) => deviceType.productFamily === "iPhone"),
   };
+}
+
+function selectPreferredDeviceTypeForSetup(runtime, inventory, deviceFamily) {
+  return selectPreferredDeviceType({
+    ...runtime,
+    supportedDeviceTypes: runtimeSupportedDeviceTypes(runtime, inventory),
+  }, deviceFamily);
 }
 
 function selectRuntimeForSetup(inventory, requestedVersion) {
@@ -1376,7 +1393,7 @@ function selectRuntimeForSetup(inventory, requestedVersion) {
     if (!isAvailableIosRuntime(runtime) || !runtimeMatchesRequestedVersion(runtime, requestedVersion)) {
       continue;
     }
-    const families = compatibleSetupDeviceTypes(runtime);
+    const families = compatibleSetupDeviceTypes(runtime, inventory);
     if (!families.iPhone || !families.iPad) {
       continue;
     }
@@ -1411,8 +1428,8 @@ function setupDevicePlan(inventory, hostId, runtime) {
     iosVersion: runtime.version,
   });
   const deviceTypes = {
-    iPad: selectPreferredDeviceType(runtime, "iPad"),
-    iPhone: selectPreferredDeviceType(runtime, "iPhone"),
+    iPad: selectPreferredDeviceTypeForSetup(runtime, inventory, "iPad"),
+    iPhone: selectPreferredDeviceTypeForSetup(runtime, inventory, "iPhone"),
   };
   const deviceIndex = createDeviceIndex({
     deviceTypesJson: inventory.deviceTypesJson,
@@ -1446,6 +1463,12 @@ function setupDevicePlan(inventory, hostId, runtime) {
     devices,
     deviceTypes,
   };
+}
+
+function requestedSetupHostId(options) {
+  return typeof options.hostId === "string" && options.hostId.trim() !== ""
+    ? slugifyIdentifier(options.hostId, options.hostId)
+    : null;
 }
 
 function setupHostConfigDigest(hostConfig) {
@@ -1509,8 +1532,8 @@ function setupHostMatchesCommittedStarterPlan(hostConfig, devices, inventory) {
       return false;
     }
     setupDeviceTypes = {
-      iPad: selectPreferredDeviceType(runtime, "iPad").identifier,
-      iPhone: selectPreferredDeviceType(runtime, "iPhone").identifier,
+      iPad: selectPreferredDeviceTypeForSetup(runtime, inventory, "iPad").identifier,
+      iPhone: selectPreferredDeviceTypeForSetup(runtime, inventory, "iPhone").identifier,
     };
   } catch {
     return false;
@@ -1555,7 +1578,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
     if (!(error instanceof BrokerError)) {
       throw error;
     }
-    const hostId = options.hostId ?? null;
+    const hostId = requestedSetupHostId(options);
     const planId = setupPlanFingerprint({
       configured: true,
       devices: [],
@@ -1597,6 +1620,42 @@ function setupExistingHostState(paths, inventory, options = {}) {
   const deviceTypes = new Map((inventory.deviceTypesJson?.devicetypes ?? [])
     .map((deviceType) => [deviceType.identifier, deviceType]));
   const issues = [];
+  const requestedHostId = requestedSetupHostId(options);
+  if (requestedHostId !== null && requestedHostId !== hostConfig.hostId) {
+    issues.push({
+      id: "host-id",
+      status: "blocked",
+      summary: `Requested host ID ${requestedHostId} does not match the existing host ${hostConfig.hostId}.`,
+      details: {
+        configuredHostId: hostConfig.hostId,
+        requestedHostId,
+      },
+      remediationCommands: ["simbroker setup"],
+    });
+  }
+  try {
+    normalizeKnownProjects(readJsonIfExists(paths.knownProjectsPath), nowIso(options.now));
+  } catch (error) {
+    issues.push({
+      id: "known-projects",
+      status: "blocked",
+      summary: "The existing known-projects catalog is invalid and setup will not replace it automatically.",
+      details: error instanceof BrokerError ? error.payload : { message: error.message },
+      remediationCommands: ["simbroker doctor"],
+    });
+  }
+  try {
+    listJsonFiles(paths.leasesDir);
+    listJsonFiles(paths.pinsDir);
+  } catch (error) {
+    issues.push({
+      id: "leases",
+      status: "blocked",
+      summary: "Existing lease or pin records are invalid and setup will not replace them automatically.",
+      details: { message: error.message },
+      remediationCommands: ["simbroker doctor"],
+    });
+  }
   let registry = null;
   let registryInitializationRequired = false;
   let registryMissing = false;
@@ -1675,7 +1734,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
     configured: true,
     devices,
     hostConfig,
-    hostId: hostConfig.hostId,
+    hostId: requestedHostId ?? hostConfig.hostId,
     runtime: null,
   });
   const blocked = issues.some((issue) => issue.status === "blocked");
@@ -5232,13 +5291,8 @@ function selectRuntimeFromInventory(inventory, iosVersion) {
 }
 
 function selectDeviceTypeFromInventory(inventory, runtime, deviceFamily) {
-  const runtimeDeviceTypes = Array.isArray(runtime.supportedDeviceTypes)
-    ? runtime.supportedDeviceTypes
-    : [];
-  const deviceTypes = runtimeDeviceTypes.length > 0
-    ? runtimeDeviceTypes
-    : (inventory.deviceTypesJson?.devicetypes ?? []);
-  const supported = deviceTypes.filter((deviceType) => deviceType.productFamily === deviceFamily);
+  const supported = runtimeSupportedDeviceTypes(runtime, inventory)
+    .filter((deviceType) => deviceType.productFamily === deviceFamily);
   if (supported.length === 0) {
     return {
       blocker: {

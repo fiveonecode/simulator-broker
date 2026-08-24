@@ -931,6 +931,42 @@ test("setup requires one runtime to support both starter device families", () =>
   }), (error) => error instanceof BrokerError && error.payload.reasonCode === "runtime-not-found");
 });
 
+test("setup uses the device-type inventory when a runtime omits supportedDeviceTypes", () => {
+  const root = makeTempDir();
+  const simctl = createSimctlFixture(root);
+  const state = readJson(simctl.statePath);
+  for (const runtime of state.runtimes) {
+    delete runtime.supportedDeviceTypes;
+  }
+  writeJson(simctl.statePath, state);
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "inventory-fallback",
+    simctlAdapter: simctl.adapter,
+  });
+
+  assert.equal(preview.status, "changes_required");
+  assert.equal(preview.devices.length, 6);
+  assert.equal(preview.devices.filter((device) => device.deviceFamily === "iPhone").length, 5);
+  assert.equal(preview.devices.filter((device) => device.deviceFamily === "iPad").length, 1);
+  assert.ok(preview.devices.every((device) => device.deviceTypeIdentifier));
+
+  for (const runtime of state.runtimes) {
+    runtime.supportedDeviceTypes = [];
+  }
+  writeJson(simctl.statePath, state);
+  const emptyArrayPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "inventory-fallback",
+    simctlAdapter: simctl.adapter,
+  });
+  assert.equal(emptyArrayPreview.status, "changes_required");
+  assert.equal(emptyArrayPreview.devices.length, 6);
+});
+
 test("setup preview is an exact stable six-device plan with strict reuse matching", () => {
   const root = makeTempDir();
   const matchingName = "Simulator Broker setup-plan ui-1";
@@ -1031,6 +1067,62 @@ test("setup rejects missing and stale confirmation before mutation and is idempo
   });
   assert.equal(secondApply.devices.created, 0);
   assert.equal(readJson(paths.simctl.statePath).devices.length, baselineCount + 6);
+
+  const matchingPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "confirmed-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(matchingPreview.planId, secondPreview.planId);
+  assert.notEqual(matchingPreview.status, "blocked");
+
+  const mismatchedPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "different",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(mismatchedPreview.status, "blocked");
+  assert.ok(mismatchedPreview.prerequisites.some((issue) => issue.id === "host-id"));
+  assert.notEqual(mismatchedPreview.planId, secondPreview.planId);
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: secondPreview.planId,
+    hostId: "different",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-plan-stale");
+});
+
+test("setup blocks an existing host when doctor-relevant state files are malformed", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "corrupt-state-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "corrupt-state-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  fs.writeFileSync(resolvedPaths.knownProjectsPath, "{not-json\n");
+  const knownProjectsBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(knownProjectsBlocked.status, "blocked");
+  assert.ok(knownProjectsBlocked.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+
+  writeJson(resolvedPaths.knownProjectsPath, {
+    projects: {},
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    version: 1,
+  });
+  fs.mkdirSync(resolvedPaths.leasesDir, { recursive: true });
+  fs.writeFileSync(path.join(resolvedPaths.leasesDir, "broken.json"), "{not-json\n");
+  const leasesBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(leasesBlocked.status, "blocked");
+  assert.ok(leasesBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
 });
 
 test("setup blocks an existing host whose registry marks an alias for repair", () => {

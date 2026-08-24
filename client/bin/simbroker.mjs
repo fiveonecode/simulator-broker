@@ -788,7 +788,29 @@ function setupSnapshotReady(paths, corePreview) {
     const relevantStateMtime = [paths.hostConfigPath, paths.registryPath]
       .filter((filePath) => fs.existsSync(filePath))
       .reduce((latest, filePath) => Math.max(latest, fs.statSync(filePath).mtimeMs), 0);
-    return snapshotMtime >= relevantStateMtime;
+    return snapshotMtime >= relevantStateMtime && setupDoctorStateReadable(paths);
+  } catch {
+    return false;
+  }
+}
+
+function setupDoctorStateReadable(paths) {
+  try {
+    if (fs.existsSync(paths.knownProjectsPath)) {
+      JSON.parse(fs.readFileSync(paths.knownProjectsPath, "utf8"));
+    }
+    for (const directoryPath of [paths.leasesDir, paths.pinsDir]) {
+      if (!fs.existsSync(directoryPath)) {
+        continue;
+      }
+      for (const entry of fs.readdirSync(directoryPath, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith(".json")) {
+          continue;
+        }
+        JSON.parse(fs.readFileSync(path.join(directoryPath, entry.name), "utf8"));
+      }
+    }
+    return true;
   } catch {
     return false;
   }
