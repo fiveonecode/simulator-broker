@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-const skipMacosPackaging = process.platform !== "darwin";
+// Payload scans copy broker-core+client and grapheme-scan the staged tree.
+// GitHub CI uses --test-timeout=120000, so those tests belong to local npm test.
+const skipDistributionPayloadScan =
+  process.env.CI === "true" || process.platform !== "darwin";
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-install-test-"));
@@ -614,7 +617,7 @@ test("install_local --cli-only does not rewrite the live default install metadat
   }
 });
 
-test("package_distribution rejects symlinks copied into the runtime payload", { skip: skipMacosPackaging }, (t) => {
+test("package_distribution rejects symlinks copied into the runtime payload", { skip: skipDistributionPayloadScan }, (t) => {
   const root = makeTempDir();
   const outputDir = path.join(root, "out");
   const fakePathDir = path.join(root, "fake-path");
@@ -668,7 +671,7 @@ test("package_distribution rejects symlinks copied into the runtime payload", { 
   assert.equal(result.stderr.includes(symlinkTargetDir), false);
 });
 
-test("package_distribution scans copied payload filenames containing newlines", { skip: skipMacosPackaging }, (t) => {
+test("package_distribution scans copied payload filenames containing newlines", { skip: skipDistributionPayloadScan }, (t) => {
   const root = makeTempDir();
   const outputDir = path.join(root, "out");
   const fakePathDir = path.join(root, "fake-path");
@@ -719,7 +722,7 @@ test("package_distribution scans copied payload filenames containing newlines", 
   assert.equal(result.stderr.includes(root), false);
 });
 
-test("package_distribution scans empty copied payload directories", { skip: skipMacosPackaging }, (t) => {
+test("package_distribution scans empty copied payload directories", { skip: skipDistributionPayloadScan }, (t) => {
   const root = makeTempDir();
   const outputDir = path.join(root, "out");
   const fakePathDir = path.join(root, "fake-path");
@@ -770,7 +773,7 @@ test("package_distribution scans empty copied payload directories", { skip: skip
   assert.equal(result.stderr.includes(root), false);
 });
 
-test("package_distribution scans the top-level archive name", { skip: skipMacosPackaging }, (t) => {
+test("package_distribution scans the top-level archive name", { skip: skipDistributionPayloadScan }, (t) => {
   const root = makeTempDir();
   const outputDir = path.join(root, "out");
   const fakePathDir = path.join(root, "fake-path");

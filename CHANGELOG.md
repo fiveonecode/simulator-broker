@@ -36,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs `test:client`. `verify:public-surface` stays on local `npm test`
   so it searches the operator home path. `package_distribution.sh`
   scans the staged payload only and does not rerun the full-repo scan.
+  GitHub CI skips those payload-scan tests; they stay on local Darwin
+  `npm test` because they exceed the 120-second client-file timeout.
   Client tests still use `--test-concurrency=1 --test-timeout=120000`
   without `--test-force-exit`, in-file `describe` concurrency `1`,
   referenced keepalive children, fixture `simctl` for in-process

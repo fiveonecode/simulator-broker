@@ -80,8 +80,10 @@ A first extracted implementation slice now exists:
   service starts cannot overlap. Keepalive owner and command processes in
   `simbroker` tests stay referenced until they exit; `unref()` during an
   `await` lets Node 20 fire `beforeExit` and cancel later queued tests.
-  `package_distribution.sh` tests skip on non-Darwin because that script is
-  a macOS packaging path. The script scans the staged payload and archive
+  `package_distribution.sh` payload-scan tests skip on GitHub CI and on
+  non-Darwin. Copying the runtime and scanning the staged payload is too
+  slow for the 120-second client-file timeout; those tests stay on local
+  Darwin `npm test`. The script scans the staged payload and archive
   name; it does not rerun the full-repo `verify:public-surface` scan.
   The default public-surface scan reads index
   blobs only for dirty or missing worktree files. `git diff-files` exit `1`
@@ -298,7 +300,9 @@ npm run agent:complete -- --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harn
   or write to the default broker state root.
 - `scripts/package_distribution.sh` scans the staged payload and archive
   name for public-surface issues. It does not rerun full-repo
-  `verify:public-surface`; that gate is local `npm test`.
+  `verify:public-surface`; that gate is local `npm test`. Client tests
+  that invoke those payload scans skip when `CI=true` or the platform is
+  not Darwin.
 - `npm run agent:complete -- --session-dir <dir>` is the close-out gate; it fails unless the required verification profiles passed against the current task-tree fingerprint and any blocking obligations are satisfied or the session is explicitly reported blocked.
 - Every meaningful task commit must use a structured git message with `Why:`, `Changed:`, `Verification:`, `Affected:`, `Refs:`, and `Session:` sections. Commit messages are durable public output: use repo-relative paths, GitHub URLs, commit SHAs, and public task artifact labels such as `task-sessions/<session-name>` instead of machine-local or parent-relative paths. `agent:complete` rejects detected local-path forms in every new commit touching task paths.
 - `agent:complete` enforces a clean close-out: no new uncommitted task changes, no malformed task commit messages, no changed paths outside selected manifest path constraints, and no leftover untracked junk outside allowlisted local artifact paths.

@@ -39,6 +39,8 @@ This Alpha already includes:
 - public Node test CI: GitHub-hosted Ubuntu for broker-core and
   harness-adoption, GitHub-hosted macOS for client tests. Home-path
   public-surface scanning is `npm test` on the operator machine.
+  `package_distribution.sh` payload-scan tests also stay on local Darwin
+  `npm test`; GitHub CI skips them.
 - GitHub issue forms for install failure, bug, and feature, plus a light PR
   template that does not require a harness session
 - Homebrew formula `fiveonecode/simulator-broker/simbroker` for the Alpha CLI
