@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.8`
+> **Version:** `1.0.9`
 > **Last Updated:** `2026-08-25`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -184,13 +184,20 @@ Apply performs, in order:
 - Health failure preserves host/service and reports doctor issues plus exact
   per-alias repair commands.
 - Existing invalid/unhealthy host is blocked without repair/replacement,
-  lease/pin mutation, or retirement. Invalid known-projects or lease/pin JSON
-  is the same class of existing-host failure: diagnose with `simbroker doctor`,
-  do not report `ready`. Valid JSON that is not a complete lease or pin
-  identity record, such as `{}` or a lease with only `leaseId` and `alias`,
-  is invalid existing-host state. Setup does not treat a missing host-config
-  as a confirmable fresh plan when the selected state root already contains a
-  registry file or lease/pin JSON.
+  lease/pin mutation, or retirement. Invalid known-projects, registry, or
+  lease/pin JSON is the same class of existing-host failure: diagnose with
+  `simbroker doctor`, do not report `ready`. Valid JSON that is not a complete
+  lease or pin identity record, such as `{}`, a lease with only `leaseId` and
+  `alias`, a live lease that omits snapshot-required fields such as
+  `displayName`, `leaseKind`, `projectName`, or `repoRoot`, or a pin that has
+  `pinId` and `alias` but omits `projectId`, `projectName`, `actorId`,
+  `actorType`, `createdAt`, or `repoRoot`, is invalid existing-host state.
+  Persisted registry alias data that is schema-invalid, such as an
+  unrecognized `health` value or an alias map that contains none of the
+  configured host aliases, is also invalid; setup must not normalize it into a
+  `ready` host. Setup does not treat a missing host-config as a confirmable
+  fresh plan when the selected state root already contains a registry file or
+  lease/pin JSON.
 - Preview probes the requested service socket even when no host is configured
   yet. A running broker with a different host-config, state-root, or socket
   identity is a `service-identity` blocker and is not confirmable, so apply
@@ -418,6 +425,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.9 | 2026-08-25 | `spec-steward`, `ios-dev` | Fail closed on snapshot-incomplete lease/pin records and schema-invalid persisted registry alias data instead of normalizing them to `ready` |
 | 1.0.8 | 2026-08-25 | `spec-steward`, `ios-dev` | Block partial lease records and missing-host state roots that already contain registry/lease/pin artifacts, keep selected paths on service-identity retries, and refresh the app dashboard on an already-ready setup preview |
 | 1.0.7 | 2026-08-25 | `spec-steward`, `ios-dev` | App Stop/timeout SIGTERM window includes rollback attribution inventory and the extra inventory after an indeterminate create failure |
 | 1.0.6 | 2026-08-25 | `spec-steward`, `ios-dev` | Fail closed on schema-invalid lease/pin JSON, keep fallback device types order-stable, exclude automatic finishing from the setup sheet, treat doctor-record deletions as snapshot finishing work, and preserve selected path overrides in recovery commands |

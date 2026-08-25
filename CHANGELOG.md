@@ -25,13 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Guided setup binds existing-host confirmation to the requested `--host-id`,
   uses the separate device-type inventory when a runtime omits
-  `supportedDeviceTypes`, and fails closed when known-projects or lease/pin
-  JSON cannot be loaded or is not a complete identity record instead of
-  reporting `ready`. A missing host-config with an existing registry, lease,
-  or pin record in the selected state root is blocked rather than treated as
-  a confirmable fresh plan. Preview probes service identity even when no host
-  is configured yet, so a socket occupied by a different broker is blocked
-  before device creation.
+  `supportedDeviceTypes`, and fails closed when known-projects, registry, or
+  lease/pin JSON cannot be loaded or is not a complete identity record instead
+  of reporting `ready`. Incomplete live leases that omit snapshot-required
+  fields, pins that omit project identity, and persisted registry alias data
+  with an unrecognized `health` value or no configured host aliases stay
+  blocked instead of being normalized during automatic finishing. A missing
+  host-config with an existing registry, lease, or pin record in the selected
+  state root is blocked rather than treated as a confirmable fresh plan.
+  Preview probes service identity even when no host is configured yet, so a
+  socket occupied by a different broker is blocked before device creation.
   `ready` also requires the app snapshot to be at least as new as
   known-projects, lease/pin records, and the lease/pin directories, and to
   match the current doctor-record set, so deletions are finishing work rather

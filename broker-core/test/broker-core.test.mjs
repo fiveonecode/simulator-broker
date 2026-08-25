@@ -1234,6 +1234,111 @@ test("setup blocks an existing host when doctor-relevant state files are malform
   assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, "partial-lease.json")), true);
 });
 
+test("setup blocks snapshot-incomplete leases, pins, and schema-invalid registry alias data", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "snapshot-schema-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "snapshot-schema-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const incompleteLeasePath = path.join(resolvedPaths.leasesDir, "incomplete-snapshot-lease.json");
+  writeJson(incompleteLeasePath, {
+    actorId: "agent:1",
+    actorType: "agent",
+    alias: "ui-1",
+    leaseId: "incomplete-snapshot-lease",
+    ownerPid: process.pid,
+    projectId: "demo-app",
+    purposeId: "agent-ui-session",
+    simulatorId: "sim-ui-1",
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const incompleteLeaseBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(incompleteLeaseBlocked.status, "blocked");
+  assert.ok(incompleteLeaseBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: incompleteLeaseBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(incompleteLeasePath), true);
+  fs.rmSync(incompleteLeasePath);
+
+  const incompletePinPath = path.join(resolvedPaths.pinsDir, "incomplete-pin.json");
+  writeJson(incompletePinPath, {
+    alias: "ui-1",
+    pinId: "incomplete-pin",
+  });
+  const incompletePinBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(incompletePinBlocked.status, "blocked");
+  assert.ok(incompletePinBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: incompletePinBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.deepEqual(readJson(incompletePinPath), {
+    alias: "ui-1",
+    pinId: "incomplete-pin",
+  });
+  fs.rmSync(incompletePinPath);
+
+  const originalRegistry = readJson(resolvedPaths.registryPath);
+  const invalidHealthRegistry = structuredClone(originalRegistry);
+  invalidHealthRegistry.aliases["ui-1"].health = "not-a-health";
+  writeJson(resolvedPaths.registryPath, invalidHealthRegistry);
+  const invalidHealthBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(invalidHealthBlocked.status, "blocked");
+  assert.ok(invalidHealthBlocked.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: invalidHealthBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(resolvedPaths.registryPath).aliases["ui-1"].health, "not-a-health");
+
+  writeJson(resolvedPaths.registryPath, {
+    aliases: {},
+    updatedAt: originalRegistry.updatedAt,
+    version: originalRegistry.version,
+  });
+  const emptyAliasMapBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(emptyAliasMapBlocked.status, "blocked");
+  assert.ok(emptyAliasMapBlocked.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: emptyAliasMapBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.deepEqual(readJson(resolvedPaths.registryPath).aliases, {});
+
+  const missingHealthRegistry = structuredClone(originalRegistry);
+  delete missingHealthRegistry.aliases["ui-1"].health;
+  writeJson(resolvedPaths.registryPath, missingHealthRegistry);
+  const missingHealthAllowed = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.notEqual(missingHealthAllowed.status, "blocked");
+  assert.equal(
+    missingHealthAllowed.prerequisites.some((issue) => issue.id === "registry" && issue.status === "blocked"),
+    false,
+  );
+});
+
 test("setup blocks a missing host config when the state root already has broker records", () => {
   const paths = makePaths();
   const resolvedPaths = brokerPaths(paths);

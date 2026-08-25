@@ -1688,6 +1688,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
       registryMissing = true;
       registry = normalizeRegistry(null, hostConfig, nowIso(options.now));
     } else {
+      assertValidPersistedRegistry(persistedRegistry, hostConfig);
       registry = normalizeRegistry(persistedRegistry, hostConfig, nowIso(options.now));
     }
   } catch (error) {
@@ -2154,6 +2155,37 @@ function normalizeKnownProjects(rawKnownProjects, timestamp) {
   };
 }
 
+function assertValidPersistedRegistry(rawRegistry, hostConfig) {
+  requireObject(rawRegistry, "registry");
+  const rawAliases = requireObject(rawRegistry.aliases, "registry.aliases");
+  if (
+    hostConfig.aliases.length > 0
+    && !hostConfig.aliases.some((hostAlias) => Object.hasOwn(rawAliases, hostAlias.alias))
+  ) {
+    throw new BrokerError("registry.aliases must include at least one configured host alias.", {
+      field: "registry.aliases",
+      reasonCode: "invalid-config",
+    });
+  }
+  for (const hostAlias of hostConfig.aliases) {
+    if (!Object.hasOwn(rawAliases, hostAlias.alias)) {
+      continue;
+    }
+    const fieldPrefix = `registry.aliases.${hostAlias.alias}`;
+    const entry = requireObject(rawAliases[hostAlias.alias], fieldPrefix);
+    if (Object.hasOwn(entry, "health") && !ALLOWED_HEALTH_STATES.has(entry.health)) {
+      throw new BrokerError(
+        `${fieldPrefix}.health must be one of ${[...ALLOWED_HEALTH_STATES].join(", ")}.`,
+        {
+          field: `${fieldPrefix}.health`,
+          reasonCode: "invalid-config",
+        },
+      );
+    }
+  }
+  return rawRegistry;
+}
+
 function normalizeRegistry(rawRegistry, hostConfig, timestamp) {
   if (rawRegistry === null) {
     rawRegistry = {
@@ -2411,7 +2443,11 @@ function assertValidLeaseRecord(record) {
   requireString(record.actorType, "lease.actorType");
   requireString(record.actorId, "lease.actorId");
   requireString(record.projectId, "lease.projectId");
+  requireString(record.projectName, "lease.projectName");
   requireString(record.purposeId, "lease.purposeId");
+  requireString(record.displayName, "lease.displayName");
+  requireString(record.leaseKind, "lease.leaseKind");
+  requireString(record.repoRoot, "lease.repoRoot");
   requireString(record.startedAt, "lease.startedAt");
   requirePositiveIntegerField(record.ownerPid, "lease.ownerPid");
   return record;
@@ -2421,6 +2457,12 @@ function assertValidPinRecord(record) {
   requireObject(record, "pin");
   requireString(record.pinId, "pin.pinId");
   requireString(record.alias, "pin.alias");
+  requireString(record.projectId, "pin.projectId");
+  requireString(record.projectName, "pin.projectName");
+  requireString(record.actorId, "pin.actorId");
+  requireString(record.actorType, "pin.actorType");
+  requireString(record.createdAt, "pin.createdAt");
+  requireString(record.repoRoot, "pin.repoRoot");
   return record;
 }
 
