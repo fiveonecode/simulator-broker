@@ -88,6 +88,11 @@ final class BrokerDashboardStore {
   var pendingSetupConfirmation: String?
   var setupPhase: BrokerSetupPhase = .idle
   var setupPlan: BrokerSetupPlan?
+
+  var isAutomaticSetupInProgress: Bool {
+    isApplyingAction && setupPlan == nil && setupPhase != .idle && setupPhase != .awaitingConfirmation
+  }
+
   var selectedPane: BrokerNavigationPane = .overview {
     didSet {
       if selectedPane != .overview {
@@ -546,19 +551,21 @@ final class BrokerDashboardStore {
       do {
         let plan = try await loadGuidedSetupPlan()
         try Task.checkCancellation()
-        setupPlan = plan
         if plan.status == .blocked {
+          setupPlan = plan
           pendingSetupConfirmation = nil
           setupPhase = .awaitingConfirmation
           return
         }
         if plan.confirmation.required {
+          setupPlan = plan
           pendingSetupConfirmation = plan.planId
           setupPhase = .awaitingConfirmation
           return
         }
+        setupPlan = nil
+        pendingSetupConfirmation = nil
         if plan.status == .ready {
-          setupPlan = nil
           setupPhase = .idle
           setActionMessage("Setup complete — brokerd is running and all managed simulators are healthy.")
           return

@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.5`
+> **Version:** `1.0.7`
 > **Last Updated:** `2026-08-25`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -68,8 +68,12 @@ host init is unchanged and documented only as advanced/troubleshooting.
 - Interactive existing healthy setup automatically performs only safe finishing
   work (service, snapshot, health) without a device-creation prompt. `ready`
   requires a current snapshot whose mtime is at least as new as host-config,
-  registry, known-projects, and lease/pin JSON, and those files must be
-  readable. Newer valid records are finishing work, not `ready`.
+  registry, known-projects, lease/pin JSON, and the lease/pin directories.
+  Those files must be readable valid records, not merely parseable JSON.
+  Newer valid records and deletions of known-projects, lease, or pin records
+  are finishing work, not `ready`. The snapshot is not fresh if its recorded
+  lease, pin, or catalog-backed project identities no longer match the current
+  files.
 - Non-TTY preview never prompts or mutates and prints a copyable apply command.
 - `--json` preview never prompts or mutates and emits exactly one JSON document.
 - Confirmed apply never prompts, recomputes under locks, and emits one human
@@ -122,9 +126,11 @@ produces a blocked preview with manual install guidance.
 | `build-2` | iPhone | `build-fast` | `none` |
 | `ipad-1` | iPad | `interactive-resettable` | `erase-on-acquire` |
 
-Existing preferred-device-type rules are reused. A Simulator is `reuse` only
-when broker name, runtime identifier, and device type identifier all match.
-Same-named incompatible devices are never adopted.
+Existing preferred-device-type rules are reused. When no preferred name
+matches, fallback candidates are sorted by identifier then name so equivalent
+inventory order cannot change the selected type or plan ID. A Simulator is
+`reuse` only when broker name, runtime identifier, and device type identifier
+all match. Same-named incompatible devices are never adopted.
 
 ### REQ-006 — Deterministic confirmation
 
@@ -165,20 +171,23 @@ Apply performs, in order:
 
 - Before host commit, delete only devices created by that attempt; preserve
   reused/external devices and leave no claiming host/registry state.
-- After host commit, preserve host and devices; rerun `simbroker setup`. When
-  the host commit succeeded but initial registry persistence did not, setup
-  previews registry initialization as safe finishing work only when the host is
-  attributable to the canonical starter shape, every alias records the exact
-  runtime version used by its Simulator, every Simulator uses the setup-selected
-  runtime and device type, and no lease, pin, or pending retirement state exists,
-  then reconstructs it from the committed host and Simulator state during apply.
+- After host commit, preserve host and devices; rerun `simbroker setup` with
+  the same selected `--host-config`, `--state-root`, and `--service-socket`
+  paths, shell-quoted. When the host commit succeeded but initial registry
+  persistence did not, setup previews registry initialization as safe finishing
+  work only when the host is attributable to the canonical starter shape, every
+  alias records the exact runtime version used by its Simulator, every Simulator
+  uses the setup-selected runtime and device type, and no lease, pin, or pending
+  retirement state exists, then reconstructs it from the committed host and
+  Simulator state during apply.
 - Service failure preserves host and reports log path and exact retry.
 - Health failure preserves host/service and reports doctor issues plus exact
   per-alias repair commands.
 - Existing invalid/unhealthy host is blocked without repair/replacement,
   lease/pin mutation, or retirement. Invalid known-projects or lease/pin JSON
   is the same class of existing-host failure: diagnose with `simbroker doctor`,
-  do not report `ready`.
+  do not report `ready`. Valid JSON that is not a lease or pin identity record,
+  such as `{}`, is invalid existing-host state.
 - Preview probes the requested service socket even when no host is configured
   yet. A running broker with a different host-config, state-root, or socket
   identity is a `service-identity` blocker and is not confirmable, so apply
@@ -188,7 +197,10 @@ Apply performs, in order:
   loser gets `setup-plan-stale`.
 - First SIGINT/SIGTERM is cooperative during Simulator operations, service
   startup, snapshot refresh, and doctor verification, with exits 130/143;
-  post-commit state is preserved. A second termination may force exit.
+  post-commit state is preserved. A second termination may force exit. The
+  app Stop/timeout SIGTERM window covers one in-flight Simulator command,
+  the three-command rollback attribution inventory, the additional inventory
+  after an indeterminate create failure, and up to six rollback deletes.
 
 No setup-session file is persisted. Recovery derives from host config,
 Simulator inventory, service metadata, snapshot, and doctor.
@@ -202,11 +214,14 @@ changes have been made yet.” Actions are Cancel and a count-adjusted Create &
 Finish button. Apply passes exact plan ID plus the same runtime, host, and path
 selection.
 
-Service/snapshot-only plans apply immediately without a device sheet. Blocked
-plans show commands and no enabled confirm. Success refreshes to the dashboard
-and says: `Setup complete — brokerd is running and all managed simulators are
-healthy.` Failure refreshes first, preserves the sheet, and shows completed
-stages and recovery.
+Service/snapshot-only plans apply immediately without a device sheet.
+Automatic finishing progress is tracked on the dashboard without presenting
+the first-time review sheet. Blocked plans show commands and no enabled
+confirm. Success refreshes to the dashboard and says: `Setup complete —
+brokerd is running and all managed simulators are healthy.` Failure of a
+confirmable plan refreshes first, preserves the sheet, and shows completed
+stages and recovery. Automatic finishing failure stays off the sheet and
+surfaces the recovery error on the dashboard.
 
 The app accepts only setup schema version 1 and rejects a future or otherwise
 unsupported version before presenting or applying its plan. The `@MainActor
@@ -328,7 +343,8 @@ or reused devices are setup rollback targets.
 - Every external command and lock wait is bounded; setup apply timeout covers
   preflight, inventory, six creates, concurrent provisioning contention,
   bounded rollback, service, snapshot, and doctor, and the app uses the same
-  cooperative escalation window on timeout as on cancellation.
+  cooperative escalation window on timeout as on cancellation, including
+  rollback and indeterminate-create inventory commands.
 - Canonical planning is deterministic and idempotent under inventory reorder.
 - Host/state artifacts remain current-user restricted and machine-local.
 - Output, specs, fixtures, screenshots, and commits remain public-safe; no
@@ -397,6 +413,8 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.7 | 2026-08-25 | `spec-steward`, `ios-dev` | App Stop/timeout SIGTERM window includes rollback attribution inventory and the extra inventory after an indeterminate create failure |
+| 1.0.6 | 2026-08-25 | `spec-steward`, `ios-dev` | Fail closed on schema-invalid lease/pin JSON, keep fallback device types order-stable, exclude automatic finishing from the setup sheet, treat doctor-record deletions as snapshot finishing work, and preserve selected path overrides in recovery commands |
 | 1.0.5 | 2026-08-25 | `spec-steward`, `ios-dev` | Preview probes service identity on unconfigured hosts, and `ready` requires the snapshot to be at least as new as known-projects and lease/pin JSON |
 | 1.0.4 | 2026-08-24 | `spec-steward`, `ios-dev` | Bound existing-host confirmation to the requested host ID, reused the device-type inventory when runtime records omit supported types, and failed closed on unreadable known-projects/lease JSON |
 | 1.0.3 | 2026-08-24 | `spec-steward`, `ios-dev` | Required searchable writable directory ancestors, post-doctor snapshot health, and derived apply timeout plus cooperative timeout escalation |

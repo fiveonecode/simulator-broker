@@ -777,6 +777,71 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertTrue(invocations[1].arguments.contains("--host-id"))
     XCTAssertTrue(invocations[1].arguments.contains("guided-app-host"))
     XCTAssertNil(store.setupPlan)
+    XCTAssertEqual(store.setupPhase, .idle)
+  }
+
+  func testGuidedSetupAutomaticFinishingDoesNotPresentSetupSheet() async throws {
+    let runtimePaths = BrokerRuntimePaths(
+      stateRoot: URL(fileURLWithPath: "/tmp/simbroker-auto-finish-state"),
+      hostConfigURL: URL(fileURLWithPath: "/tmp/simbroker-auto-finish-host.json"),
+      configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker")
+    )
+    let setupPlan = try makeSetupPlan(confirmationRequired: false, hostConfigured: true, includeRuntime: false, createCount: 0)
+    let localRunner = CancellableApplyLocalCommandRunner(plan: setupPlan)
+    let loadedState = BrokerLoadedState(
+      paths: runtimePaths,
+      tooling: BrokerToolingState(cliPath: runtimePaths.configuredCLIURL, hostConfigExists: true, installMetadata: nil),
+      service: nil,
+      snapshot: nil
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: RecordingCommandClient(),
+      localCommandRunner: localRunner,
+      runtimePaths: runtimePaths
+    )
+
+    store.requestGuidedSetup()
+    try await waitUntil { await localRunner.applyStarted() }
+    try await waitUntil { await MainActor.run { store.setupPhase == .applying } }
+
+    XCTAssertNil(store.setupPlan)
+    XCTAssertNil(store.pendingSetupConfirmation)
+    XCTAssertTrue(store.isAutomaticSetupInProgress)
+
+    store.stopGuidedSetup()
+    try await waitUntil { await MainActor.run { store.setupPhase == .idle && store.isApplyingAction == false } }
+    XCTAssertNil(store.setupPlan)
+    XCTAssertFalse(store.isAutomaticSetupInProgress)
+  }
+
+  func testGuidedSetupAutomaticFinishingFailureDoesNotPresentSetupSheet() async throws {
+    let runtimePaths = BrokerRuntimePaths(
+      stateRoot: URL(fileURLWithPath: "/tmp/simbroker-auto-fail-state"),
+      hostConfigURL: URL(fileURLWithPath: "/tmp/simbroker-auto-fail-host.json"),
+      configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker")
+    )
+    let setupPlan = try makeSetupPlan(confirmationRequired: false, hostConfigured: true, includeRuntime: false, createCount: 0)
+    let localRunner = FailingApplyLocalCommandRunner(plan: setupPlan)
+    let loadedState = BrokerLoadedState(
+      paths: runtimePaths,
+      tooling: BrokerToolingState(cliPath: runtimePaths.configuredCLIURL, hostConfigExists: true, installMetadata: nil),
+      service: nil,
+      snapshot: nil
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: RecordingCommandClient(),
+      localCommandRunner: localRunner,
+      runtimePaths: runtimePaths
+    )
+
+    store.requestGuidedSetup()
+    try await waitUntil { await MainActor.run { store.lastErrorMessage != nil && store.isApplyingAction == false } }
+
+    XCTAssertEqual(store.setupPhase, .idle)
+    XCTAssertNil(store.setupPlan)
+    XCTAssertEqual(store.lastErrorMessage, "Setup committed; rerun simbroker setup.")
   }
 
   func testStoppingGuidedSetupClearsStalePlanWithoutPresentingCancellationAsFailure() async throws {

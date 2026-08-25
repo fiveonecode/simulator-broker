@@ -785,14 +785,10 @@ function setupSnapshotReady(paths, corePreview) {
       return false;
     }
     const snapshotMtime = fs.statSync(paths.appSnapshotPath).mtimeMs;
-    const relevantStateMtime = [
-      paths.hostConfigPath,
-      paths.registryPath,
-      ...setupDoctorStateFiles(paths),
-    ]
-      .filter((filePath) => fs.existsSync(filePath))
-      .reduce((latest, filePath) => Math.max(latest, fs.statSync(filePath).mtimeMs), 0);
-    return snapshotMtime >= relevantStateMtime && setupDoctorStateReadable(paths);
+    const relevantStateMtime = setupDoctorStateMtime(paths);
+    return snapshotMtime >= relevantStateMtime
+      && setupDoctorStateReadable(paths)
+      && setupDoctorRecordsMatchSnapshot(paths, snapshot);
   } catch {
     return false;
   }
@@ -817,10 +813,121 @@ function setupDoctorStateFiles(paths) {
   return files;
 }
 
+function setupDoctorStateMtime(paths) {
+  return [
+    paths.hostConfigPath,
+    paths.registryPath,
+    paths.leasesDir,
+    paths.pinsDir,
+    ...setupDoctorStateFiles(paths),
+  ]
+    .filter((filePath) => fs.existsSync(filePath))
+    .reduce((latest, filePath) => Math.max(latest, fs.statSync(filePath).mtimeMs), 0);
+}
+
+function setupJsonRecordIds(directoryPath, idField) {
+  const ids = new Set();
+  if (!fs.existsSync(directoryPath)) {
+    return ids;
+  }
+  for (const entry of fs.readdirSync(directoryPath, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) {
+      continue;
+    }
+    const record = JSON.parse(fs.readFileSync(path.join(directoryPath, entry.name), "utf8"));
+    if (typeof record?.[idField] === "string" && record[idField].trim() !== "") {
+      ids.add(record[idField]);
+    } else {
+      ids.add(entry.name);
+    }
+  }
+  return ids;
+}
+
+function setupSameStringSet(left, right) {
+  if (left.size !== right.size) {
+    return false;
+  }
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function setupDoctorRecordsMatchSnapshot(paths, snapshot) {
+  const snapshotLeaseIds = new Set(
+    (Array.isArray(snapshot.activeLeases) ? snapshot.activeLeases : [])
+      .map((lease) => lease?.leaseId)
+      .filter((leaseId) => typeof leaseId === "string" && leaseId.trim() !== ""),
+  );
+  const snapshotPinIds = new Set(
+    (Array.isArray(snapshot.pins) ? snapshot.pins : [])
+      .map((pin) => pin?.pinId)
+      .filter((pinId) => typeof pinId === "string" && pinId.trim() !== ""),
+  );
+  if (!setupSameStringSet(snapshotLeaseIds, setupJsonRecordIds(paths.leasesDir, "leaseId"))) {
+    return false;
+  }
+  if (!setupSameStringSet(snapshotPinIds, setupJsonRecordIds(paths.pinsDir, "pinId"))) {
+    return false;
+  }
+  const catalogProjectIds = new Set(
+    (Array.isArray(snapshot.projects) ? snapshot.projects : [])
+      .filter((project) => typeof project?.projectFilePath === "string" && project.projectFilePath.length > 0)
+      .map((project) => project.projectId)
+      .filter((projectId) => typeof projectId === "string" && projectId.length > 0),
+  );
+  if (catalogProjectIds.size === 0) {
+    return true;
+  }
+  if (!fs.existsSync(paths.knownProjectsPath)) {
+    return false;
+  }
+  const knownProjects = JSON.parse(fs.readFileSync(paths.knownProjectsPath, "utf8"));
+  const currentProjectIds = new Set(Object.keys(knownProjects?.projects ?? {}));
+  for (const projectId of catalogProjectIds) {
+    if (!currentProjectIds.has(projectId)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function assertReadableLeaseRecord(record) {
+  if (record === null || typeof record !== "object" || Array.isArray(record)) {
+    throw new Error("lease record must be an object");
+  }
+  if (typeof record.leaseId !== "string" || record.leaseId.trim() === "") {
+    throw new Error("lease.leaseId must be a non-empty string");
+  }
+  if (typeof record.alias !== "string" || record.alias.trim() === "") {
+    throw new Error("lease.alias must be a non-empty string");
+  }
+}
+
+function assertReadablePinRecord(record) {
+  if (record === null || typeof record !== "object" || Array.isArray(record)) {
+    throw new Error("pin record must be an object");
+  }
+  if (typeof record.pinId !== "string" || record.pinId.trim() === "") {
+    throw new Error("pin.pinId must be a non-empty string");
+  }
+  if (typeof record.alias !== "string" || record.alias.trim() === "") {
+    throw new Error("pin.alias must be a non-empty string");
+  }
+}
+
 function setupDoctorStateReadable(paths) {
   try {
     for (const filePath of setupDoctorStateFiles(paths)) {
-      JSON.parse(fs.readFileSync(filePath, "utf8"));
+      const record = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      if (path.dirname(filePath) === paths.leasesDir) {
+        assertReadableLeaseRecord(record);
+      } else if (path.dirname(filePath) === paths.pinsDir) {
+        assertReadablePinRecord(record);
+      }
     }
     return true;
   } catch {
@@ -830,6 +937,19 @@ function setupDoctorStateReadable(paths) {
 
 function shellQuoteArgument(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function setupRecoveryCommand(paths) {
+  return [
+    "simbroker",
+    "setup",
+    "--host-config",
+    shellQuoteArgument(paths.hostConfigPath),
+    "--state-root",
+    shellQuoteArgument(paths.stateRoot),
+    "--service-socket",
+    shellQuoteArgument(paths.serviceSocketPath),
+  ].join(" ");
 }
 
 function setupApplyCommand(preview, flags, options) {
@@ -848,7 +968,7 @@ function setupApplyCommand(preview, flags, options) {
   return parts.join(" ");
 }
 
-function setupInterruptedError(signalName, completedStages, hostCommitted, failedStage) {
+function setupInterruptedError(signalName, completedStages, hostCommitted, failedStage, recoveryCommand) {
   return new BrokerError("Setup was interrupted.", {
     command: "setup",
     completedStages,
@@ -856,7 +976,7 @@ function setupInterruptedError(signalName, completedStages, hostCommitted, faile
     failedStage,
     hostCommitted,
     reasonCode: "setup-interrupted",
-    recoveryCommand: "simbroker setup",
+    recoveryCommand,
   });
 }
 
@@ -883,13 +1003,13 @@ function assertSetupCommittedHostIdentity(snapshot, expectedHostIdentity) {
   }
 }
 
-function decorateSetupFailure(error, stage, completedStages, hostCommitted, serviceRunning) {
+function decorateSetupFailure(error, stage, completedStages, hostCommitted, serviceRunning, recoveryCommand) {
   if (error instanceof BrokerError) {
     error.payload.command = "setup";
     error.payload.completedStages ??= completedStages;
     error.payload.failedStage ??= stage;
     error.payload.hostCommitted ??= hostCommitted;
-    error.payload.recoveryCommand ??= "simbroker setup";
+    error.payload.recoveryCommand = recoveryCommand;
     error.payload.serviceRunning ??= serviceRunning;
     return error;
   }
@@ -899,19 +1019,26 @@ function decorateSetupFailure(error, stage, completedStages, hostCommitted, serv
     failedStage: stage,
     hostCommitted,
     reasonCode: INTERNAL_ERROR_REASON_CODE,
-    recoveryCommand: "simbroker setup",
+    recoveryCommand,
     serviceRunning,
   });
 }
 
 async function applySetup(paths, options, cancellation) {
   const completedStages = ["preflight", "confirmation"];
+  const recoveryCommand = setupRecoveryCommand(paths);
   let activeStage = "provisioning";
   let hostCommitted = fs.existsSync(paths.hostConfigPath);
   let serviceRunning = false;
   const checkCancellation = () => {
     if (cancellation.signalName !== null) {
-      throw setupInterruptedError(cancellation.signalName, completedStages, hostCommitted, activeStage);
+      throw setupInterruptedError(
+        cancellation.signalName,
+        completedStages,
+        hostCommitted,
+        activeStage,
+        recoveryCommand,
+      );
     }
   };
 
@@ -926,7 +1053,7 @@ async function applySetup(paths, options, cancellation) {
     hostCommitted = true;
     completedStages.push("host", "devices", "registry");
   } catch (error) {
-    throw decorateSetupFailure(error, "provisioning", completedStages, fs.existsSync(paths.hostConfigPath), false);
+    throw decorateSetupFailure(error, "provisioning", completedStages, fs.existsSync(paths.hostConfigPath), false, recoveryCommand);
   }
 
   let serviceResult;
@@ -939,7 +1066,7 @@ async function applySetup(paths, options, cancellation) {
     completedStages.push("service");
   } catch (error) {
     checkCancellation();
-    throw decorateSetupFailure(error, "service-start", completedStages, hostCommitted, false);
+    throw decorateSetupFailure(error, "service-start", completedStages, hostCommitted, false, recoveryCommand);
   }
 
   let snapshot;
@@ -967,7 +1094,7 @@ async function applySetup(paths, options, cancellation) {
     completedStages.push("snapshot");
   } catch (error) {
     checkCancellation();
-    throw decorateSetupFailure(error, "snapshot-refresh", completedStages, hostCommitted, serviceRunning);
+    throw decorateSetupFailure(error, "snapshot-refresh", completedStages, hostCommitted, serviceRunning, recoveryCommand);
   }
 
   let health;
@@ -1013,7 +1140,7 @@ async function applySetup(paths, options, cancellation) {
     completedStages.push("health");
   } catch (error) {
     checkCancellation();
-    throw decorateSetupFailure(error, "health", completedStages, hostCommitted, serviceRunning);
+    throw decorateSetupFailure(error, "health", completedStages, hostCommitted, serviceRunning, recoveryCommand);
   }
 
   const { setupCommittedHostIdentity: _setupCommittedHostIdentity, ...publicCoreResult } = coreResult;
@@ -1046,6 +1173,7 @@ async function runSetup(paths, flags) {
   const options = setupOptions(flags);
   const preview = await buildSetupPreview(paths, options);
   const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true && !wantsJson();
+  const recoveryCommand = setupRecoveryCommand(paths);
 
   if (options.apply && !options.confirmPlanId) {
     throw new BrokerError("Setup apply requires the current plan confirmation.", {
@@ -1053,7 +1181,7 @@ async function runSetup(paths, flags) {
       currentPlanId: preview.planId,
       failedStage: "confirmation",
       reasonCode: "setup-confirmation-required",
-      recoveryCommand: "simbroker setup",
+      recoveryCommand,
     });
   }
 
@@ -1066,7 +1194,7 @@ async function runSetup(paths, flags) {
         failedStage: "preflight",
         prerequisites: preview.prerequisites,
         reasonCode: "setup-prerequisite-failed",
-        recoveryCommand: "simbroker setup",
+        recoveryCommand,
       });
     }
     return preview;
@@ -1197,11 +1325,19 @@ main()
   .catch((error) => {
     if (error instanceof BrokerError) {
       const setupInvocation = invocation.positionals[0] === "setup";
+      let recoveryCommand = "simbroker setup";
+      if (setupInvocation) {
+        try {
+          recoveryCommand = setupRecoveryCommand(buildPaths(invocation.flags));
+        } catch {
+          recoveryCommand = "simbroker setup";
+        }
+      }
       const payload = setupInvocation
         ? {
             command: "setup",
             failedStage: "arguments",
-            recoveryCommand: "simbroker setup",
+            recoveryCommand,
             ...error.payload,
           }
         : error.payload;

@@ -347,6 +347,14 @@ struct BrokerSetupView: View {
           }
           .buttonStyle(.bordered)
           .disabled(store.isApplyingAction)
+
+          if store.isAutomaticSetupInProgress {
+            ProgressView()
+              .controlSize(.small)
+            if store.setupPhase == .applying {
+              Button("Stop", role: .destructive, action: store.stopGuidedSetup)
+            }
+          }
         }
 
         GroupBox("Setup status") {

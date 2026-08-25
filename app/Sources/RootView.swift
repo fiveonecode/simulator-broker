@@ -58,6 +58,7 @@ struct RootView: View {
     store.lastActionMessage != nil
       || (store.lastErrorMessage != nil && store.snapshot != nil)
       || store.startupState == .readOnlySnapshot
+      || store.isAutomaticSetupInProgress
   }
 
   @ViewBuilder
@@ -142,9 +143,23 @@ struct RootView: View {
 
   @ViewBuilder
   private var statusMessages: some View {
+    automaticSetupProgressCard
     actionMessageCard
     errorMessageCard
     readOnlySnapshotMessageCard
+  }
+
+  @ViewBuilder
+  private var automaticSetupProgressCard: some View {
+    if store.isAutomaticSetupInProgress {
+      StatusMessageCard(
+        color: .blue,
+        message: "Finishing setup: starting brokerd, refreshing the snapshot, and verifying Simulator health.",
+        symbolName: "gearshape.2",
+        actionTitle: store.setupPhase == .applying ? "Stop" : nil,
+        onAction: store.setupPhase == .applying ? { store.stopGuidedSetup() } : nil
+      )
+    }
   }
 
   @ViewBuilder

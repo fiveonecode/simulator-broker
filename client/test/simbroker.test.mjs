@@ -729,6 +729,11 @@ test("setup rejects missing or stale confirmation and irrelevant flags before mu
   const missing = runCli(fixture, "setup", "--apply", "--json");
   assert.equal(missing.status, 5);
   assert.equal(missing.json.reasonCode, "setup-confirmation-required");
+  assert.match(missing.json.recoveryCommand, /^simbroker setup --host-config '/);
+  assert.match(missing.json.recoveryCommand, /--state-root '/);
+  assert.match(missing.json.recoveryCommand, /--service-socket '/);
+  assert.equal(missing.json.recoveryCommand.includes(fixture.hostConfigPath), true);
+  assert.equal(missing.json.recoveryCommand.includes(fixture.stateRoot), true);
   assert.equal(fs.existsSync(fixture.hostConfigPath), false);
 
   const stale = runCli(fixture, "setup", "--apply", "--confirm", "sha256:stale", "--json");
@@ -834,6 +839,93 @@ test("setup treats newer known-projects, lease, or pin records as snapshot finis
   assert.equal(finishing.json.status, "changes_required");
   assert.equal(finishing.json.service.action, "keep");
   assert.equal(finishing.json.confirmation.required, false);
+
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
+test("setup treats deleted known-projects, lease, or pin records as snapshot finishing work", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "deleted-state");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "deleted-state",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(applied.json.status, "ready");
+
+  const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
+  const snapshot = readJson(snapshotPath);
+  const leasesDir = path.join(fixture.stateRoot, "leases");
+  const pinsDir = path.join(fixture.stateRoot, "pins");
+  fs.mkdirSync(leasesDir, { recursive: true });
+  fs.mkdirSync(pinsDir, { recursive: true });
+  writeJson(path.join(leasesDir, "lease-1.json"), {
+    alias: "ui-1",
+    leaseId: "lease-1",
+  });
+  snapshot.activeLeases = [{ alias: "ui-1", leaseId: "lease-1" }];
+  writeJson(snapshotPath, snapshot);
+  fs.rmSync(path.join(leasesDir, "lease-1.json"));
+
+  const deletedLease = runCli(fixture, "setup", "--json");
+  assert.equal(deletedLease.status, 0, deletedLease.stderr);
+  assert.equal(deletedLease.json.status, "changes_required");
+  assert.equal(deletedLease.json.confirmation.required, false);
+
+  writeJson(path.join(pinsDir, "pin-1.json"), {
+    alias: "manual-1",
+    pinId: "pin-1",
+  });
+  const pinSnapshot = readJson(snapshotPath);
+  pinSnapshot.activeLeases = [];
+  pinSnapshot.pins = [{ alias: "manual-1", pinId: "pin-1" }];
+  writeJson(snapshotPath, pinSnapshot);
+  fs.rmSync(path.join(pinsDir, "pin-1.json"));
+
+  const deletedPin = runCli(fixture, "setup", "--json");
+  assert.equal(deletedPin.status, 0, deletedPin.stderr);
+  assert.equal(deletedPin.json.status, "changes_required");
+
+  const knownProjectsPath = path.join(fixture.stateRoot, "known-projects.json");
+  writeJson(knownProjectsPath, {
+    projects: {
+      "deleted-state": {
+        lastObservedAt: "2026-08-25T00:00:00.000Z",
+        projectFilePath: path.join(root, "repo/.simulator-broker/project.json"),
+        projectId: "deleted-state",
+        projectName: "Deleted State",
+        purposes: [],
+        repoRoot: path.join(root, "repo"),
+      },
+    },
+    updatedAt: "2026-08-25T00:00:00.000Z",
+    version: 1,
+  });
+  const catalogSnapshot = readJson(snapshotPath);
+  catalogSnapshot.activeLeases = [];
+  catalogSnapshot.pins = [];
+  catalogSnapshot.projects = [{
+    projectFilePath: path.join(root, "repo/.simulator-broker/project.json"),
+    projectId: "deleted-state",
+    projectName: "Deleted State",
+  }];
+  writeJson(snapshotPath, catalogSnapshot);
+  fs.rmSync(knownProjectsPath);
+
+  const deletedCatalog = runCli(fixture, "setup", "--json");
+  assert.equal(deletedCatalog.status, 0, deletedCatalog.stderr);
+  assert.equal(deletedCatalog.json.status, "changes_required");
 
   assert.equal(runCli(fixture, "service", "stop").status, 0);
 });

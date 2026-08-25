@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   health verification. Setup blocks file-shaped destination ancestors before
   mutation, rechecks the post-doctor snapshot for unavailable or
   `repair-needed` aliases, and gives the macOS app a lock/rollback/finishing
-  timeout with the same cooperative escalation window used on Stop.
+  timeout with a cooperative Stop/timeout window that also covers rollback
+  and indeterminate-create inventory commands.
 - A macOS setup-plan sheet with all six aliases, runtime/build and disk details,
   remediation commands, exact plan confirmation, cooperative Stop, and
   cancellation-aware task ownership.
@@ -25,11 +26,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Guided setup binds existing-host confirmation to the requested `--host-id`,
   uses the separate device-type inventory when a runtime omits
   `supportedDeviceTypes`, and fails closed when known-projects or lease/pin
-  JSON cannot be loaded instead of reporting `ready`. Preview probes service
-  identity even when no host is configured yet, so a socket occupied by a
-  different broker is blocked before device creation. `ready` also requires
-  the app snapshot to be at least as new as known-projects and lease/pin
-  records, not only host-config and registry.
+  JSON cannot be loaded or is not a valid identity record instead of reporting
+  `ready`. Preview probes service identity even when no host is configured yet,
+  so a socket occupied by a different broker is blocked before device creation.
+  `ready` also requires the app snapshot to be at least as new as
+  known-projects, lease/pin records, and the lease/pin directories, and to
+  match the current doctor-record set, so deletions are finishing work rather
+  than a stale `ready`. Fallback device-type selection is identifier-stable
+  when preferred names are absent. Setup failure recovery commands keep the
+  selected `--host-config`, `--state-root`, and `--service-socket` paths.
+  The macOS app keeps automatic service/snapshot finishing off the first-time
+  review sheet. Setup apply Stop/timeout waits for rollback inventory calls
+  before escalating to SIGKILL.
 - Public CI no longer runs the full-repo home-path leak scan on
   GitHub-hosted runners. Ubuntu (10 minutes) runs skill ownership,
   `test:broker-core`, and `test:harness-adoption`. macOS (15 minutes)

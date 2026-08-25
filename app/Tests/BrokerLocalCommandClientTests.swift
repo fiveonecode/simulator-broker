@@ -217,7 +217,7 @@ final class BrokerLocalCommandClientTests: XCTestCase {
     )
     XCTAssertEqual(
       runner.resolvedCancellationEscalationNanoseconds(for: ["setup", "--apply", "--confirm", "sha256:test", "--json"]),
-      900 * 1_000_000_000
+      1_620 * 1_000_000_000
     )
     let tempRoot = try makeTempRoot()
     let stateRoot = tempRoot.appending(path: "state")

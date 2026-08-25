@@ -1101,7 +1101,19 @@ function selectPreferredDeviceType(runtime, deviceFamily) {
     .filter((deviceType) => exactNamePattern.test(deviceType.name))
     .sort((left, right) => compareVersions(right.name, left.name));
 
-  return preferred[0] ?? supportedDeviceTypes[0];
+  if (preferred[0]) {
+    return preferred[0];
+  }
+
+  return [...supportedDeviceTypes].sort(compareSetupDeviceTypes)[0];
+}
+
+function compareSetupDeviceTypes(left, right) {
+  const identifierComparison = String(left?.identifier ?? "").localeCompare(String(right?.identifier ?? ""));
+  if (identifierComparison !== 0) {
+    return identifierComparison;
+  }
+  return String(left?.name ?? "").localeCompare(String(right?.name ?? ""));
 }
 
 function deleteAliasSimulator(simctl, simulatorId) {
@@ -1645,14 +1657,14 @@ function setupExistingHostState(paths, inventory, options = {}) {
     });
   }
   try {
-    listJsonFiles(paths.leasesDir);
-    listJsonFiles(paths.pinsDir);
+    listJsonFiles(paths.leasesDir).forEach(assertValidLeaseRecord);
+    listJsonFiles(paths.pinsDir).forEach(assertValidPinRecord);
   } catch (error) {
     issues.push({
       id: "leases",
       status: "blocked",
       summary: "Existing lease or pin records are invalid and setup will not replace them automatically.",
-      details: { message: error.message },
+      details: error instanceof BrokerError ? error.payload : { message: error.message },
       remediationCommands: ["simbroker doctor"],
     });
   }
@@ -2329,6 +2341,20 @@ function listJsonFiles(dirPath) {
     .sort()
     .map((name) => path.join(dirPath, name))
     .map(readJson);
+}
+
+function assertValidLeaseRecord(record) {
+  requireObject(record, "lease");
+  requireString(record.leaseId, "lease.leaseId");
+  requireString(record.alias, "lease.alias");
+  return record;
+}
+
+function assertValidPinRecord(record) {
+  requireObject(record, "pin");
+  requireString(record.pinId, "pin.pinId");
+  requireString(record.alias, "pin.alias");
+  return record;
 }
 
 function leaseMatchesPin(leaseOrRequest, pin) {

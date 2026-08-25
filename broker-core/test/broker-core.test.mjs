@@ -967,6 +967,80 @@ test("setup uses the device-type inventory when a runtime omits supportedDeviceT
   assert.equal(emptyArrayPreview.devices.length, 6);
 });
 
+test("setup fallback device types stay stable when preferred names are absent", () => {
+  const root = makeTempDir();
+  const deviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-SE",
+      name: "iPhone SE",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro",
+      name: "iPhone 16 Pro",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-11",
+      name: "iPad Pro 11-inch",
+      productFamily: "iPad",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Air",
+      name: "iPad Air",
+      productFamily: "iPad",
+    },
+  ];
+  const runtime = {
+    buildversion: "23F76",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    isAvailable: true,
+    version: "26.5",
+  };
+  const forwardSimctl = createSimctlFixture(root, {
+    runtimes: [{ ...runtime, supportedDeviceTypes: deviceTypes }],
+  });
+  const reversedRoot = makeTempDir();
+  const reversedSimctl = createSimctlFixture(reversedRoot, {
+    runtimes: [{ ...runtime, supportedDeviceTypes: [...deviceTypes].reverse() }],
+  });
+  const forwardPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+  const reversedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(reversedRoot, "host-config.json"),
+    stateRoot: path.join(reversedRoot, "state"),
+  });
+
+  const forward = previewSetupBroker(forwardPaths, {
+    hostId: "fallback-device-types",
+    simctlAdapter: forwardSimctl.adapter,
+  });
+  const reversed = previewSetupBroker(reversedPaths, {
+    hostId: "fallback-device-types",
+    simctlAdapter: reversedSimctl.adapter,
+  });
+
+  assert.equal(forward.planId, reversed.planId);
+  assert.equal(
+    forward.devices.find((device) => device.deviceFamily === "iPhone").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro",
+  );
+  assert.equal(
+    reversed.devices.find((device) => device.deviceFamily === "iPhone").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro",
+  );
+  assert.equal(
+    forward.devices.find((device) => device.deviceFamily === "iPad").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPad-Air",
+  );
+  assert.equal(
+    reversed.devices.find((device) => device.deviceFamily === "iPad").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPad-Air",
+  );
+});
+
 test("setup preview is an exact stable six-device plan with strict reuse matching", () => {
   const root = makeTempDir();
   const matchingName = "Simulator Broker setup-plan ui-1";
@@ -1122,6 +1196,24 @@ test("setup blocks an existing host when doctor-relevant state files are malform
   });
   assert.equal(leasesBlocked.status, "blocked");
   assert.ok(leasesBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+
+  fs.writeFileSync(path.join(resolvedPaths.leasesDir, "broken.json"), "{}\n");
+  const emptyLeaseBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(emptyLeaseBlocked.status, "blocked");
+  assert.ok(emptyLeaseBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+
+  fs.rmSync(path.join(resolvedPaths.leasesDir, "broken.json"));
+  fs.mkdirSync(resolvedPaths.pinsDir, { recursive: true });
+  writeJson(path.join(resolvedPaths.pinsDir, "empty-pin.json"), {});
+  const emptyPinBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(emptyPinBlocked.status, "blocked");
+  assert.ok(emptyPinBlocked.prerequisites.some((issue) =>
     issue.id === "leases" && issue.status === "blocked"));
 });
 

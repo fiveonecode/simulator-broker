@@ -556,11 +556,17 @@ private enum BrokerLocalCommandTimeouts {
   private static let serviceStartLockProcessSamplerInvocations = 2
   private static let serviceStartStateLoads = 2
   private static let simctlCommandTimeoutSeconds = 120
-  private static let setupCancellationOperationCount = serviceStartHostAliasCount + 1
+  private static let simctlInventoryCommandsPerStateLoad = 3
+  // One in-flight simctl command, plus two 3-command inventories
+  // (indeterminate create recovery and rollback attribution) and six deletes.
+  private static let setupCancellationActiveOperationCount = 1
+  private static let setupCancellationOperationCount = setupCancellationActiveOperationCount
+    + simctlInventoryCommandsPerStateLoad
+    + simctlInventoryCommandsPerStateLoad
+    + serviceStartHostAliasCount
   private static let setupCancellationOverheadSeconds = 60
   private static let setupMaxSimctlCommandsUnderCapacityLock = 30
   private static let setupPreviewTimeoutSeconds = 600
-  private static let simctlInventoryCommandsPerStateLoad = 3
   private static let staleContainmentProcessSamplerInvocations = 8
   private static let stateLoadBudgetSeconds = (simctlInventoryCommandsPerStateLoad * simctlCommandTimeoutSeconds)
     + (processSamplerInvocationsPerStateLoad * processSamplerTimeoutSeconds)
