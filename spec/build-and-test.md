@@ -77,6 +77,9 @@ A first extracted implementation slice now exists:
   service starts cannot overlap. Keepalive owner and command processes in
   `simbroker` tests stay referenced until they exit; `unref()` during an
   `await` lets Node 20 fire `beforeExit` and cancel later queued tests.
+  `package_distribution.sh` tests skip on non-Darwin: that script runs the
+  full repo `verify:public-surface` scan, which exceeds Ubuntu
+  `--test-timeout=120000`.
   The default public-surface scan reads index
   blobs only for dirty or missing worktree files. `git diff-files` exit `1`
   is the dirty-name list; only a real git failure fails the scan. A clean

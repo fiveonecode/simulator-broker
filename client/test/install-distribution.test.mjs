@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+const skipMacosPackaging = process.platform !== "darwin";
+
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-install-test-"));
 }
@@ -612,7 +614,7 @@ test("install_local --cli-only does not rewrite the live default install metadat
   }
 });
 
-test("package_distribution rejects symlinks copied into the runtime payload", (t) => {
+test("package_distribution rejects symlinks copied into the runtime payload", { skip: skipMacosPackaging }, (t) => {
   const root = makeTempDir();
   const outputDir = path.join(root, "out");
   const fakePathDir = path.join(root, "fake-path");
@@ -666,7 +668,7 @@ test("package_distribution rejects symlinks copied into the runtime payload", (t
   assert.equal(result.stderr.includes(symlinkTargetDir), false);
 });
 
-test("package_distribution scans copied payload filenames containing newlines", (t) => {
+test("package_distribution scans copied payload filenames containing newlines", { skip: skipMacosPackaging }, (t) => {
   const root = makeTempDir();
   const outputDir = path.join(root, "out");
   const fakePathDir = path.join(root, "fake-path");
@@ -717,7 +719,7 @@ test("package_distribution scans copied payload filenames containing newlines", 
   assert.equal(result.stderr.includes(root), false);
 });
 
-test("package_distribution scans empty copied payload directories", (t) => {
+test("package_distribution scans empty copied payload directories", { skip: skipMacosPackaging }, (t) => {
   const root = makeTempDir();
   const outputDir = path.join(root, "out");
   const fakePathDir = path.join(root, "fake-path");
@@ -768,7 +770,7 @@ test("package_distribution scans empty copied payload directories", (t) => {
   assert.equal(result.stderr.includes(root), false);
 });
 
-test("package_distribution scans the top-level archive name", (t) => {
+test("package_distribution scans the top-level archive name", { skip: skipMacosPackaging }, (t) => {
   const root = makeTempDir();
   const outputDir = path.join(root, "out");
   const fakePathDir = path.join(root, "fake-path");
