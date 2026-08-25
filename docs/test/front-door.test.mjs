@@ -251,7 +251,14 @@ test("public CI runs the Node suites on Ubuntu and skips the macOS app suite", (
   assert.match(ci, /timeout-minutes:\s*([3-9]\d|\d{3,})/);
   assert.ok(ci.includes("npm run verify:public-surface"));
   assert.ok(ci.includes("npm run test:broker-core"));
-  assert.ok(ci.includes("node --test --test-concurrency=1 --test-timeout=120000 --test-force-exit client/test/*.test.mjs"));
+  const clientTestRun = ci
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("run:") && line.includes("client/test/*.test.mjs")) ?? "";
+  assert.equal(
+    clientTestRun,
+    "run: node --test --test-concurrency=1 --test-timeout=120000 client/test/*.test.mjs",
+  );
   assert.ok(ci.includes("npm run test:harness-adoption"));
   assert.equal(ci.includes("test:app"), false);
   assert.equal(ci.includes("macos-latest"), false);

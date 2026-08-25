@@ -69,12 +69,12 @@ A first extracted implementation slice now exists:
   app snapshot, including in-process `startBrokerService`, must inject the
   fixture `simctl` adapter (`SIMBROKER_SIMCTL_FIXTURE_STATE` or an explicit
   adapter / snapshot writer). Ubuntu CI runs client tests with
-  `node --test --test-concurrency=1 --test-timeout=120000 --test-force-exit`
-  so client files cannot interleave, a hung `service start` cannot consume
-  `serviceStartupTimeoutMs`, and leftover sockets or timers cannot keep a
-  file process alive after TAP completes. `brokerd` and `simbroker` client
-  tests use `describe` concurrency `1` so in-file service starts cannot
-  overlap. The default public-surface scan reads index
+  `node --test --test-concurrency=1 --test-timeout=120000` so client files
+  cannot interleave and a hung test cannot consume
+  `serviceStartupTimeoutMs`. Do not add `--test-force-exit`: on Node 20 it
+  exits while later `describe()` tests are still queued. `brokerd` and
+  `simbroker` client tests use `describe` concurrency `1` so in-file
+  service starts cannot overlap. The default public-surface scan reads index
   blobs only for dirty or missing worktree files. `git diff-files` exit `1`
   is the dirty-name list; only a real git failure fails the scan. A clean
   checkout must not spawn one `git cat-file` per file. `simbroker service
