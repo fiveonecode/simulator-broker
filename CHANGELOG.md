@@ -30,18 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   different broker is blocked before device creation. `ready` also requires
   the app snapshot to be at least as new as known-projects and lease/pin
   records, not only host-config and registry.
-- Ubuntu Node CI no longer treats `git diff-files` exit `1` as “scan every
-  index blob”, in-process `brokerd` tests inject the fixture `simctl`
-  adapter, client tests run with `--test-concurrency=1 --test-timeout=120000`
-  on Ubuntu CI, `brokerd` and `simbroker` client tests run one at a time,
-  CLI helpers bound `service start` waits, and `service start` stops waiting
-  when spawned `brokerd` exits even if a startup lock directory remains.
-  Ubuntu CI does not use `--test-force-exit`; on Node 20 that flag cancels
-  later queued `describe()` tests. Keepalive owner and command processes in
-  `simbroker` client tests stay referenced until exit so Node 20 does not
-  `beforeExit`-cancel the remaining file. `package_distribution.sh` client
-  tests skip on Linux because that script reruns the full public-surface
-  scan, which exceeds Ubuntu `--test-timeout=120000`.
+- Public CI no longer runs the full-repo home-path leak scan on
+  GitHub-hosted runners. Ubuntu (10 minutes) runs skill ownership,
+  `test:broker-core`, and `test:harness-adoption`. macOS (15 minutes)
+  runs `test:client`. `verify:public-surface` stays on local `npm test`
+  so it searches the operator home path. `package_distribution.sh`
+  scans the staged payload only and does not rerun the full-repo scan.
+  Client tests still use `--test-concurrency=1 --test-timeout=120000`
+  without `--test-force-exit`, in-file `describe` concurrency `1`,
+  referenced keepalive children, fixture `simctl` for in-process
+  snapshots, and synthetic containment pids.
 - Broker-core process fixtures inject a synthetic controller pid so Ubuntu
   CI cannot classify a fixture requester as `current-broker-process` when
   the test-runner pid lands on a hardcoded fixture pid such as `2500`.

@@ -36,8 +36,9 @@ This Alpha already includes:
 - CLI-only install through `bash scripts/install_local.sh --cli-only`, plus
   the contributor app+CLI path `npm run install:local`
 - tagged Alpha CLI tarball through `npm run package:cli` and GitHub Releases
-- public Node test CI on GitHub-hosted Ubuntu for broker-core, client,
-  harness-adoption, and public-surface checks
+- public Node test CI: GitHub-hosted Ubuntu for broker-core and
+  harness-adoption, GitHub-hosted macOS for client tests. Home-path
+  public-surface scanning is `npm test` on the operator machine.
 - GitHub issue forms for install failure, bug, and feature, plus a light PR
   template that does not require a harness session
 - Homebrew formula `fiveonecode/simulator-broker/simbroker` for the Alpha CLI

@@ -61,14 +61,17 @@ A first extracted implementation slice now exists:
   `Simulator-Broker-<version>.zip` on GitHub Releases (signed/notarized app
   from `payload/app/Simulator Broker.app` after `package_distribution.sh`,
   not `package:local`). The cask pins the published zip SHA-256.
-- public GitHub-hosted Ubuntu CI runs `verify:public-surface`, the managed-skill
-  ownership check, `test:broker-core`, `test:client`, and
-  `test:harness-adoption`; it does not
-  run `test:app`. The job budget is 30 minutes. Do not raise that budget to
-  hide a hung `simctl` or `brokerd` startup wait. Broker tests that build an
+- public GitHub-hosted CI splits by machine: Ubuntu runs the managed-skill
+  ownership check, `test:broker-core`, and `test:harness-adoption` with a
+  10-minute budget; macOS runs `test:client` with a 15-minute budget. Neither
+  job runs `test:app` or `verify:public-surface`. Home-path leak scanning
+  uses `os.homedir()` of the current machine, so GitHub-hosted runners would
+  search for `/home/runner` or `/Users/runner`, not the operator home. The
+  full-repo scan stays on local `npm test`. Do not raise those budgets to
+  hide a hung `simctl` or `brokerd` wait. Broker tests that build an
   app snapshot, including in-process `startBrokerService`, must inject the
   fixture `simctl` adapter (`SIMBROKER_SIMCTL_FIXTURE_STATE` or an explicit
-  adapter / snapshot writer). Ubuntu CI runs client tests with
+  adapter / snapshot writer). macOS CI runs client tests with
   `node --test --test-concurrency=1 --test-timeout=120000` so client files
   cannot interleave and a hung test cannot consume
   `serviceStartupTimeoutMs`. Do not add `--test-force-exit`: on Node 20 it
@@ -77,9 +80,9 @@ A first extracted implementation slice now exists:
   service starts cannot overlap. Keepalive owner and command processes in
   `simbroker` tests stay referenced until they exit; `unref()` during an
   `await` lets Node 20 fire `beforeExit` and cancel later queued tests.
-  `package_distribution.sh` tests skip on non-Darwin: that script runs the
-  full repo `verify:public-surface` scan, which exceeds Ubuntu
-  `--test-timeout=120000`.
+  `package_distribution.sh` tests skip on non-Darwin because that script is
+  a macOS packaging path. The script scans the staged payload and archive
+  name; it does not rerun the full-repo `verify:public-surface` scan.
   The default public-surface scan reads index
   blobs only for dirty or missing worktree files. `git diff-files` exit `1`
   is the dirty-name list; only a real git failure fails the scan. A clean
@@ -293,8 +296,9 @@ npm run agent:complete -- --session-dir "${AGENT_HOME:-$HOME/.agents}/agent-harn
 - `npm test` begins with `verify:public-surface`. Public fixtures must use
   temporary broker roots and synthetic identifiers; tests must never read from
   or write to the default broker state root.
-- `scripts/package_distribution.sh` runs the same public-surface check before
-  building or signing a release candidate.
+- `scripts/package_distribution.sh` scans the staged payload and archive
+  name for public-surface issues. It does not rerun full-repo
+  `verify:public-surface`; that gate is local `npm test`.
 - `npm run agent:complete -- --session-dir <dir>` is the close-out gate; it fails unless the required verification profiles passed against the current task-tree fingerprint and any blocking obligations are satisfied or the session is explicitly reported blocked.
 - Every meaningful task commit must use a structured git message with `Why:`, `Changed:`, `Verification:`, `Affected:`, `Refs:`, and `Session:` sections. Commit messages are durable public output: use repo-relative paths, GitHub URLs, commit SHAs, and public task artifact labels such as `task-sessions/<session-name>` instead of machine-local or parent-relative paths. `agent:complete` rejects detected local-path forms in every new commit touching task paths.
 - `agent:complete` enforces a clean close-out: no new uncommitted task changes, no malformed task commit messages, no changed paths outside selected manifest path constraints, and no leftover untracked junk outside allowlisted local artifact paths.
@@ -345,7 +349,10 @@ Add stronger profiles next for:
 - the installer prints the installed CLI path, app path when an app was installed, env helper path, any current-shell PATH warning, PATH persist result, and the next command (`command -v simbroker` after persist, or `source "<env-helper>"` when persist is skipped)
 - `bash scripts/install_local.sh --cli-only` installs the CLI runtime without invoking `xcodegen` or `xcodebuild` and without requiring an app bundle
 - `npm run package:cli` writes `artifacts/cli/simulator-broker-<version>-cli.tar.gz` plus a SHA-256 checksum and does not invoke XcodeGen or `xcodebuild`
-- `.github/workflows/ci.yml` runs the public Node suites on `ubuntu-latest` with a 30-minute budget and does not run `npm run test:app`
+- `.github/workflows/ci.yml` runs `test:broker-core` and
+  `test:harness-adoption` on `ubuntu-latest` (10 minutes) and `test:client`
+  on `macos-latest` (15 minutes). It does not run `npm run test:app` or
+  `npm run verify:public-surface`
 - `.github/ISSUE_TEMPLATE/` ships install-failure, bug, and feature forms, and
   `.github/pull_request_template.md` is a public-patch checklist that does not
   require `agent:context` or a task session directory

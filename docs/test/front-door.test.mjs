@@ -244,12 +244,14 @@ test("CHANGELOG and package.json name the Alpha version", () => {
   assert.ok(changelog.includes("scripts/package_cli.sh"));
 });
 
-test("public CI runs the Node suites on Ubuntu and skips the macOS app suite", () => {
+test("public CI splits Ubuntu core suites from macOS client tests and skips the app suite", () => {
   const ci = readRepoFile(".github/workflows/ci.yml");
 
   assert.ok(ci.includes("runs-on: ubuntu-latest"));
-  assert.match(ci, /timeout-minutes:\s*([3-9]\d|\d{3,})/);
-  assert.ok(ci.includes("npm run verify:public-surface"));
+  assert.ok(ci.includes("runs-on: macos-latest"));
+  assert.match(ci, /timeout-minutes:\s*10/);
+  assert.match(ci, /timeout-minutes:\s*15/);
+  assert.equal(ci.includes("npm run verify:public-surface"), false);
   assert.ok(ci.includes("npm run test:broker-core"));
   const clientTestRun = ci
     .split("\n")
@@ -261,7 +263,6 @@ test("public CI runs the Node suites on Ubuntu and skips the macOS app suite", (
   );
   assert.ok(ci.includes("npm run test:harness-adoption"));
   assert.equal(ci.includes("test:app"), false);
-  assert.equal(ci.includes("macos-latest"), false);
   assert.equal(/\n\s+run:\s*npm install\b/.test(ci), false);
   assert.equal(/\n\s+run:\s*npm ci\b/.test(ci), false);
 });
