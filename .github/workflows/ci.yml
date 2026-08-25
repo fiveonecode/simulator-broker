@@ -38,7 +38,7 @@ jobs:
         run: npm run test:broker-core
 
       - name: client tests
-        run: node --test --test-concurrency=1 client/test/*.test.mjs
+        run: node --test --test-concurrency=1 --test-timeout=120000 --test-force-exit client/test/*.test.mjs
 
       - name: harness-adoption tests
         run: npm run test:harness-adoption

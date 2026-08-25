@@ -28,7 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON cannot be loaded instead of reporting `ready`.
 - Ubuntu Node CI no longer treats `git diff-files` exit `1` as “scan every
   index blob”, in-process `brokerd` tests inject the fixture `simctl`
-  adapter, client tests run with `--test-concurrency=1` on Ubuntu CI, and
+  adapter, client tests run with `--test-concurrency=1 --test-timeout=120000
+  --test-force-exit` on Ubuntu CI, `brokerd` and `simbroker` client tests
+  run one at a time, CLI helpers bound `service start` waits, and
   `service start` stops waiting when spawned `brokerd` exits even if a
   startup lock directory remains.
 - Broker-core process fixtures inject a synthetic controller pid so Ubuntu

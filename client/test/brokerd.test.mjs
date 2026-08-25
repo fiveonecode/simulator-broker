@@ -1,4 +1,4 @@
-import test from "node:test";
+import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -22,6 +22,7 @@ import {
 } from "../service/service-client.mjs";
 
 const CLI_PATH = path.resolve("client/bin/simbroker.mjs");
+const CLI_TEST_TIMEOUT_MS = 60_000;
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-service-test-"));
@@ -198,6 +199,8 @@ function runCli(fixture, ...args) {
       ...process.env,
       ...fixture.simctl?.env,
     },
+    killSignal: "SIGKILL",
+    timeout: CLI_TEST_TIMEOUT_MS,
   });
   return {
     ...result,
@@ -213,6 +216,8 @@ function runCliWithEnv(fixture, envOverrides, ...args) {
       ...fixture.simctl?.env,
       ...envOverrides,
     },
+    killSignal: "SIGKILL",
+    timeout: CLI_TEST_TIMEOUT_MS,
   });
   return {
     ...result,
@@ -229,6 +234,9 @@ function runCliAsync(fixture, args, options = {}) {
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+    }, options.timeoutMs ?? CLI_TEST_TIMEOUT_MS);
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -239,8 +247,12 @@ function runCliAsync(fixture, args, options = {}) {
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
     child.on("close", (status, signal) => {
+      clearTimeout(timer);
       resolve({
         signal,
         status,
@@ -330,6 +342,7 @@ async function stopServiceIfRunning(fixture) {
   assert.equal(stop.status, 0);
 }
 
+describe("brokerd", { concurrency: 1 }, () => {
 test("service lifecycle routes CLI commands through brokerd and falls back after stop", async (t) => {
   const fixture = makeFixture();
   t.after(async () => stopServiceIfRunning(fixture));
@@ -2590,4 +2603,5 @@ test("service-backed lease acquire preserves committed leases when idle policy m
     limitation: "invalid-config",
   });
   assert.equal(fs.existsSync(path.join(fixture.stateRoot, "leases", `${acquired.json.lease.leaseId}.json`)), true);
+});
 });

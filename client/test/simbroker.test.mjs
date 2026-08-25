@@ -1,4 +1,4 @@
-import test from "node:test";
+import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -28,6 +28,7 @@ import { SIMCTL_COMMAND_TIMEOUT_MS } from "../../broker-core/simctl.mjs";
 import { createDeviceRecord, createSimctlFixture } from "../../broker-core/test/support/simctl-fixture.mjs";
 
 const CLI_PATH = path.resolve("client/bin/simbroker.mjs");
+const CLI_TEST_TIMEOUT_MS = 60_000;
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-cli-test-"));
@@ -188,6 +189,8 @@ function spawnCli(fixture, ...args) {
       ...process.env,
       ...fixture.simctl?.env,
     },
+    killSignal: "SIGKILL",
+    timeout: CLI_TEST_TIMEOUT_MS,
   });
 }
 
@@ -215,6 +218,9 @@ function runCliAsync(fixture, envOverrides, ...args) {
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+    }, CLI_TEST_TIMEOUT_MS);
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -225,8 +231,12 @@ function runCliAsync(fixture, envOverrides, ...args) {
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
     child.on("close", (status, signal) => {
+      clearTimeout(timer);
       resolve({
         json: stdout ? JSON.parse(stdout) : null,
         signal,
@@ -362,6 +372,7 @@ function listen(server, socketPath) {
   });
 }
 
+describe("simbroker", { concurrency: 1 }, () => {
 test("host init can bootstrap a starter host config on a fresh machine path", () => {
   const root = makeTempDir();
   const fixture = {
@@ -3654,4 +3665,5 @@ test("direct CLI uses exit code 5 when a human override is required", () => {
   assert.equal(deniedRepair.status, 5);
   assert.equal(deniedRepair.json.exitCode, 5);
   assert.equal(deniedRepair.json.reasonCode, "human-override-required");
+});
 });
