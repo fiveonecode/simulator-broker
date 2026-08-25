@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.7`
+> **Version:** `1.0.8`
 > **Last Updated:** `2026-08-25`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -186,8 +186,11 @@ Apply performs, in order:
 - Existing invalid/unhealthy host is blocked without repair/replacement,
   lease/pin mutation, or retirement. Invalid known-projects or lease/pin JSON
   is the same class of existing-host failure: diagnose with `simbroker doctor`,
-  do not report `ready`. Valid JSON that is not a lease or pin identity record,
-  such as `{}`, is invalid existing-host state.
+  do not report `ready`. Valid JSON that is not a complete lease or pin
+  identity record, such as `{}` or a lease with only `leaseId` and `alias`,
+  is invalid existing-host state. Setup does not treat a missing host-config
+  as a confirmable fresh plan when the selected state root already contains a
+  registry file or lease/pin JSON.
 - Preview probes the requested service socket even when no host is configured
   yet. A running broker with a different host-config, state-root, or socket
   identity is a `service-identity` blocker and is not confirmable, so apply
@@ -218,10 +221,12 @@ Service/snapshot-only plans apply immediately without a device sheet.
 Automatic finishing progress is tracked on the dashboard without presenting
 the first-time review sheet. Blocked plans show commands and no enabled
 confirm. Success refreshes to the dashboard and says: `Setup complete —
-brokerd is running and all managed simulators are healthy.` Failure of a
-confirmable plan refreshes first, preserves the sheet, and shows completed
-stages and recovery. Automatic finishing failure stays off the sheet and
-surfaces the recovery error on the dashboard.
+brokerd is running and all managed simulators are healthy.` A preview that
+is already `ready` refreshes the current snapshot before reporting that
+success, matching confirmed apply. Failure of a confirmable plan refreshes
+first, preserves the sheet, and shows completed stages and recovery.
+Automatic finishing failure stays off the sheet and surfaces the recovery
+error on the dashboard.
 
 The app accepts only setup schema version 1 and rejects a future or otherwise
 unsupported version before presenting or applying its plan. The `@MainActor
@@ -413,6 +418,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.8 | 2026-08-25 | `spec-steward`, `ios-dev` | Block partial lease records and missing-host state roots that already contain registry/lease/pin artifacts, keep selected paths on service-identity retries, and refresh the app dashboard on an already-ready setup preview |
 | 1.0.7 | 2026-08-25 | `spec-steward`, `ios-dev` | App Stop/timeout SIGTERM window includes rollback attribution inventory and the extra inventory after an indeterminate create failure |
 | 1.0.6 | 2026-08-25 | `spec-steward`, `ios-dev` | Fail closed on schema-invalid lease/pin JSON, keep fallback device types order-stable, exclude automatic finishing from the setup sheet, treat doctor-record deletions as snapshot finishing work, and preserve selected path overrides in recovery commands |
 | 1.0.5 | 2026-08-25 | `spec-steward`, `ios-dev` | Preview probes service identity on unconfigured hosts, and `ready` requires the snapshot to be at least as new as known-projects and lease/pin JSON |

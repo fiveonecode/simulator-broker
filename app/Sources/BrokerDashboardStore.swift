@@ -566,7 +566,9 @@ final class BrokerDashboardStore {
         setupPlan = nil
         pendingSetupConfirmation = nil
         if plan.status == .ready {
+          try await requireRefreshAfterMutation()
           setupPhase = .idle
+          lastErrorMessage = nil
           setActionMessage("Setup complete — brokerd is running and all managed simulators are healthy.")
           return
         }

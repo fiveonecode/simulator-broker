@@ -780,6 +780,78 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertEqual(store.setupPhase, .idle)
   }
 
+  func testGuidedSetupReadyPreviewRefreshesDashboardBeforeSuccess() async throws {
+    let runtimePaths = BrokerRuntimePaths(
+      stateRoot: URL(fileURLWithPath: "/tmp/simbroker-ready-refresh-state"),
+      hostConfigURL: URL(fileURLWithPath: "/tmp/simbroker-ready-refresh-host.json"),
+      configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker")
+    )
+    let staleState = BrokerLoadedState(
+      paths: runtimePaths,
+      tooling: BrokerToolingState(cliPath: runtimePaths.configuredCLIURL, hostConfigExists: false, installMetadata: nil),
+      service: nil,
+      snapshot: nil
+    )
+    let readySnapshot = try loadFixture(named: "busy-snapshot")
+    let readyState = BrokerLoadedState(
+      paths: runtimePaths,
+      tooling: BrokerToolingState(cliPath: runtimePaths.configuredCLIURL, hostConfigExists: true, installMetadata: nil),
+      service: BrokerServiceMetadata(
+        hostConfigPath: runtimePaths.hostConfigURL.path,
+        pid: 321,
+        socketPath: "/tmp/simbroker-ready-refresh.sock",
+        startedAt: "2026-04-09T10:00:00Z",
+        stateRoot: runtimePaths.stateRoot.path,
+        transport: "unix-http"
+      ),
+      snapshot: readySnapshot
+    )
+    let loader = SequencedSnapshotLoader(states: [readyState])
+    let localRunner = RecordingLocalCommandRunner()
+    let setupPlan = try makeSetupPlan(
+      status: "ready",
+      confirmationRequired: false,
+      hostConfigured: true,
+      includeRuntime: false,
+      createCount: 0
+    )
+    await localRunner.enqueue(
+      BrokerCLICommandEnvelope(
+        error: nil,
+        exitCode: 0,
+        ok: true,
+        reasonCode: nil,
+        setupPlan: setupPlan,
+        started: nil,
+        status: "ready",
+        unchanged: nil
+      )
+    )
+    let store = BrokerDashboardStore(
+      loader: loader,
+      commandClient: RecordingCommandClient(),
+      localCommandRunner: localRunner,
+      runtimePaths: runtimePaths
+    )
+    store.loadedState = staleState
+
+    XCTAssertEqual(store.startupState, .needsHostBootstrap)
+
+    store.requestGuidedSetup()
+    try await waitUntil {
+      await MainActor.run { store.setupPhase == .idle && store.lastActionMessage != nil }
+    }
+
+    let invocations = await localRunner.invocations()
+    XCTAssertEqual(invocations.count, 1)
+    XCTAssertEqual(store.lastActionMessage, "Setup complete — brokerd is running and all managed simulators are healthy.")
+    XCTAssertEqual(store.startupState, .ready)
+    XCTAssertEqual(store.loadedState?.tooling.hostConfigExists, true)
+    XCTAssertNotNil(store.loadedState?.snapshot)
+    let loadCount = await loader.loadCount()
+    XCTAssertEqual(loadCount, 1)
+  }
+
   func testGuidedSetupAutomaticFinishingDoesNotPresentSetupSheet() async throws {
     let runtimePaths = BrokerRuntimePaths(
       stateRoot: URL(fileURLWithPath: "/tmp/simbroker-auto-finish-state"),

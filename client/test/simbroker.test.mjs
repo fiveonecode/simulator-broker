@@ -622,9 +622,13 @@ test("setup identity blockers provide a stop command for the running service pat
     hostConfigPath: fixture.hostConfigPath,
     stateRoot: fixture.stateRoot,
   }).serviceSocketPath;
+  const selectedPaths = resolveBrokerPaths({
+    hostConfigPath: otherHostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
   assert.deepEqual(serviceIdentity.remediationCommands, [
     `simbroker service stop --host-config '${fixture.hostConfigPath}' --state-root '${fixture.stateRoot}' --service-socket '${serviceSocketPath}'`,
-    "simbroker setup",
+    `simbroker setup --host-config '${otherHostConfigPath}' --state-root '${fixture.stateRoot}' --service-socket '${selectedPaths.serviceSocketPath}'`,
   ]);
 
   const stopped = spawnSync(process.execPath, [

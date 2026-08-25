@@ -1215,6 +1215,71 @@ test("setup blocks an existing host when doctor-relevant state files are malform
   assert.equal(emptyPinBlocked.status, "blocked");
   assert.ok(emptyPinBlocked.prerequisites.some((issue) =>
     issue.id === "leases" && issue.status === "blocked"));
+
+  fs.rmSync(path.join(resolvedPaths.pinsDir, "empty-pin.json"));
+  writeJson(path.join(resolvedPaths.leasesDir, "partial-lease.json"), {
+    alias: "ui-1",
+    leaseId: "partial-lease",
+  });
+  const partialLeaseBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(partialLeaseBlocked.status, "blocked");
+  assert.ok(partialLeaseBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: partialLeaseBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, "partial-lease.json")), true);
+});
+
+test("setup blocks a missing host config when the state root already has broker records", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  fs.mkdirSync(resolvedPaths.stateRoot, { recursive: true });
+  writeJson(resolvedPaths.registryPath, {
+    aliases: {},
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    version: 1,
+  });
+
+  const registryBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-state",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(registryBlocked.status, "blocked");
+  assert.equal(registryBlocked.confirmation.required, false);
+  assert.ok(registryBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: registryBlocked.planId,
+    hostId: "fresh-over-state",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+
+  fs.rmSync(resolvedPaths.registryPath);
+  fs.mkdirSync(resolvedPaths.leasesDir, { recursive: true });
+  writeJson(path.join(resolvedPaths.leasesDir, "leftover.json"), {
+    alias: "ui-1",
+    leaseId: "leftover",
+  });
+  const leftoverBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(leftoverBlocked.status, "blocked");
+  assert.ok(leftoverBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+
+  fs.rmSync(path.join(resolvedPaths.leasesDir, "leftover.json"));
+  const emptyLeaseDir = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-empty-state",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(emptyLeaseDir.status, "changes_required");
+  assert.equal(emptyLeaseDir.confirmation.required, true);
+  assert.equal(emptyLeaseDir.host.configured, false);
 });
 
 test("setup blocks an existing host whose registry marks an alias for repair", () => {

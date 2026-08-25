@@ -1582,6 +1582,17 @@ function setupStateContainsLeaseOrPinRecords(paths) {
   }
 }
 
+function setupStateContainsExistingBrokerArtifacts(paths) {
+  try {
+    if (fs.existsSync(paths.registryPath) && fs.statSync(paths.registryPath).isFile()) {
+      return true;
+    }
+    return setupStateContainsLeaseOrPinRecords(paths);
+  } catch {
+    return true;
+  }
+}
+
 function setupExistingHostState(paths, inventory, options = {}) {
   let hostConfig;
   try {
@@ -1772,10 +1783,48 @@ function setupExistingHostState(paths, inventory, options = {}) {
   };
 }
 
+function blockedSetupExistingStateWithoutHost(paths, options = {}) {
+  const hostId = requestedSetupHostId(options)
+    ?? slugifyIdentifier(options.hostId ?? defaultHostId(), defaultHostId());
+  const planId = setupPlanFingerprint({
+    configured: false,
+    devices: [],
+    hostConfig: null,
+    hostId,
+    runtime: null,
+  });
+  return {
+    hostConfig: null,
+    preview: {
+      command: "setup",
+      confirmation: { createCount: 0, required: false, reuseCount: 0 },
+      devices: [],
+      host: { action: "keep", configured: false, hostId },
+      mode: "preview",
+      nextSteps: ["simbroker doctor"],
+      ok: true,
+      planId,
+      prerequisites: [{
+        id: "state-root",
+        remediationCommands: ["simbroker doctor"],
+        status: "blocked",
+        summary: "The selected state root already contains broker state and setup will not create a new host over it.",
+      }],
+      runtime: null,
+      schemaVersion: SETUP_SCHEMA_VERSION,
+      service: { action: "blocked", running: false },
+      status: "blocked",
+    },
+  };
+}
+
 function buildSetupPlan(paths, options = {}) {
   const inventory = readSimctlInventory(options);
   if (fs.existsSync(paths.hostConfigPath)) {
     return setupExistingHostState(paths, inventory, options);
+  }
+  if (setupStateContainsExistingBrokerArtifacts(paths)) {
+    return blockedSetupExistingStateWithoutHost(paths, options);
   }
 
   const runtime = selectRuntimeForSetup(inventory, options.iosVersion);
@@ -2343,10 +2392,28 @@ function listJsonFiles(dirPath) {
     .map(readJson);
 }
 
+function requirePositiveIntegerField(value, name) {
+  const normalized = normalizePositiveInteger(value);
+  if (normalized === null) {
+    throw new BrokerError(`${name} must be a positive integer.`, {
+      field: name,
+      reasonCode: "invalid-config",
+    });
+  }
+  return normalized;
+}
+
 function assertValidLeaseRecord(record) {
   requireObject(record, "lease");
   requireString(record.leaseId, "lease.leaseId");
   requireString(record.alias, "lease.alias");
+  requireString(record.simulatorId, "lease.simulatorId");
+  requireString(record.actorType, "lease.actorType");
+  requireString(record.actorId, "lease.actorId");
+  requireString(record.projectId, "lease.projectId");
+  requireString(record.purposeId, "lease.purposeId");
+  requireString(record.startedAt, "lease.startedAt");
+  requirePositiveIntegerField(record.ownerPid, "lease.ownerPid");
   return record;
 }
 
