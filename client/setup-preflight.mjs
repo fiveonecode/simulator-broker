@@ -359,6 +359,9 @@ export function completeSetupPreview(corePreview, prerequisites, options = {}) {
     .flatMap((prerequisite) => prerequisite.remediationCommands ?? []))];
   return {
     ...corePreview,
+    confirmation: corePreview.confirmation && status === "blocked"
+      ? { ...corePreview.confirmation, required: false }
+      : corePreview.confirmation,
     nextSteps: status === "ready"
       ? ["simbroker project init", "simbroker project validate"]
       : (status === "blocked" ? blockedRecovery : corePreview.nextSteps),

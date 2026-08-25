@@ -612,6 +612,33 @@ test("setup identity blockers provide a stop command for the running service pat
   assert.equal(runCli(fixture, "service", "status").json.running, false);
 });
 
+test("setup blocks unconfigured hosts when the target socket already has a different broker", (t) => {
+  const fixture = makeFixture();
+  t.after(() => {
+    runCli(fixture, "service", "stop");
+  });
+
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  assert.equal(runCli(fixture, "service", "start").status, 0);
+  const serviceSocketPath = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  }).serviceSocketPath;
+  const freshRoot = makeTempDir();
+  const freshFixture = {
+    hostConfigPath: path.join(freshRoot, "host-config.json"),
+    simctl: fixture.simctl,
+    stateRoot: path.join(freshRoot, "state"),
+  };
+
+  const preview = runCli(freshFixture, "--service-socket", serviceSocketPath, "setup", "--json");
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.equal(preview.json.status, "blocked");
+  assert.equal(preview.json.confirmation.required, false);
+  assert.ok(preview.json.prerequisites.some((issue) => issue.id === "service-identity" && issue.status === "blocked"));
+  assert.equal(fs.existsSync(freshFixture.hostConfigPath), false);
+});
+
 test("concurrent confirmed setup allows one commit without duplicate devices", async () => {
   const root = makeTempDir();
   const fixture = {
@@ -725,6 +752,56 @@ test("setup treats a path-mismatched snapshot as finishing work", () => {
   assert.equal(finishing.status, 0, finishing.stderr);
   assert.equal(finishing.json.status, "changes_required");
   assert.equal(finishing.json.service.action, "keep");
+
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
+test("setup treats newer known-projects, lease, or pin records as snapshot finishing work", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "fresh-state-mtime");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "fresh-state-mtime",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(applied.json.status, "ready");
+
+  const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
+  const snapshotMtime = fs.statSync(snapshotPath).mtimeMs;
+  const knownProjectsPath = path.join(fixture.stateRoot, "known-projects.json");
+  writeJson(knownProjectsPath, {
+    projects: {
+      "fresh-state-mtime": {
+        lastObservedAt: "2026-08-25T00:00:00.000Z",
+        projectFilePath: path.join(root, "repo/.simulator-broker/project.json"),
+        projectId: "fresh-state-mtime",
+        projectName: "Fresh State Mtime",
+        purposes: [],
+        repoRoot: path.join(root, "repo"),
+      },
+    },
+    updatedAt: "2026-08-25T00:00:00.000Z",
+    version: 1,
+  });
+  const newerMtime = new Date(snapshotMtime + 2000);
+  fs.utimesSync(knownProjectsPath, newerMtime, newerMtime);
+
+  const finishing = runCli(fixture, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required");
+  assert.equal(finishing.json.service.action, "keep");
+  assert.equal(finishing.json.confirmation.required, false);
 
   assert.equal(runCli(fixture, "service", "stop").status, 0);
 });

@@ -1,8 +1,8 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.4`
-> **Last Updated:** `2026-08-24`
+> **Version:** `1.0.5`
+> **Last Updated:** `2026-08-25`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
 > **Target:** Next Alpha PR
@@ -66,7 +66,10 @@ host init is unchanged and documented only as advanced/troubleshooting.
   `Create or adopt these 6 Simulator devices and finish setup? [y/N]`, applies
   on yes, and returns successful `cancelled` without mutation on no or EOF.
 - Interactive existing healthy setup automatically performs only safe finishing
-  work (service, snapshot, health) without a device-creation prompt.
+  work (service, snapshot, health) without a device-creation prompt. `ready`
+  requires a current snapshot whose mtime is at least as new as host-config,
+  registry, known-projects, and lease/pin JSON, and those files must be
+  readable. Newer valid records are finishing work, not `ready`.
 - Non-TTY preview never prompts or mutates and prints a copyable apply command.
 - `--json` preview never prompts or mutates and emits exactly one JSON document.
 - Confirmed apply never prompts, recomputes under locks, and emits one human
@@ -176,6 +179,10 @@ Apply performs, in order:
   lease/pin mutation, or retirement. Invalid known-projects or lease/pin JSON
   is the same class of existing-host failure: diagnose with `simbroker doctor`,
   do not report `ready`.
+- Preview probes the requested service socket even when no host is configured
+  yet. A running broker with a different host-config, state-root, or socket
+  identity is a `service-identity` blocker and is not confirmable, so apply
+  cannot create devices before `startService` discovers the mismatch.
 - Existing healthy host is never replaced or expanded to six.
 - Lock/revalidation guarantees concurrent setup creates at most one host; the
   loser gets `setup-plan-stale`.
@@ -390,6 +397,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.5 | 2026-08-25 | `spec-steward`, `ios-dev` | Preview probes service identity on unconfigured hosts, and `ready` requires the snapshot to be at least as new as known-projects and lease/pin JSON |
 | 1.0.4 | 2026-08-24 | `spec-steward`, `ios-dev` | Bound existing-host confirmation to the requested host ID, reused the device-type inventory when runtime records omit supported types, and failed closed on unreadable known-projects/lease JSON |
 | 1.0.3 | 2026-08-24 | `spec-steward`, `ios-dev` | Required searchable writable directory ancestors, post-doctor snapshot health, and derived apply timeout plus cooperative timeout escalation |
 | 1.0.2 | 2026-08-23 | `spec-steward`, `ios-dev` | Required exact setup-selected runtime/device identity for registry recovery and post-doctor committed-host revalidation |

@@ -737,7 +737,7 @@ async function buildSetupPreview(paths, options) {
   }
 
   let running = false;
-  if (corePreview.host.configured && corePreview.status !== "blocked") {
+  if (corePreview.status !== "blocked") {
     try {
       running = (await serviceStatus(paths)).running;
     } catch (error) {
@@ -785,7 +785,11 @@ function setupSnapshotReady(paths, corePreview) {
       return false;
     }
     const snapshotMtime = fs.statSync(paths.appSnapshotPath).mtimeMs;
-    const relevantStateMtime = [paths.hostConfigPath, paths.registryPath]
+    const relevantStateMtime = [
+      paths.hostConfigPath,
+      paths.registryPath,
+      ...setupDoctorStateFiles(paths),
+    ]
       .filter((filePath) => fs.existsSync(filePath))
       .reduce((latest, filePath) => Math.max(latest, fs.statSync(filePath).mtimeMs), 0);
     return snapshotMtime >= relevantStateMtime && setupDoctorStateReadable(paths);
@@ -794,21 +798,29 @@ function setupSnapshotReady(paths, corePreview) {
   }
 }
 
-function setupDoctorStateReadable(paths) {
-  try {
-    if (fs.existsSync(paths.knownProjectsPath)) {
-      JSON.parse(fs.readFileSync(paths.knownProjectsPath, "utf8"));
+function setupDoctorStateFiles(paths) {
+  const files = [];
+  if (fs.existsSync(paths.knownProjectsPath)) {
+    files.push(paths.knownProjectsPath);
+  }
+  for (const directoryPath of [paths.leasesDir, paths.pinsDir]) {
+    if (!fs.existsSync(directoryPath)) {
+      continue;
     }
-    for (const directoryPath of [paths.leasesDir, paths.pinsDir]) {
-      if (!fs.existsSync(directoryPath)) {
+    for (const entry of fs.readdirSync(directoryPath, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) {
         continue;
       }
-      for (const entry of fs.readdirSync(directoryPath, { withFileTypes: true })) {
-        if (!entry.isFile() || !entry.name.endsWith(".json")) {
-          continue;
-        }
-        JSON.parse(fs.readFileSync(path.join(directoryPath, entry.name), "utf8"));
-      }
+      files.push(path.join(directoryPath, entry.name));
+    }
+  }
+  return files;
+}
+
+function setupDoctorStateReadable(paths) {
+  try {
+    for (const filePath of setupDoctorStateFiles(paths)) {
+      JSON.parse(fs.readFileSync(filePath, "utf8"));
     }
     return true;
   } catch {

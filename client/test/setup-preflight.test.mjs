@@ -234,7 +234,8 @@ test("post-doctor snapshot inspection rejects unavailable or repair-needed alias
 
 test("blocked completion guidance comes from the combined prerequisite blockers", () => {
   const preview = completeSetupPreview({
-    host: { configured: true },
+    confirmation: { createCount: 6, required: true, reuseCount: 0 },
+    host: { configured: false },
     nextSteps: ["simbroker project init", "simbroker project validate"],
     prerequisites: [{
       id: "service-identity",
@@ -250,6 +251,7 @@ test("blocked completion guidance comes from the combined prerequisite blockers"
   });
 
   assert.equal(preview.status, "blocked");
+  assert.equal(preview.confirmation.required, false);
   assert.deepEqual(preview.nextSteps, ["simbroker service stop", "simbroker setup"]);
   assert.equal(preview.nextSteps.includes("simbroker project init"), false);
 });
