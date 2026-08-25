@@ -74,7 +74,10 @@ A first extracted implementation slice now exists:
   `serviceStartupTimeoutMs`. Do not add `--test-force-exit`: on Node 20 it
   exits while later `describe()` tests are still queued. `brokerd` and
   `simbroker` client tests use `describe` concurrency `1` so in-file
-  service starts cannot overlap. The default public-surface scan reads index
+  service starts cannot overlap. Keepalive owner and command processes in
+  `simbroker` tests stay referenced until they exit; `unref()` during an
+  `await` lets Node 20 fire `beforeExit` and cancel later queued tests.
+  The default public-surface scan reads index
   blobs only for dirty or missing worktree files. `git diff-files` exit `1`
   is the dirty-name list; only a real git failure fails the scan. A clean
   checkout must not spawn one `git cat-file` per file. `simbroker service

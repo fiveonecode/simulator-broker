@@ -37,7 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CLI helpers bound `service start` waits, and `service start` stops waiting
   when spawned `brokerd` exits even if a startup lock directory remains.
   Ubuntu CI does not use `--test-force-exit`; on Node 20 that flag cancels
-  later queued `describe()` tests.
+  later queued `describe()` tests. Keepalive owner and command processes in
+  `simbroker` client tests stay referenced until exit so Node 20 does not
+  `beforeExit`-cancel the remaining file.
 - Broker-core process fixtures inject a synthetic controller pid so Ubuntu
   CI cannot classify a fixture requester as `current-broker-process` when
   the test-runner pid lands on a hardcoded fixture pid such as `2500`.

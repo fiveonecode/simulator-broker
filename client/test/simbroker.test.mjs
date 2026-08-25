@@ -203,6 +203,38 @@ function runCli(fixture, ...args) {
   };
 }
 
+function spawnKeepaliveProcess() {
+  // Keep the ChildProcess handle referenced. unref() lets Node 20 fire
+  // beforeExit during `await exit`, which cancels later describe() tests.
+  return spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    detached: true,
+    stdio: "ignore",
+  });
+}
+
+function waitForProcessExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    child.once("exit", resolve);
+  });
+}
+
+async function stopKeepaliveProcess(child, signal = "SIGKILL") {
+  if (!child?.pid) {
+    return;
+  }
+  const exited = waitForProcessExit(child);
+  try {
+    process.kill(child.pid, signal);
+  } catch {
+    child.unref();
+    return;
+  }
+  await exited;
+}
+
 function runCliAsync(fixture, envOverrides, ...args) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [
@@ -3410,11 +3442,7 @@ test("lease contain keeps a no-breach lease active during snapshot refresh after
 
   assert.equal(runCli(fixture, "host", "init").status, 0);
 
-  const owner = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-    detached: true,
-    stdio: "ignore",
-  });
-  owner.unref();
+  const owner = spawnKeepaliveProcess();
 
   try {
     const acquireResult = runCli(
@@ -3438,9 +3466,7 @@ test("lease contain keeps a no-breach lease active during snapshot refresh after
     );
     assert.equal(acquireResult.status, 0);
 
-    const ownerExited = new Promise((resolve) => owner.once("exit", resolve));
-    process.kill(owner.pid, "SIGTERM");
-    await ownerExited;
+    await stopKeepaliveProcess(owner, "SIGTERM");
 
     const containResult = runCli(
       fixture,
@@ -3455,9 +3481,7 @@ test("lease contain keeps a no-breach lease active during snapshot refresh after
     assert.equal(containResult.json.contained, false);
     assert.equal(fs.existsSync(leaseFile), true);
   } finally {
-    try {
-      process.kill(owner.pid, "SIGKILL");
-    } catch {}
+    await stopKeepaliveProcess(owner);
   }
 });
 
@@ -3467,17 +3491,8 @@ test("lease register-process keeps a recovered stale lease active during snapsho
 
   assert.equal(runCli(fixture, "host", "init").status, 0);
 
-  const owner = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-    detached: true,
-    stdio: "ignore",
-  });
-  owner.unref();
-
-  const command = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-    detached: true,
-    stdio: "ignore",
-  });
-  command.unref();
+  const owner = spawnKeepaliveProcess();
+  const command = spawnKeepaliveProcess();
 
   try {
     const acquireResult = runCli(
@@ -3499,9 +3514,7 @@ test("lease register-process keeps a recovered stale lease active during snapsho
     );
     assert.equal(acquireResult.status, 0);
 
-    const ownerExited = new Promise((resolve) => owner.once("exit", resolve));
-    process.kill(owner.pid, "SIGTERM");
-    await ownerExited;
+    await stopKeepaliveProcess(owner, "SIGTERM");
 
     const pgidResult = spawnSync("ps", ["-o", "pgid=", "-p", String(command.pid)], {
       encoding: "utf8",
@@ -3528,12 +3541,8 @@ test("lease register-process keeps a recovered stale lease active during snapsho
     assert.equal(fs.existsSync(path.join(fixture.stateRoot, "leases", `${registerResult.json.lease.leaseId}.json`)), true);
     process.kill(command.pid, 0);
   } finally {
-    try {
-      process.kill(owner.pid, "SIGKILL");
-    } catch {}
-    try {
-      process.kill(command.pid, "SIGKILL");
-    } catch {}
+    await stopKeepaliveProcess(owner);
+    await stopKeepaliveProcess(command);
   }
 });
 
