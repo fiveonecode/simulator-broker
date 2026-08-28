@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.16`
+> **Version:** `1.0.17`
 > **Last Updated:** `2026-08-28`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -222,6 +222,9 @@ Apply performs, in order:
   A complete lease whose `alias` is missing from the host, whose `simulatorId`
   does not match that host alias, or that shares an alias with another lease
   file is the same class of invalid existing-host state.
+  A complete pin whose `alias` is missing from the host, or that shares an
+  alias with another pin file, is the same class of invalid existing-host
+  state; setup must not collapse duplicate pin records into a `ready` snapshot.
   Persisted registry alias data that is schema-invalid, such as an
   unrecognized `health` or `powerState` value or an alias map that contains none of the
   configured host aliases, is also invalid; setup must not normalize it into a
@@ -474,6 +477,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.17 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on unknown pin aliases and duplicate pin alias claims during setup instead of collapsing them into a `ready` snapshot |
 | 1.0.16 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on lease/host simulator disagreement, duplicate lease aliases, extra snapshot simulator rows, and dangling registry/known-projects occupancy during setup |
 | 1.0.15 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on incomplete setup device-type records, dangling host-config occupancy, and an invalid known-projects catalog during fresh provisioning |
 | 1.0.14 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on version-less selected runtimes and `ownerPid` values outside the safe integer range |

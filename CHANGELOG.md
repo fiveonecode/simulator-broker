@@ -59,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   symlink is an invalid catalog rather than a missing file. Complete lease
   records that name an unknown alias, point at another alias's Simulator, or
   share an alias with another lease file stay blocked instead of `ready`.
+  Complete pin records that name an unknown alias or share an alias with
+  another pin file stay blocked instead of collapsing into a `ready` snapshot.
   Snapshot freshness requires the snapshot simulator alias set to equal the
   current host alias set, so extra stale rows are finishing work.
   Known-projects catalog keys must match each record `projectId`.

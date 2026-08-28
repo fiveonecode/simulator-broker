@@ -1835,6 +1835,72 @@ test("setup blocks leases that disagree with their host alias or share an alias"
   assert.equal(fs.existsSync(secondLeasePath), true);
 });
 
+test("setup blocks pins that name an unknown alias or share an alias", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "pin-host-agreement",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "pin-host-agreement",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const completePin = {
+    actorId: "human:local-cli",
+    actorType: "human",
+    alias: "manual-1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    pinId: "canonical-pin",
+    projectId: "demo-app",
+    projectName: "Demo App",
+    repoRoot: path.join(paths.root, "repo"),
+  };
+
+  const unknownAliasPath = path.join(resolvedPaths.pinsDir, "unknown-alias-pin.json");
+  writeJson(unknownAliasPath, {
+    ...completePin,
+    alias: "retired-1",
+    pinId: "unknown-alias-pin",
+  });
+  const unknownAliasBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(unknownAliasBlocked.status, "blocked");
+  assert.ok(unknownAliasBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: unknownAliasBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(unknownAliasPath).alias, "retired-1");
+  fs.rmSync(unknownAliasPath);
+
+  const firstPinPath = path.join(resolvedPaths.pinsDir, "first-alias-pin.json");
+  const secondPinPath = path.join(resolvedPaths.pinsDir, "second-alias-pin.json");
+  writeJson(firstPinPath, {
+    ...completePin,
+    pinId: "first-alias-pin",
+  });
+  writeJson(secondPinPath, {
+    ...completePin,
+    pinId: "second-alias-pin",
+  });
+  const duplicateAliasBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(duplicateAliasBlocked.status, "blocked");
+  assert.ok(duplicateAliasBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: duplicateAliasBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(firstPinPath), true);
+  assert.equal(fs.existsSync(secondPinPath), true);
+});
+
 test("setup blocks an existing host-config that is not a regular file", () => {
   const paths = makePaths();
   const resolvedPaths = brokerPaths(paths);

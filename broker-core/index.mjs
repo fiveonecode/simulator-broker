@@ -1770,9 +1770,24 @@ function setupExistingHostState(paths, inventory, options = {}) {
       }
       seenLeaseAliases.add(record.alias);
     }
+    const seenPinAliases = new Set();
     for (const { name, record } of listJsonFileEntries(paths.pinsDir)) {
       assertValidPinRecord(record);
       assertStoredRecordFileName(name, record.pinId, "pin");
+      if (!hostAliasesById.has(record.alias)) {
+        throw new BrokerError(`Pin ${record.pinId} names unknown alias ${record.alias}.`, {
+          alias: record.alias,
+          pinId: record.pinId,
+          reasonCode: "invalid-config",
+        });
+      }
+      if (seenPinAliases.has(record.alias)) {
+        throw new BrokerError(`Multiple pin records claim alias ${record.alias}.`, {
+          alias: record.alias,
+          reasonCode: "invalid-config",
+        });
+      }
+      seenPinAliases.add(record.alias);
     }
   } catch (error) {
     issues.push({
