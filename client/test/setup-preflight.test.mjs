@@ -148,6 +148,64 @@ test("setup preflight accepts an existing writable host-config file", () => {
   assert.equal(hostConfig.status, "ready");
 });
 
+test("setup preflight remediates an unreadable host-config file instead of its parent", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-host-unreadable-"));
+  const hostConfigPath = path.join(root, "host.json");
+  fs.writeFileSync(hostConfigPath, "{}\n");
+  fs.chmodSync(hostConfigPath, 0o000);
+  t.after(() => {
+    try {
+      fs.chmodSync(hostConfigPath, 0o644);
+    } catch {
+      // Restore enough access for temp cleanup.
+    }
+  });
+  const paths = {
+    hostConfigPath,
+    stateRoot: path.join(root, "state"),
+  };
+  const prerequisites = evaluateSetupPrerequisites(paths, {
+    commandRunner: readyCommandRunner,
+    env: {},
+    nodeVersion: "20.0.0",
+    platform: "darwin",
+  });
+  const hostConfig = prerequisites.find((prerequisite) => prerequisite.id === "host-config-path");
+  assert.equal(hostConfig.status, "blocked");
+  assert.equal(hostConfig.details.checkedPath, hostConfigPath);
+  assert.deepEqual(hostConfig.remediationCommands, [`chmod u+rw '${hostConfigPath}'`]);
+});
+
+test("setup preflight remediates a non-writable host-config parent directory", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-host-parent-"));
+  const parent = path.join(root, "config");
+  fs.mkdirSync(parent);
+  const hostConfigPath = path.join(parent, "host.json");
+  fs.writeFileSync(hostConfigPath, "{}\n");
+  fs.chmodSync(parent, 0o500);
+  t.after(() => {
+    try {
+      fs.chmodSync(parent, 0o755);
+    } catch {
+      // Restore enough access for temp cleanup.
+    }
+  });
+  const paths = {
+    hostConfigPath,
+    stateRoot: path.join(root, "state"),
+  };
+  const prerequisites = evaluateSetupPrerequisites(paths, {
+    commandRunner: readyCommandRunner,
+    env: {},
+    nodeVersion: "20.0.0",
+    platform: "darwin",
+  });
+  const hostConfig = prerequisites.find((prerequisite) => prerequisite.id === "host-config-path");
+  assert.equal(hostConfig.status, "blocked");
+  assert.equal(hostConfig.details.checkedPath, parent);
+  assert.deepEqual(hostConfig.remediationCommands, [`chmod u+wx '${parent}'`]);
+});
+
 test("setup preflight blocks an existing host-config that is a directory", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-host-dir-"));
   const hostConfigPath = path.join(root, "host.json");

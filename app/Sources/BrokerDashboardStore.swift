@@ -1223,7 +1223,7 @@ final class BrokerDashboardStore {
       "--confirm",
       plan.planId,
     ]
-    if let hostId = plan.host.hostId {
+    if plan.host.configured == false, let hostId = plan.host.hostId {
       arguments += ["--host-id", hostId]
     }
     if let runtime = plan.runtime {

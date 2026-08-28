@@ -648,6 +648,47 @@ test("setup identity blockers provide a stop command for the running service pat
   assert.equal(runCli(fixture, "service", "status").json.running, false);
 });
 
+test("setup apply rechecks service identity before provisioning", (t) => {
+  const occupant = makeFixture();
+  const freshRoot = makeTempDir();
+  const freshFixture = {
+    hostConfigPath: path.join(freshRoot, "host-config.json"),
+    simctl: occupant.simctl,
+    stateRoot: path.join(freshRoot, "state"),
+  };
+  const freshSocketPath = resolveBrokerPaths({
+    hostConfigPath: freshFixture.hostConfigPath,
+    stateRoot: freshFixture.stateRoot,
+  }).serviceSocketPath;
+  t.after(() => {
+    runCli(occupant, "--service-socket", freshSocketPath, "service", "stop");
+  });
+
+  assert.equal(runCli(occupant, "host", "init").status, 0);
+  const preview = runCli(freshFixture, "setup", "--json", "--host-id", "apply-identity");
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.equal(preview.json.status, "changes_required");
+  assert.equal(fs.existsSync(freshFixture.hostConfigPath), false);
+
+  assert.equal(runCli(occupant, "--service-socket", freshSocketPath, "service", "start").status, 0);
+  const applied = runCli(
+    freshFixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "apply-identity",
+    "--json",
+  );
+  assert.equal(applied.status, 3, applied.stderr);
+  assert.equal(applied.json.reasonCode, "setup-prerequisite-failed");
+  assert.equal(applied.json.failedStage, "preflight");
+  assert.equal(applied.json.blockerReasonCode, "service-identity-mismatch");
+  assert.equal(applied.json.hostCommitted, undefined);
+  assert.equal(fs.existsSync(freshFixture.hostConfigPath), false);
+});
+
 test("setup blocks unconfigured hosts when the target socket already has a different broker", (t) => {
   const fixture = makeFixture();
   t.after(() => {

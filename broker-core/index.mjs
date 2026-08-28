@@ -2228,6 +2228,15 @@ function assertValidPersistedRegistry(rawRegistry, hostConfig) {
         },
       );
     }
+    if (Object.hasOwn(entry, "powerState") && !ALLOWED_POWER_STATES.has(entry.powerState)) {
+      throw new BrokerError(
+        `${fieldPrefix}.powerState must be one of ${[...ALLOWED_POWER_STATES].join(", ")}.`,
+        {
+          field: `${fieldPrefix}.powerState`,
+          reasonCode: "invalid-config",
+        },
+      );
+    }
   }
   return rawRegistry;
 }
@@ -2504,14 +2513,13 @@ function assertStoredRecordFileName(fileName, recordId, kind) {
 }
 
 function requirePositiveIntegerField(value, name) {
-  const normalized = normalizePositiveInteger(value);
-  if (normalized === null) {
+  if (typeof value !== "number" || Number.isInteger(value) !== true || value <= 0) {
     throw new BrokerError(`${name} must be a positive integer.`, {
       field: name,
       reasonCode: "invalid-config",
     });
   }
-  return normalized;
+  return value;
 }
 
 function assertValidLeaseRecord(record) {

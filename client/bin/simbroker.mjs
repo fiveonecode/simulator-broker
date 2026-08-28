@@ -1097,6 +1097,7 @@ async function applySetup(paths, options, cancellation) {
   let coreResult;
   try {
     checkCancellation();
+    await serviceStatus(paths);
     coreResult = await applySetupBrokerInWorker(paths, {
       confirmPlanId: options.confirmPlanId,
       hostId: options.hostId ?? undefined,

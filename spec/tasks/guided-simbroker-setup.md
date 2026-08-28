@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.12`
+> **Version:** `1.0.13`
 > **Last Updated:** `2026-08-28`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -98,7 +98,11 @@ Before planning, setup performs bounded, read-only checks:
 
 Setup never executes the remediation commands. Blockers provide exact manual
 commands, including Xcode selection, `xcodebuild -runFirstLaunch`, Xcode
-Settings > Components, or `xcodebuild -downloadPlatform iOS`. Disk is `info`,
+Settings > Components, or `xcodebuild -downloadPlatform iOS`. Path-access
+blockers advertise a shell-safe `chmod` for the path and bits that actually
+failed: `u+rw` for an existing host-config file that is not readable and
+writable, and `u+wx` for a parent or destination directory that is not
+searchable and writable. Disk is `info`,
 is never blocking, and is excluded from the plan fingerprint.
 
 The Xcode command contract is grounded in installed Xcode help when an official
@@ -202,8 +206,11 @@ Apply performs, in order:
   as `jobId`, `note`, or `purposeId`, must be strings when present; a numeric
   or otherwise mistyped optional field is the same class of invalid
   existing-host state.
+  A live lease `ownerPid` must be a JSON number that is a positive integer;
+  a numeric string such as `"123"` is the same class of invalid existing-host
+  state and must not be coerced into a ready snapshot.
   Persisted registry alias data that is schema-invalid, such as an
-  unrecognized `health` value or an alias map that contains none of the
+  unrecognized `health` or `powerState` value or an alias map that contains none of the
   configured host aliases, is also invalid; setup must not normalize it into a
   `ready` host. A known-projects catalog key that disagrees with that record's
   `projectId` is the same class of invalid existing-host state. Setup does not
@@ -213,9 +220,11 @@ Apply performs, in order:
   setup remediation commands include the selected `--host-config`,
   `--state-root`, and `--service-socket` paths.
 - Preview probes the requested service socket even when no host is configured
-  yet. A running broker with a different host-config, state-root, or socket
-  identity is a `service-identity` blocker and is not confirmable, so apply
-  cannot create devices before `startService` discovers the mismatch.
+  yet. Confirmed apply revalidates that same socket identity before the
+  provisioning worker mutates host or devices. A running broker with a
+  different host-config, state-root, or socket identity is a `service-identity`
+  blocker and is not confirmable, so apply cannot create devices before
+  `startService` discovers the mismatch.
 - Existing healthy host is never replaced or expanded to six.
 - Lock/revalidation guarantees concurrent setup creates at most one host; the
   loser gets `setup-plan-stale`.
@@ -236,7 +245,10 @@ shows prerequisites, runtime/build, disk, six identifiable value-type rows,
 plain-language reset behavior, Create/Reuse state, finish stages, and “No
 changes have been made yet.” Actions are Cancel and a count-adjusted Create &
 Finish button. Apply passes exact plan ID plus the same runtime, host, and path
-selection.
+selection. For an already configured host, the app omits `--host-id` so core
+setup does not slugify the existing ID and block finishing. `--host-id` is
+passed only for an unconfigured/create plan (the previewed ID) or an actual
+user-selected host override.
 
 Service/snapshot-only plans apply immediately without a device sheet.
 Automatic finishing progress is tracked on the dashboard without presenting
@@ -445,6 +457,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.13 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on unrecognized registry `powerState` and string `ownerPid`, remediating the actual failing host-config path, revalidating service identity before provisioning, and omitting app `--host-id` for already configured hosts |
 | 1.0.12 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on mistyped optional lease/pin snapshot fields, require catalog-backed project-ID set equality for snapshot freshness, and display doctor `remediationCommands` in app setup failures |
 | 1.0.11 | 2026-08-28 | `spec-steward`, `ios-dev` | Health-failure doctor and per-alias repair commands keep the selected `--host-config`, `--state-root`, and `--service-socket` paths |
 | 1.0.10 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on occupied non-file registry/lease/pin paths and catalog-key/`projectId` mismatch, keep selected paths and host/runtime flags on setup recovery/repair commands, classify host-config I/O separately from simctl inventory, hide duplicate Finish setup while applying, and surface setup log/doctor/rollback diagnostics in the app |

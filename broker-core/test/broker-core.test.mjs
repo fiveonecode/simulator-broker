@@ -1475,6 +1475,34 @@ test("setup blocks snapshot-incomplete leases, pins, and schema-invalid registry
     missingHealthAllowed.prerequisites.some((issue) => issue.id === "registry" && issue.status === "blocked"),
     false,
   );
+
+  writeJson(resolvedPaths.registryPath, originalRegistry);
+  const invalidPowerStateRegistry = structuredClone(originalRegistry);
+  invalidPowerStateRegistry.aliases["ui-1"].powerState = "bogus";
+  writeJson(resolvedPaths.registryPath, invalidPowerStateRegistry);
+  const invalidPowerStateBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(invalidPowerStateBlocked.status, "blocked");
+  assert.ok(invalidPowerStateBlocked.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: invalidPowerStateBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(resolvedPaths.registryPath).aliases["ui-1"].powerState, "bogus");
+
+  const missingPowerStateRegistry = structuredClone(originalRegistry);
+  delete missingPowerStateRegistry.aliases["ui-1"].powerState;
+  writeJson(resolvedPaths.registryPath, missingPowerStateRegistry);
+  const missingPowerStateAllowed = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.notEqual(missingPowerStateAllowed.status, "blocked");
+  assert.equal(
+    missingPowerStateAllowed.prerequisites.some((issue) => issue.id === "registry" && issue.status === "blocked"),
+    false,
+  );
 });
 
 test("setup blocks leases and pins with mistyped optional snapshot fields", () => {
@@ -1528,6 +1556,19 @@ test("setup blocks leases and pins with mistyped optional snapshot fields", () =
     simctlAdapter: paths.simctl.adapter,
   }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
   assert.equal(readJson(completeLeasePath).jobId, 42);
+
+  writeJson(completeLeasePath, { ...completeLease, ownerPid: String(process.pid) });
+  const stringOwnerPidBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(stringOwnerPidBlocked.status, "blocked");
+  assert.ok(stringOwnerPidBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: stringOwnerPidBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(completeLeasePath).ownerPid, String(process.pid));
   fs.rmSync(completeLeasePath);
 
   const completePin = {

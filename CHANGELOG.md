@@ -28,12 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `supportedDeviceTypes`, and fails closed when known-projects, registry, or
   lease/pin JSON cannot be loaded or is not a complete identity record instead
   of reporting `ready`. Incomplete live leases that omit snapshot-required
-  fields, pins that omit project identity, and persisted registry alias data
-  with an unrecognized `health` value or no configured host aliases stay
+  fields, pins that omit project identity, live leases whose `ownerPid` is a
+  numeric string rather than a JSON integer, and persisted registry alias data
+  with an unrecognized `health` or `powerState` value or no configured host aliases stay
   blocked instead of being normalized during automatic finishing. A missing
   host-config with an existing registry, lease, or pin record in the selected
   state root is blocked rather than treated as a confirmable fresh plan.
-  Preview probes service identity even when no host is configured yet, so a
+  Preview probes service identity even when no host is configured yet, and
+  confirmed apply revalidates that identity before provisioning, so a
   socket occupied by a different broker is blocked before device creation.
   `ready` also requires the app snapshot to be at least as new as
   known-projects, lease/pin records, and the lease/pin directories, and to
@@ -50,7 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Blocked-preview doctor and repair commands, plus pre-commit recovery, keep
   the selected broker paths and any explicit `--host-id` / `--ios-version`.
   Existing host-config directories or unreadable files are host-path blockers
-  rather than `simctl-inventory` failures. The macOS app hides the read-only
+  rather than `simctl-inventory` failures. Host-config permission remediations
+  chmod the path that failed, not an already-usable parent. The macOS app omits
+  `--host-id` when finishing an already configured host so a non-slug existing
+  ID is not slugified into a mismatch. The macOS app hides the read-only
   `Finish setup` action while setup is applying and surfaces service log,
   doctor-issue, and incomplete-rollback diagnostics from CLI setup errors.
   After setup preview or apply, the app announces success only when the

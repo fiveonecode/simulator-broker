@@ -756,7 +756,13 @@ final class BrokerDashboardStoreTests: XCTestCase {
       configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker")
     )
     let localRunner = RecordingLocalCommandRunner()
-    let setupPlan = try makeSetupPlan(confirmationRequired: false, hostConfigured: true, includeRuntime: false, createCount: 0)
+    let setupPlan = try makeSetupPlan(
+      confirmationRequired: false,
+      hostConfigured: true,
+      includeRuntime: false,
+      createCount: 0,
+      hostId: "My Host"
+    )
     await localRunner.enqueue(BrokerCLICommandEnvelope(
       error: nil,
       exitCode: 0,
@@ -808,8 +814,8 @@ final class BrokerDashboardStoreTests: XCTestCase {
     let invocations = await localRunner.invocations()
     XCTAssertEqual(invocations.count, 2)
     XCTAssertFalse(invocations[1].arguments.contains("--ios-version"))
-    XCTAssertTrue(invocations[1].arguments.contains("--host-id"))
-    XCTAssertTrue(invocations[1].arguments.contains("guided-app-host"))
+    XCTAssertFalse(invocations[1].arguments.contains("--host-id"))
+    XCTAssertFalse(invocations[1].arguments.contains("My Host"))
     XCTAssertNil(store.setupPlan)
     XCTAssertEqual(store.setupPhase, .idle)
   }
@@ -1946,7 +1952,8 @@ private func makeSetupPlan(
   hostConfigured: Bool = false,
   includeRuntime: Bool = true,
   createCount: Int = 6,
-  schemaVersion: Int = 1
+  schemaVersion: Int = 1,
+  hostId: String = "guided-app-host"
 ) throws -> BrokerSetupPlan {
   let prerequisiteStatus = status == "blocked" ? "blocked" : "ready"
   let runtime = includeRuntime ? """
@@ -1980,7 +1987,7 @@ private func makeSetupPlan(
         "remediationCommands": []
       }
     ],
-    "host": { "configured": \(hostConfigured), "action": "\(hostConfigured ? "keep" : "create")", "hostId": "guided-app-host" },
+    "host": { "configured": \(hostConfigured), "action": "\(hostConfigured ? "keep" : "create")", "hostId": "\(hostId)" },
     "runtime": \(runtime),
     "devices": [
       { "alias": "manual-1", "displayName": "Manual iPhone", "deviceFamily": "iPhone", "deviceTypeName": "iPhone 17", "deviceTypeIdentifier": "iphone-17", "runtimeIdentifier": "ios-26-5", "runtimeVersion": "26.5", "capabilities": ["manual-persistent"], "resetPolicy": "none", "action": "create", "simulatorName": "Manual" },

@@ -49,11 +49,25 @@ function nearestExistingAncestor(destination) {
   return candidate;
 }
 
+function shellQuoteArgument(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
 function blockedPathPrerequisite(id, destination, checkedPath, summary) {
   return {
     details: { checkedPath, destination },
     id,
     remediationCommands: [],
+    status: "blocked",
+    summary,
+  };
+}
+
+function blockedWritablePrerequisite(id, destination, checkedPath, mode, summary) {
+  return {
+    details: { checkedPath, destination },
+    id,
+    remediationCommands: [`chmod ${mode} ${shellQuoteArgument(checkedPath)}`],
     status: "blocked",
     summary,
   };
@@ -94,9 +108,28 @@ function pathPrerequisite(id, destination, summary, { existingMustBeDirectory = 
         );
       }
       const parent = path.dirname(ancestor);
-      checkedPath = parent;
-      fs.accessSync(parent, fs.constants.W_OK | fs.constants.X_OK);
-      fs.accessSync(ancestor, fs.constants.R_OK | fs.constants.W_OK);
+      try {
+        fs.accessSync(parent, fs.constants.W_OK | fs.constants.X_OK);
+      } catch {
+        return blockedWritablePrerequisite(
+          id,
+          resolvedDestination,
+          parent,
+          "u+wx",
+          `${summary} is not writable by the current user.`,
+        );
+      }
+      try {
+        fs.accessSync(ancestor, fs.constants.R_OK | fs.constants.W_OK);
+      } catch {
+        return blockedWritablePrerequisite(
+          id,
+          resolvedDestination,
+          ancestor,
+          "u+rw",
+          `${summary} is not writable by the current user.`,
+        );
+      }
       return {
         details: { checkedPath: parent, destination: resolvedDestination },
         id,
@@ -123,13 +156,13 @@ function pathPrerequisite(id, destination, summary, { existingMustBeDirectory = 
       summary: `${summary} is writable.`,
     };
   } catch {
-    return {
-      details: { checkedPath, destination: resolvedDestination },
+    return blockedWritablePrerequisite(
       id,
-      remediationCommands: [`chmod u+wx "${checkedPath}"`],
-      status: "blocked",
-      summary: `${summary} is not writable by the current user.`,
-    };
+      resolvedDestination,
+      checkedPath,
+      "u+wx",
+      `${summary} is not writable by the current user.`,
+    );
   }
 }
 
