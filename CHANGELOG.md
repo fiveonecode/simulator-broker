@@ -26,13 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Guided setup binds existing-host confirmation to the requested `--host-id`,
   uses the separate device-type inventory when a runtime omits
   `supportedDeviceTypes`, treats an available iOS runtime that omits `version`
-  as not qualifying for planning, treats device-type records that omit
+  or reports a version outside the host-config `<major>` / `<major.minor>`
+  schema as not qualifying for planning, treats device-type records that omit
   identifier or name as not qualifying for planning, and fails closed when
   known-projects, registry, or lease/pin JSON cannot be loaded or is not a
   complete identity record instead of reporting `ready`. A missing host-config
   with an existing invalid known-projects catalog is blocked before
   provisioning. Host-config occupancy uses the directory entry itself, so a
   dangling symlink is a non-file path blocker rather than a missing destination.
+  A matching Simulator is reused only when it also has a non-empty string UDID.
   Incomplete live leases that omit snapshot-required fields, pins that omit
   project identity, live leases whose
   `ownerPid` is a numeric string or a JSON number outside the safe integer
@@ -56,7 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inventory calls before escalating to SIGKILL. Occupied non-file
   `registry.json` or JSON-named lease/pin entries, including dangling
   symlinks, block a confirmable fresh plan. A dangling `known-projects.json`
-  symlink is an invalid catalog rather than a missing file. Complete lease
+  symlink is an invalid catalog rather than a missing file, including on an
+  already configured host. Snapshot integers must be JSON numbers in the safe
+  integer range so the macOS dashboard can decode them as `Int`, and duplicate
+  snapshot `projectId` values are finishing work rather than `ready`.
+  Complete lease
   records that name an unknown alias, point at another alias's Simulator, or
   share an alias with another lease file stay blocked instead of `ready`.
   Complete pin records that name an unknown alias or share an alias with

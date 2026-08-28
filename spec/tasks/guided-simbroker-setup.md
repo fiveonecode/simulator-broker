@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.19`
+> **Version:** `1.0.20`
 > **Last Updated:** `2026-08-28`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -129,7 +129,9 @@ Without override, choose the numerically newest available iOS runtime that
 supports both iPhone and iPad starter types. `--ios-version 26` chooses newest
 compatible 26.x; `26.4` chooses exactly 26.4. Ignore unavailable and non-iOS
 runtimes, and ignore runtime records that omit a non-empty `version` string
-even when `--ios-version` is unset. An incomplete selected runtime is not a
+even when `--ios-version` is unset. Ignore runtime versions that are not
+`<major>` or `<major.minor>` so planning cannot select a value that
+`validateHostConfig` would reject after commit. An incomplete selected runtime is not a
 confirmable plan. Ignore device-type records that omit a non-empty `identifier`
 or `name` even when they still report a product family. An incomplete selected
 device type is not a confirmable plan. Sort numeric version, build version, then
@@ -155,8 +157,9 @@ produces a blocked preview with manual install guidance.
 Existing preferred-device-type rules are reused. When no preferred name
 matches, fallback candidates are sorted by identifier then name so equivalent
 inventory order cannot change the selected type or plan ID. A Simulator is
-`reuse` only when broker name, runtime identifier, and device type identifier
-all match. Same-named incompatible devices are never adopted.
+`reuse` only when broker name, runtime identifier, device type identifier, and
+a non-empty string UDID all match. Same-named incompatible devices, including
+name/runtime/type matches that omit `udid`, are never adopted.
 
 ### REQ-006 — Deterministic confirmation
 
@@ -247,7 +250,16 @@ Apply performs, in order:
   lease/pin directory entry of any type, or an existing known-projects catalog
   that cannot be loaded as a valid catalog. Occupancy of `registry.json` and
   `known-projects.json` uses the directory entry itself (`lstat`), so a
-  dangling symlink is occupied rather than treated as missing.
+  dangling symlink is occupied rather than treated as missing. That catalog
+  occupancy rule applies to a configured host as well as a missing host-config:
+  a dangling `known-projects.json` symlink is an invalid catalog, not an empty
+  catalog that finishing may replace. Dashboard snapshot integers such as
+  `overview.totalAliases` must be JSON numbers in the safe integer range
+  (`-9007199254740991` through `9007199254740991`) so the macOS app can decode
+  them as `Int`; a larger JSON number is finishing work rather than `ready`.
+  A snapshot `projects` array that repeats the same `projectId` is also
+  finishing work; setup must not collapse duplicate identities with a set
+  comparison and then report `ready`.
   Blocked-preview doctor, repair, and
   setup remediation commands include the selected `--host-config`,
   `--state-root`, and `--service-socket` paths.
@@ -489,6 +501,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.20 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on configured-host dangling known-projects catalogs, duplicate snapshot project IDs, reusable devices without a UDID, snapshot integers outside the safe integer range, and runtime versions outside the host `<major>` / `<major.minor>` schema |
 | 1.0.19 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on nested dashboard snapshot records that the macOS decoder cannot load, such as simulators missing `capabilities`, `deviceFamily`, `displayName`, `iosVersion`, or `powerState` |
 | 1.0.18 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on truncated dashboard snapshots, deletion of an empty known-projects catalog, and non-string runtime build versions during setup |
 | 1.0.17 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on unknown pin aliases and duplicate pin alias claims during setup instead of collapsing them into a `ready` snapshot |

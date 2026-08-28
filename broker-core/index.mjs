@@ -657,6 +657,10 @@ function compareVersions(left, right) {
   return compareVersionParts(parseVersionParts(left), parseVersionParts(right));
 }
 
+function isHostSchemaIosVersion(version) {
+  return /^\d+(\.\d+)?$/.test(String(version ?? ""));
+}
+
 function isMajorOnlyVersion(version) {
   return /^\d+$/.test(String(version ?? ""));
 }
@@ -752,7 +756,7 @@ function validateDeviceFamily(value, field) {
 
 function validateIosVersion(value, field) {
   const iosVersion = requireString(value, field);
-  if (/^\d+(\.\d+)?$/.test(iosVersion) === false) {
+  if (isHostSchemaIosVersion(iosVersion) === false) {
     throw new BrokerError(`${field} must match <major> or <major.minor>.`, {
       reasonCode: "invalid-config",
       field,
@@ -1066,6 +1070,9 @@ function isAvailableIosRuntime(runtime) {
 
 function runtimeMatchesRequestedVersion(runtime, requestedVersion) {
   if (typeof runtime?.version !== "string" || runtime.version.length === 0) {
+    return false;
+  }
+  if (!isHostSchemaIosVersion(runtime.version)) {
     return false;
   }
   if (!requestedVersion) {
@@ -1493,11 +1500,12 @@ function setupDevicePlan(inventory, hostId, runtime) {
   const devices = templates.map((template) => {
     const deviceType = deviceTypes[template.deviceFamily];
     const reusable = [...deviceIndex.values()]
-      .filter((device) => device.isAvailable
+      .filter((device) => typeof device.udid === "string" && device.udid.length > 0
+        && device.isAvailable
         && device.name === template.simulatorName
         && device.runtimeIdentifier === runtime.identifier
         && device.deviceTypeIdentifier === deviceType.identifier)
-      .sort((left, right) => String(left.udid).localeCompare(String(right.udid)))[0] ?? null;
+      .sort((left, right) => left.udid.localeCompare(right.udid))[0] ?? null;
     return {
       action: reusable ? "reuse" : "create",
       alias: template.alias,
@@ -1624,6 +1632,20 @@ function pathOccupied(candidate) {
   }
 }
 
+function readOccupiedKnownProjects(filePath) {
+  if (!pathOccupied(filePath)) {
+    return null;
+  }
+  const knownProjects = readJsonIfExists(filePath);
+  if (knownProjects === null) {
+    throw new BrokerError("The existing known-projects catalog could not be read as a regular file.", {
+      path: filePath,
+      reasonCode: "invalid-config",
+    });
+  }
+  return knownProjects;
+}
+
 function setupStateContainsLeaseOrPinRecords(paths) {
   try {
     return [paths.leasesDir, paths.pinsDir].some((directoryPath) =>
@@ -1727,7 +1749,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
     });
   }
   try {
-    normalizeKnownProjects(readJsonIfExists(paths.knownProjectsPath), nowIso(options.now));
+    normalizeKnownProjects(readOccupiedKnownProjects(paths.knownProjectsPath), nowIso(options.now));
   } catch (error) {
     issues.push({
       id: "known-projects",
@@ -1968,14 +1990,7 @@ function buildSetupPlan(paths, options = {}) {
   }
   if (pathOccupied(paths.knownProjectsPath)) {
     try {
-      const knownProjects = readJsonIfExists(paths.knownProjectsPath);
-      if (knownProjects === null) {
-        throw new BrokerError("The existing known-projects catalog could not be read as a regular file.", {
-          path: paths.knownProjectsPath,
-          reasonCode: "invalid-config",
-        });
-      }
-      normalizeKnownProjects(knownProjects, nowIso(options.now));
+      normalizeKnownProjects(readOccupiedKnownProjects(paths.knownProjectsPath), nowIso(options.now));
     } catch (error) {
       return blockedSetupInvalidKnownProjectsWithoutHost(paths, options, error);
     }

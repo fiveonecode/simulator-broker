@@ -964,6 +964,54 @@ test("setup omits a non-string runtime buildVersion from the confirmable preview
   assert.equal(preview.runtime.buildVersion, null);
 });
 
+test("setup ignores available iOS runtimes whose version is outside the host schema", () => {
+  const root = makeTempDir();
+  const supportedDeviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+  ];
+  const patchRuntime = {
+    buildversion: "22A123",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-18-0",
+    isAvailable: true,
+    supportedDeviceTypes,
+    version: "18.0.1",
+  };
+  const completeRuntime = {
+    buildversion: "23F76",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    isAvailable: true,
+    supportedDeviceTypes,
+    version: "26.5",
+  };
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  const patchOnly = createSimctlFixture(root, { runtimes: [patchRuntime] });
+  assert.throws(() => previewSetupBroker(resolvedPaths, {
+    simctlAdapter: patchOnly.adapter,
+  }), (error) => error instanceof BrokerError && error.payload.reasonCode === "runtime-not-found");
+
+  const mixed = createSimctlFixture(root, { runtimes: [patchRuntime, completeRuntime] });
+  const preview = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: mixed.adapter,
+  });
+  assert.equal(preview.status, "changes_required");
+  assert.equal(preview.runtime.version, "26.5");
+  assert.equal(preview.runtime.identifier, completeRuntime.identifier);
+  assert.ok(preview.devices.every((device) => device.runtimeVersion === "26.5"));
+});
+
 test("setup rejects an available iOS runtime that omits version before planning", () => {
   const root = makeTempDir();
   const supportedDeviceTypes = [
@@ -1219,6 +1267,33 @@ test("setup fallback device types stay stable when preferred names are absent", 
     reversed.devices.find((device) => device.deviceFamily === "iPad").deviceTypeIdentifier,
     "com.apple.CoreSimulator.SimDeviceType.iPad-Air",
   );
+});
+
+test("setup does not reuse a matching Simulator that omits UDID", () => {
+  const root = makeTempDir();
+  const matchingName = "Simulator Broker setup-udid ui-1";
+  const simctl = createSimctlFixture(root, {
+    devices: [
+      createDeviceRecord({
+        deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        name: matchingName,
+      }),
+    ],
+  });
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "setup-udid",
+    simctlAdapter: simctl.adapter,
+  });
+  const ui1 = preview.devices.find((device) => device.alias === "ui-1");
+  assert.equal(preview.status, "changes_required");
+  assert.equal(ui1.action, "create");
+  assert.equal(ui1.simulatorId, null);
+  assert.equal(preview.confirmation.createCount, 6);
+  assert.equal(preview.confirmation.reuseCount, 0);
 });
 
 test("setup preview is an exact stable six-device plan with strict reuse matching", () => {
@@ -2093,6 +2168,35 @@ test("setup blocks a missing host when the state root already has an invalid kno
   }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
   assert.equal(fs.lstatSync(resolvedPaths.knownProjectsPath).isSymbolicLink(), true);
   assert.equal(fs.existsSync(paths.hostConfigPath), false);
+});
+
+test("setup blocks a configured host whose known-projects catalog is a dangling symlink", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "configured-dangling-catalog",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "configured-dangling-catalog",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  fs.rmSync(resolvedPaths.knownProjectsPath);
+  fs.symlinkSync(path.join(paths.root, "missing-known-projects.json"), resolvedPaths.knownProjectsPath);
+
+  const blocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.confirmation.required, false);
+  assert.ok(blocked.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: blocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.knownProjectsPath).isSymbolicLink(), true);
 });
 
 test("setup blocks an existing host whose registry marks an alias for repair", () => {

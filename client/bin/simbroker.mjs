@@ -783,11 +783,22 @@ function setupDashboardOptionalString(value) {
 }
 
 function setupDashboardInteger(value) {
-  return Number.isInteger(value);
+  return Number.isSafeInteger(value);
 }
 
 function setupDashboardOptionalInteger(value) {
-  return value == null || Number.isInteger(value);
+  return value == null || Number.isSafeInteger(value);
+}
+
+function setupDashboardUniqueStringValues(values) {
+  const seen = new Set();
+  for (const value of values) {
+    if (typeof value !== "string" || seen.has(value)) {
+      return false;
+    }
+    seen.add(value);
+  }
+  return true;
 }
 
 function setupDashboardStringArray(value) {
@@ -980,6 +991,7 @@ function setupSnapshotMatchesDashboardContract(snapshot) {
     && setupDashboardRecordArray(snapshot.activeLeases, setupDashboardLeaseRecord)
     && setupDashboardRecordArray(snapshot.pins, setupDashboardPinRecord)
     && setupDashboardRecordArray(snapshot.projects, setupDashboardProjectRecord)
+    && setupDashboardUniqueStringValues(snapshot.projects.map((project) => project.projectId))
     && setupDashboardRecordArray(snapshot.recentEvents, setupDashboardEventRecord)
     && setupDashboardRecordArray(snapshot.simulators, setupDashboardSimulatorRecord);
 }
