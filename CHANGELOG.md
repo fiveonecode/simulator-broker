@@ -89,7 +89,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `chmod` targets the searchable parent that actually failed, not an
   unreachable destination. Occupied `events.ndjson` that is not a regular
   file blocks a confirmable fresh plan so apply cannot create Simulators and
-  then hang opening a FIFO audit log.
+  then hang opening a FIFO audit log. Occupied `brokerd.json` that is not a
+  regular file blocks setup before the service-status probe so preview cannot
+  hang on a FIFO metadata read. Occupied `app-snapshot.json` that is not a
+  regular file is finishing work rather than a blocking open. Occupied
+  `brokerd.log` that is not a regular file blocks setup before the
+  provisioning worker so apply cannot commit a host and then hang opening a
+  FIFO service log.
   Snapshot `overview.leaseSaturation` outside `0` through `1` is
   finishing work rather than `ready`. The non-TTY copyable apply command
   includes the resolved `--host-config`, `--state-root`, and

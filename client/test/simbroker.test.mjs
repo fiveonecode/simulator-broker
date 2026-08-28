@@ -34,6 +34,11 @@ function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-cli-test-"));
 }
 
+function makeFifo(filePath) {
+  const result = spawnSync("mkfifo", [filePath], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+}
+
 function writeJson(filePath, payload) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`);
@@ -714,6 +719,138 @@ test("setup blocks unconfigured hosts when the target socket already has a diffe
   assert.equal(preview.json.confirmation.required, false);
   assert.ok(preview.json.prerequisites.some((issue) => issue.id === "service-identity" && issue.status === "blocked"));
   assert.equal(fs.existsSync(freshFixture.hostConfigPath), false);
+});
+
+test("setup blocks when brokerd.json is occupied and not a regular file", { timeout: 5_000 }, () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  fs.mkdirSync(paths.stateRoot, { recursive: true });
+  makeFifo(paths.serviceMetadataPath);
+
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "metadata-fifo");
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.equal(preview.json.status, "blocked");
+  assert.equal(preview.json.confirmation.required, false);
+  const serviceMetadata = preview.json.prerequisites.find(({ id }) => id === "service-metadata");
+  assert.ok(serviceMetadata, JSON.stringify(preview.json, null, 2));
+  assert.equal(serviceMetadata.status, "blocked");
+  assert.deepEqual(serviceMetadata.remediationCommands, [
+    `simbroker doctor --host-config '${fixture.hostConfigPath}' --state-root '${fixture.stateRoot}' --service-socket '${paths.serviceSocketPath}'`,
+  ]);
+
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "metadata-fifo",
+    "--json",
+  );
+  assert.equal(applied.status, 3, applied.stderr);
+  assert.equal(applied.json.reasonCode, "setup-prerequisite-failed");
+  assert.equal(applied.json.failedStage, "preflight");
+  assert.equal(applied.json.blockerReasonCode, "service-metadata");
+  assert.equal(fs.existsSync(fixture.hostConfigPath), false);
+  assert.equal(fs.lstatSync(paths.serviceMetadataPath).isFIFO(), true);
+});
+
+test("setup treats an occupied app-snapshot.json FIFO as finishing work", (t) => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  t.after(() => {
+    runCli(fixture, "service", "stop");
+  });
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "snapshot-fifo");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "snapshot-fifo",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(applied.json.status, "ready");
+
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  fs.rmSync(paths.appSnapshotPath);
+  makeFifo(paths.appSnapshotPath);
+
+  const finishing = runCli(fixture, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required");
+  assert.equal(finishing.json.service.action, "keep");
+  assert.equal(finishing.json.confirmation.required, false);
+  assert.equal(fs.lstatSync(paths.appSnapshotPath).isFIFO(), true);
+
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
+test("setup blocks a brokerd.log FIFO before provisioning", { timeout: 5_000 }, () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "log-fifo");
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.equal(preview.json.status, "changes_required");
+  assert.equal(fs.existsSync(fixture.hostConfigPath), false);
+
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  fs.mkdirSync(paths.stateRoot, { recursive: true });
+  makeFifo(paths.serviceLogPath);
+
+  const blocked = runCli(fixture, "setup", "--json", "--host-id", "log-fifo");
+  assert.equal(blocked.status, 0, blocked.stderr);
+  assert.equal(blocked.json.status, "blocked");
+  assert.equal(blocked.json.confirmation.required, false);
+  const serviceLog = blocked.json.prerequisites.find(({ id }) => id === "service-log");
+  assert.ok(serviceLog, JSON.stringify(blocked.json, null, 2));
+  assert.equal(serviceLog.status, "blocked");
+  assert.deepEqual(serviceLog.remediationCommands, [
+    `simbroker doctor --host-config '${fixture.hostConfigPath}' --state-root '${fixture.stateRoot}' --service-socket '${paths.serviceSocketPath}'`,
+  ]);
+
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "log-fifo",
+    "--json",
+  );
+  assert.equal(applied.status, 3, applied.stderr);
+  assert.equal(applied.json.reasonCode, "setup-prerequisite-failed");
+  assert.equal(applied.json.failedStage, "preflight");
+  assert.equal(applied.json.blockerReasonCode, "service-log");
+  assert.equal(fs.existsSync(fixture.hostConfigPath), false);
+  assert.equal(fs.lstatSync(paths.serviceLogPath).isFIFO(), true);
 });
 
 test("concurrent confirmed setup allows one commit without duplicate devices", async () => {

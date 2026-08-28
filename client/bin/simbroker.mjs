@@ -74,7 +74,37 @@ function readJsonIfExists(filePath) {
   if (!fs.existsSync(filePath)) {
     return null;
   }
+  try {
+    if (fs.statSync(filePath).isFile() !== true) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function pathOccupied(candidate) {
+  try {
+    fs.lstatSync(candidate);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+      return false;
+    }
+    return true;
+  }
+}
+
+function setupOccupiedPathNotRegularFile(filePath) {
+  if (!pathOccupied(filePath)) {
+    return false;
+  }
+  try {
+    return fs.statSync(filePath).isFile() !== true;
+  } catch {
+    return true;
+  }
 }
 
 function removeIfExists(filePath) {
@@ -390,6 +420,12 @@ async function startService(paths, { signal } = {}) {
 
   ensurePrivateDir(paths.stateRoot);
   throwIfAborted(signal);
+  if (setupOccupiedPathNotRegularFile(paths.serviceLogPath)) {
+    throw new BrokerError("The existing service log is not a regular file.", {
+      logPath: paths.serviceLogPath,
+      reasonCode: "invalid-config",
+    });
+  }
   const logFd = fs.openSync(paths.serviceLogPath, "a", 0o600);
   ensurePrivateFile(paths.serviceLogPath);
   const child = spawn(process.execPath, [
@@ -752,20 +788,29 @@ async function buildSetupPreview(paths, options) {
 
   let running = false;
   if (corePreview.status !== "blocked") {
-    try {
-      running = (await serviceStatus(paths)).running;
-    } catch (error) {
+    const serviceArtifactBlockers = setupServiceArtifactBlockers(paths);
+    if (serviceArtifactBlockers.length > 0) {
       corePreview = {
         ...corePreview,
-        prerequisites: [...corePreview.prerequisites, {
-          details: error?.payload ?? { error: error?.message ?? String(error) },
-          id: "service-identity",
-          remediationCommands: serviceIdentityRecoveryCommands(error, paths, options),
-          status: "blocked",
-          summary: error?.message ?? "The running broker service uses different paths.",
-        }],
+        prerequisites: [...corePreview.prerequisites, ...serviceArtifactBlockers],
         status: "blocked",
       };
+    } else {
+      try {
+        running = (await serviceStatus(paths)).running;
+      } catch (error) {
+        corePreview = {
+          ...corePreview,
+          prerequisites: [...corePreview.prerequisites, {
+            details: error?.payload ?? { error: error?.message ?? String(error) },
+            id: "service-identity",
+            remediationCommands: serviceIdentityRecoveryCommands(error, paths, options),
+            status: "blocked",
+            summary: error?.message ?? "The running broker service uses different paths.",
+          }],
+          status: "blocked",
+        };
+      }
     }
   }
   return completeSetupPreview(corePreview, prerequisites, {
@@ -1000,10 +1045,13 @@ function setupSnapshotMatchesDashboardContract(snapshot) {
 }
 
 function setupSnapshotReady(paths, corePreview) {
-  if (!corePreview.host.configured || !fs.existsSync(paths.appSnapshotPath)) {
+  if (!corePreview.host.configured) {
     return false;
   }
   try {
+    if (fs.statSync(paths.appSnapshotPath).isFile() !== true) {
+      return false;
+    }
     const snapshot = JSON.parse(fs.readFileSync(paths.appSnapshotPath, "utf8"));
     if (!setupSnapshotMatchesDashboardContract(snapshot)) {
       return false;
@@ -1189,6 +1237,29 @@ function setupCliCommandWithSelectedPaths(command, paths) {
   ].join(" ");
 }
 
+function setupServiceArtifactBlockers(paths) {
+  const blockers = [];
+  if (setupOccupiedPathNotRegularFile(paths.serviceMetadataPath)) {
+    blockers.push({
+      details: { path: paths.serviceMetadataPath },
+      id: "service-metadata",
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+      status: "blocked",
+      summary: "The existing service metadata is not a regular file and setup will not probe it.",
+    });
+  }
+  if (setupOccupiedPathNotRegularFile(paths.serviceLogPath)) {
+    blockers.push({
+      details: { path: paths.serviceLogPath },
+      id: "service-log",
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+      status: "blocked",
+      summary: "The existing service log is not a regular file and setup will not start a service over it.",
+    });
+  }
+  return blockers;
+}
+
 function qualifySetupDoctorIssues(issues, paths) {
   return issues.map((issue) => {
     if (issue == null || typeof issue !== "object") {
@@ -1333,6 +1404,21 @@ async function applySetup(paths, options, cancellation) {
     }
   };
 
+  const serviceArtifactBlockers = setupServiceArtifactBlockers(paths);
+  if (serviceArtifactBlockers.length > 0) {
+    const blocker = serviceArtifactBlockers[0];
+    throw new BrokerError("Setup prerequisites are not ready.", {
+      blockerReasonCode: blocker.id,
+      command: "setup",
+      failedStage: "preflight",
+      hostCommitted,
+      prerequisites: serviceArtifactBlockers,
+      reasonCode: "setup-prerequisite-failed",
+      recoveryCommand,
+      serviceRunning,
+    });
+  }
+
   let coreResult;
   try {
     checkCancellation();
@@ -1403,6 +1489,12 @@ async function applySetup(paths, options, cancellation) {
       signal: cancellation.signal,
     });
     checkCancellation();
+    if (fs.statSync(paths.appSnapshotPath).isFile() !== true) {
+      throw new BrokerError("The post-doctor snapshot could not be read as a regular file.", {
+        path: paths.appSnapshotPath,
+        reasonCode: "invalid-config",
+      });
+    }
     const postDoctorSnapshot = JSON.parse(fs.readFileSync(paths.appSnapshotPath, "utf8"));
     if (path.resolve(postDoctorSnapshot.hostConfigPath) !== path.resolve(paths.hostConfigPath)
       || path.resolve(postDoctorSnapshot.stateRoot) !== path.resolve(paths.stateRoot)) {
