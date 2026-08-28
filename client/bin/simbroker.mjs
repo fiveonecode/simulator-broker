@@ -150,7 +150,7 @@ function setupOccupiedSocketUnusable(socketPath) {
         return true;
       }
     }
-    return false;
+    return true;
   } catch {
     return true;
   }
@@ -1110,6 +1110,7 @@ function setupSnapshotMatchesDashboardContract(snapshot) {
     && setupDashboardRecordArray(snapshot.projects, setupDashboardProjectRecord)
     && setupDashboardUniqueStringValues(snapshot.projects.map((project) => project.projectId))
     && setupDashboardRecordArray(snapshot.recentEvents, setupDashboardEventRecord)
+    && setupDashboardUniqueStringValues(snapshot.recentEvents.map((event) => event.eventId))
     && setupDashboardRecordArray(snapshot.simulators, setupDashboardSimulatorRecord)
     && setupDashboardUniqueStringValues(snapshot.simulators.map((simulator) => simulator.alias));
 }

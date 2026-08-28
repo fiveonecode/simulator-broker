@@ -95,10 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a regular file is finishing work rather than a blocking open. Occupied
   `brokerd.log` that is not a writable regular file blocks setup before the
   provisioning worker so apply cannot commit a host and then fail opening the
-  service log. A dangling service-socket symlink or an unwritable socket
-  ancestor is a `service-socket` blocker before the status probe, so apply
-  cannot create devices and then fail at `server.listen`. Duplicate snapshot
-  `leaseId` values are finishing work rather than `ready`.
+  service log. A leftover regular file, FIFO, directory, dangling symlink, or
+  other non-socket at the selected service socket, or an unwritable socket
+  ancestor, is a `service-socket` blocker before the status probe, so apply
+  cannot provision a host and then silently delete a non-socket entry or fail
+  after commit. Duplicate snapshot `leaseId` or `eventId` values are finishing
+  work rather than `ready`.
   Snapshot `overview.leaseSaturation` outside `0` through `1` is
   finishing work rather than `ready`. The non-TTY copyable apply command
   includes the resolved `--host-config`, `--state-root`, and

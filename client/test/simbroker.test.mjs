@@ -939,6 +939,48 @@ test("setup blocks a dangling service socket before provisioning", { timeout: 5_
   assert.equal(fs.lstatSync(paths.serviceSocketPath).isSymbolicLink(), true);
 });
 
+test("setup blocks a regular file at the service socket path before provisioning", { timeout: 5_000 }, () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  fs.writeFileSync(paths.serviceSocketPath, "not-a-socket");
+
+  const blocked = runCli(fixture, "setup", "--json", "--host-id", "socket-file");
+  assert.equal(blocked.status, 0, blocked.stderr);
+  assert.equal(blocked.json.status, "blocked");
+  assert.equal(blocked.json.confirmation.required, false);
+  const serviceSocket = blocked.json.prerequisites.find(({ id }) => id === "service-socket");
+  assert.ok(serviceSocket, JSON.stringify(blocked.json, null, 2));
+  assert.equal(serviceSocket.status, "blocked");
+  assert.deepEqual(serviceSocket.remediationCommands, [
+    `simbroker doctor --host-config '${fixture.hostConfigPath}' --state-root '${fixture.stateRoot}' --service-socket '${paths.serviceSocketPath}'`,
+  ]);
+
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    blocked.json.planId,
+    "--host-id",
+    "socket-file",
+    "--json",
+  );
+  assert.equal(applied.status, 3, applied.stderr);
+  assert.equal(applied.json.reasonCode, "setup-prerequisite-failed");
+  assert.equal(applied.json.failedStage, "preflight");
+  assert.equal(applied.json.blockerReasonCode, "service-socket");
+  assert.equal(fs.existsSync(fixture.hostConfigPath), false);
+  assert.equal(fs.statSync(paths.serviceSocketPath).isFile(), true);
+});
+
 test("setup blocks an unwritable service socket parent before provisioning", { timeout: 5_000 }, (t) => {
   const root = makeTempDir();
   const socketDir = path.join(root, "sockets");
@@ -1448,6 +1490,46 @@ test("setup treats out-of-range snapshot leaseSaturation as finishing work", () 
   const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
   const snapshot = readJson(snapshotPath);
   snapshot.overview.leaseSaturation = 1e308;
+  writeJson(snapshotPath, snapshot);
+
+  const finishing = runCli(fixture, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required");
+  assert.equal(finishing.json.service.action, "keep");
+  assert.equal(finishing.json.confirmation.required, false);
+
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
+test("setup treats duplicate snapshot event identities as finishing work", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "duplicate-snapshot-events");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "duplicate-snapshot-events",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(applied.json.status, "ready");
+
+  const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
+  const snapshot = readJson(snapshotPath);
+  const duplicateEvent = {
+    eventId: "event-1",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "lease.acquired",
+  };
+  snapshot.recentEvents = [duplicateEvent, { ...duplicateEvent }];
   writeJson(snapshotPath, snapshot);
 
   const finishing = runCli(fixture, "setup", "--json");

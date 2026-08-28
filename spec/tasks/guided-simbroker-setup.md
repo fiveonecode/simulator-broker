@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.28`
+> **Version:** `1.0.29`
 > **Last Updated:** `2026-08-29`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -344,7 +344,11 @@ Apply performs, in order:
   must not collapse duplicate simulator rows with an alias `Map` and then
   report `ready`. A snapshot `activeLeases` array that repeats the same
   `leaseId` is finishing work; setup must not collapse duplicate lease
-  identities with a lease-ID set comparison and then report `ready`.
+  identities with a lease-ID set comparison and then report `ready`. A
+  snapshot `recentEvents` array that repeats the same `eventId` is finishing
+  work; setup must not accept duplicate event identities and then report
+  `ready`. Duplicate event IDs share one SwiftUI identity in `EventsScreen`,
+  so the dashboard cannot uniquely select those rows.
   Blocked-preview doctor, repair, and
   setup remediation commands include the selected `--host-config`,
   `--state-root`, and `--service-socket` paths. The non-TTY copyable apply
@@ -354,8 +358,13 @@ Apply performs, in order:
 - Preview probes the requested service socket even when no host is configured
   yet. Occupied non-file `brokerd.json` is a `service-metadata` blocker before
   that probe, occupied non-writable `brokerd.log` is a `service-log` blocker
-  before the provisioning worker, and a dangling symlink at the selected
-  service socket is a `service-socket` blocker before that probe. The nearest
+  before the provisioning worker, and an occupied service-socket path that is
+  not a live or stale Unix socket (a regular file, FIFO, directory, dangling
+  symlink, or other non-socket) is a `service-socket` blocker before that
+  probe. `brokerd` removes a leftover socket before `listen`; a leftover
+  regular file would be deleted silently, and other non-socket types can fail
+  after host commit. A live or stale socket remains probeable rather than a
+  pre-provisioning occupancy blocker. The nearest
   existing ancestor of the socket destination must be a searchable writable
   directory so confirmed apply cannot create devices and then fail at
   `server.listen`. Confirmed apply revalidates that same socket identity before
@@ -595,6 +604,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.29 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-socket service-socket paths before provisioning, and duplicate snapshot event IDs |
 | 1.0.28 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied unwritable `events.ndjson` and `brokerd.log`, dangling or unwritable service-socket destinations before provisioning, and duplicate snapshot active-lease IDs |
 | 1.0.27 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-file `brokerd.json` before the service-status probe and occupied non-file `brokerd.log` before provisioning, and treat occupied non-file `app-snapshot.json` as finishing work rather than a blocking open |
 | 1.0.26 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-file `events.ndjson` and dangling host-config occupancy during under-lock plan recomputation, and walk past `EACCES` ancestors when advertising path chmod remediations |
