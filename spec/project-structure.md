@@ -1,5 +1,5 @@
 # Project Structure
-Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README.md`
+Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README.md`, `autopilot.yml`
 
 ## Top-level layout
 
@@ -8,6 +8,8 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
 - `.codex/environments/` — Codex environment bootstrap and Run actions
 - `WORKFLOW.md` — public-safe repo-owned Symphony execution, validation,
   protected-path, and handoff contract
+- `autopilot.yml` — Codex Autopilot origin verification contract; Autopilot
+  does not read `.agents` or `WORKFLOW.md` as that gate
 - `CHANGELOG.md` — published version history for tagged releases
 - `.github/workflows/` — public Node test CI and tag-driven CLI release
 - `Formula/` — Homebrew CLI formula for the tagged Alpha tarball. Source of
