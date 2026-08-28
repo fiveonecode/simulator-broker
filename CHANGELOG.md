@@ -96,11 +96,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `brokerd.log` that is not a writable regular file blocks setup before the
   provisioning worker so apply cannot commit a host and then fail opening the
   service log. A leftover regular file, FIFO, directory, dangling symlink, or
-  other non-socket at the selected service socket, or an unwritable socket
-  ancestor, is a `service-socket` blocker before the status probe, so apply
-  cannot provision a host and then silently delete a non-socket entry or fail
-  after commit. Duplicate snapshot `leaseId` or `eventId` values are finishing
-  work rather than `ready`.
+  other non-socket at the selected service socket is a `service-socket`
+  blocker before the status probe, and an unwritable socket ancestor is a
+  distinct `service-socket-parent` blocker, so apply cannot provision a host
+  and then silently delete a non-socket entry or fail after commit, and the
+  setup sheet can show both remediations. Duplicate snapshot `leaseId`,
+  `eventId`, or per-project `purposeId` values are finishing work rather than
+  `ready`. Confirmed apply creates only the lock path before revalidation and
+  defers `evidence/`, `capacity-transactions/`, `leases/`, and `pins/` until
+  the current plan ID matches.
   Snapshot `overview.leaseSaturation` outside `0` through `1` is
   finishing work rather than `ready`. The non-TTY copyable apply command
   includes the resolved `--host-config`, `--state-root`, and

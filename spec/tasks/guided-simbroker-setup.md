@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.29`
+> **Version:** `1.0.30`
 > **Last Updated:** `2026-08-29`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -191,7 +191,10 @@ records cannot change the ID.
 
 Apply acquires the capacity lock, then lease-mutation lock, rereads relevant
 state, recomputes, rejects stale confirmation before mutation, and applies only
-that plan. Registry writes and `host.initialized` timestamps are sampled after
+that plan. Lock acquisition for confirmed apply creates only `stateRoot` and
+`locks/` plus the two lock directories; it must not create or chmod
+`evidence/`, `capacity-transactions/`, `leases/`, or `pins/` until the current
+plan ID matches. Registry writes and `host.initialized` timestamps are sampled after
 both locks are held, not before waiting for them. The setup-specific capacity-lock wait covers the bounded provisioning
 budget so a concurrent loser reaches revalidation and returns `setup-plan-stale`
 after the winner commits. Host-init and setup provisioning share rollback
@@ -348,7 +351,11 @@ Apply performs, in order:
   snapshot `recentEvents` array that repeats the same `eventId` is finishing
   work; setup must not accept duplicate event identities and then report
   `ready`. Duplicate event IDs share one SwiftUI identity in `EventsScreen`,
-  so the dashboard cannot uniquely select those rows.
+  so the dashboard cannot uniquely select those rows. A snapshot project whose
+  `purposes` array repeats the same `purposeId` is finishing work; setup must
+  not accept duplicate purpose identities and then report `ready`. Duplicate
+  purpose IDs share one SwiftUI identity in `ProjectsScreen`, so the dashboard
+  cannot uniquely render or select those rows.
   Blocked-preview doctor, repair, and
   setup remediation commands include the selected `--host-config`,
   `--state-root`, and `--service-socket` paths. The non-TTY copyable apply
@@ -367,7 +374,9 @@ Apply performs, in order:
   pre-provisioning occupancy blocker. The nearest
   existing ancestor of the socket destination must be a searchable writable
   directory so confirmed apply cannot create devices and then fail at
-  `server.listen`. Confirmed apply revalidates that same socket identity before
+  `server.listen`. That parent-access failure is a distinct
+  `service-socket-parent` prerequisite so occupancy and parent remediations
+  keep independent identities when both apply. Confirmed apply revalidates that same socket identity before
   the provisioning worker mutates host or devices. A running
   broker with a different host-config, state-root, or socket identity is a
   `service-identity` blocker and is not confirmable, so apply cannot create
@@ -604,6 +613,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.30 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on duplicate snapshot purpose IDs, give socket occupancy and parent-access blockers distinct IDs, and defer persistent state-directory creation until confirmation matches |
 | 1.0.29 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-socket service-socket paths before provisioning, and duplicate snapshot event IDs |
 | 1.0.28 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied unwritable `events.ndjson` and `brokerd.log`, dangling or unwritable service-socket destinations before provisioning, and duplicate snapshot active-lease IDs |
 | 1.0.27 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-file `brokerd.json` before the service-status probe and occupied non-file `brokerd.log` before provisioning, and treat occupied non-file `app-snapshot.json` as finishing work rather than a blocking open |

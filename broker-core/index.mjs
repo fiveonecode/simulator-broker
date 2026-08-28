@@ -2282,6 +2282,8 @@ export function applySetupBroker(paths, options = {}) {
       });
     }
 
+    ensureStatePaths(paths);
+
     if (preview.host.configured) {
       const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
       return {
@@ -2403,6 +2405,7 @@ export function applySetupBroker(paths, options = {}) {
       failedStage: "confirmation",
       hostCommitted: false,
     }),
+    initializePersistentState: false,
     now: lockTimestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
@@ -2413,6 +2416,7 @@ export function applySetupBroker(paths, options = {}) {
       failedStage: "confirmation",
       hostCommitted: false,
     }),
+    initializePersistentState: false,
     now: lockTimestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
@@ -3594,8 +3598,13 @@ function invokeLifecycleAdapter(action, adapter, context) {
   }
 }
 
-function ensureStatePaths(paths) {
+function ensureLockPaths(paths) {
   ensureRestrictedDir(paths.stateRoot);
+  ensureRestrictedDir(paths.locksDir);
+}
+
+function ensureStatePaths(paths) {
+  ensureLockPaths(paths);
   if (paths.evidenceDir) {
     ensureRestrictedDir(paths.evidenceDir);
   }
@@ -3603,8 +3612,15 @@ function ensureStatePaths(paths) {
     ensureRestrictedDir(paths.capacityTransactionsDir);
   }
   ensureRestrictedDir(paths.leasesDir);
-  ensureRestrictedDir(paths.locksDir);
   ensureRestrictedDir(paths.pinsDir);
+}
+
+function initializeLockScope(paths, initializePersistentState) {
+  if (initializePersistentState) {
+    ensureStatePaths(paths);
+  } else {
+    ensureLockPaths(paths);
+  }
 }
 
 function withResetLock(paths, work, {
@@ -3881,6 +3897,7 @@ function lockOwnerProcessIsLive(owner, { observedAt, processExists, processSampl
 
 function withCapacityLock(paths, work, {
   checkCancellation = null,
+  initializePersistentState = true,
   now = nowIso(),
   processExists = defaultProcessExists,
   processSampler = processExists === defaultProcessExists ? defaultProcessSampler : null,
@@ -3889,7 +3906,7 @@ function withCapacityLock(paths, work, {
   reclaimTimeoutMs = timeoutMs,
   wait = true,
 } = {}) {
-  ensureStatePaths(paths);
+  initializeLockScope(paths, initializePersistentState);
   const startedAt = Date.now();
 
   while (true) {
@@ -3948,6 +3965,7 @@ function withCapacityLock(paths, work, {
 
 function withLeaseMutationLock(paths, work, {
   checkCancellation = null,
+  initializePersistentState = true,
   now = nowIso(),
   processExists = defaultProcessExists,
   processSampler = processExists === defaultProcessExists ? defaultProcessSampler : null,
@@ -3955,7 +3973,7 @@ function withLeaseMutationLock(paths, work, {
   timeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
   wait = true,
 } = {}) {
-  ensureStatePaths(paths);
+  initializeLockScope(paths, initializePersistentState);
   const startedAt = Date.now();
 
   while (true) {

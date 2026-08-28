@@ -1012,7 +1012,7 @@ test("setup blocks an unwritable service socket parent before provisioning", { t
   assert.equal(blocked.status, 0, blocked.stderr);
   assert.equal(blocked.json.status, "blocked");
   assert.equal(blocked.json.confirmation.required, false);
-  const serviceSocket = blocked.json.prerequisites.find(({ id }) => id === "service-socket");
+  const serviceSocket = blocked.json.prerequisites.find(({ id }) => id === "service-socket-parent");
   assert.ok(serviceSocket, JSON.stringify(blocked.json, null, 2));
   assert.equal(serviceSocket.status, "blocked");
   assert.equal(serviceSocket.details.checkedPath, socketDir);
@@ -1035,8 +1035,51 @@ test("setup blocks an unwritable service socket parent before provisioning", { t
   assert.equal(applied.status, 3, applied.stderr);
   assert.equal(applied.json.reasonCode, "setup-prerequisite-failed");
   assert.equal(applied.json.failedStage, "preflight");
-  assert.equal(applied.json.blockerReasonCode, "service-socket");
+  assert.equal(applied.json.blockerReasonCode, "service-socket-parent");
   assert.equal(fs.existsSync(fixture.hostConfigPath), false);
+});
+
+test("setup reports distinct occupancy and parent-access socket blockers", { timeout: 5_000 }, (t) => {
+  const root = makeTempDir();
+  const socketDir = path.join(root, "sockets");
+  fs.mkdirSync(socketDir, { recursive: true });
+  const serviceSocketPath = path.join(socketDir, "broker.sock");
+  fs.writeFileSync(serviceSocketPath, "not-a-socket");
+  fs.chmodSync(socketDir, 0o500);
+  t.after(() => {
+    try {
+      fs.chmodSync(socketDir, 0o755);
+    } catch {
+      // Restore enough access for temp cleanup.
+    }
+  });
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+
+  const blocked = runCli(
+    fixture,
+    "--service-socket",
+    serviceSocketPath,
+    "setup",
+    "--json",
+    "--host-id",
+    "socket-file-and-parent",
+  );
+  assert.equal(blocked.status, 0, blocked.stderr);
+  assert.equal(blocked.json.status, "blocked");
+  const occupancy = blocked.json.prerequisites.find(({ id }) => id === "service-socket");
+  const parentAccess = blocked.json.prerequisites.find(({ id }) => id === "service-socket-parent");
+  assert.ok(occupancy, JSON.stringify(blocked.json, null, 2));
+  assert.ok(parentAccess, JSON.stringify(blocked.json, null, 2));
+  assert.equal(occupancy.status, "blocked");
+  assert.equal(parentAccess.status, "blocked");
+  assert.notEqual(occupancy.id, parentAccess.id);
+  assert.deepEqual(parentAccess.remediationCommands, [
+    `chmod u+wx '${socketDir}'`,
+  ]);
 });
 
 test("concurrent confirmed setup allows one commit without duplicate devices", async () => {
@@ -1490,6 +1533,60 @@ test("setup treats out-of-range snapshot leaseSaturation as finishing work", () 
   const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
   const snapshot = readJson(snapshotPath);
   snapshot.overview.leaseSaturation = 1e308;
+  writeJson(snapshotPath, snapshot);
+
+  const finishing = runCli(fixture, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required");
+  assert.equal(finishing.json.service.action, "keep");
+  assert.equal(finishing.json.confirmation.required, false);
+
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
+test("setup treats duplicate snapshot purpose identities as finishing work", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "duplicate-snapshot-purposes");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "duplicate-snapshot-purposes",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(applied.json.status, "ready");
+
+  const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
+  const snapshot = readJson(snapshotPath);
+  const duplicatePurpose = {
+    activeLeaseCount: 0,
+    displayName: "Agent UI Session",
+    pinnedAliasCount: 0,
+    purposeId: "agent-ui-session",
+  };
+  snapshot.projects = [{
+    activeAliases: [],
+    activeLeaseCount: 0,
+    pinnedAliasCount: 0,
+    projectId: "demo-app",
+    projectName: "Demo App",
+    purposes: [
+      duplicatePurpose,
+      {
+        ...duplicatePurpose,
+        displayName: "Agent UI Session Duplicate",
+      },
+    ],
+  }];
   writeJson(snapshotPath, snapshot);
 
   const finishing = runCli(fixture, "setup", "--json");

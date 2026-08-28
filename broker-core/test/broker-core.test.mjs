@@ -1576,6 +1576,10 @@ test("setup rejects missing and stale confirmation before mutation and is idempo
     simctlAdapter: paths.simctl.adapter,
   }), (error) => error.payload?.reasonCode === "setup-plan-stale" && error.exitCode === 5);
   assert.equal(readJson(paths.simctl.statePath).devices.length, baselineCount);
+  assert.equal(fs.existsSync(resolvedPaths.leasesDir), false);
+  assert.equal(fs.existsSync(resolvedPaths.pinsDir), false);
+  assert.equal(fs.existsSync(resolvedPaths.capacityTransactionsDir), false);
+  assert.equal(fs.existsSync(resolvedPaths.evidenceDir), false);
 
   const applied = applySetupBroker(resolvedPaths, {
     confirmPlanId: preview.planId,
@@ -1623,6 +1627,25 @@ test("setup rejects missing and stale confirmation before mutation and is idempo
     hostId: "different",
     simctlAdapter: paths.simctl.adapter,
   }), (error) => error.payload?.reasonCode === "setup-plan-stale");
+});
+
+test("setup rejects stale confirmation before creating or tightening persistent state directories", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  fs.mkdirSync(resolvedPaths.evidenceDir, { recursive: true, mode: 0o755 });
+  fs.chmodSync(resolvedPaths.evidenceDir, 0o755);
+
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: "sha256:stale",
+    hostId: "stale-state-dirs",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-plan-stale" && error.exitCode === 5);
+
+  assert.equal(fs.existsSync(resolvedPaths.hostConfigPath), false);
+  assert.equal(fs.existsSync(resolvedPaths.leasesDir), false);
+  assert.equal(fs.existsSync(resolvedPaths.pinsDir), false);
+  assert.equal(fs.existsSync(resolvedPaths.capacityTransactionsDir), false);
+  assert.equal(fs.statSync(resolvedPaths.evidenceDir).mode & 0o777, 0o755);
 });
 
 test("setup uses the default host-id fallback for empty-slug requested IDs on rerun", () => {

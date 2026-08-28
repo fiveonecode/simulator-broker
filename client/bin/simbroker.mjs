@@ -1032,6 +1032,7 @@ function setupDashboardProjectRecord(record) {
     && typeof record.projectId === "string"
     && typeof record.projectName === "string"
     && setupDashboardRecordArray(record.purposes, setupDashboardProjectPurposeRecord)
+    && setupDashboardUniqueStringValues(record.purposes.map((purpose) => purpose.purposeId))
     && setupDashboardOptionalString(record.repoRoot);
 }
 
@@ -1344,7 +1345,7 @@ function setupServiceArtifactBlockers(paths) {
         checkedPath: socketParent.checkedPath,
         destination: paths.serviceSocketPath,
       },
-      id: "service-socket",
+      id: "service-socket-parent",
       remediationCommands: socketParent.checkedPath
         ? [`chmod u+wx ${shellQuoteArgument(socketParent.checkedPath)}`]
         : [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
