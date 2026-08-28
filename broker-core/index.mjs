@@ -1611,6 +1611,18 @@ function setupHostMatchesCommittedStarterPlan(hostConfig, devices, inventory) {
   });
 }
 
+function pathOccupied(candidate) {
+  try {
+    fs.lstatSync(candidate);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+      return false;
+    }
+    return true;
+  }
+}
+
 function setupStateContainsLeaseOrPinRecords(paths) {
   try {
     return [paths.leasesDir, paths.pinsDir].some((directoryPath) =>
@@ -1625,7 +1637,7 @@ function setupStateContainsLeaseOrPinRecords(paths) {
 
 function setupStateContainsExistingBrokerArtifacts(paths) {
   try {
-    if (fs.existsSync(paths.registryPath)) {
+    if (pathOccupied(paths.registryPath)) {
       return true;
     }
     return setupStateContainsLeaseOrPinRecords(paths);
@@ -1725,9 +1737,38 @@ function setupExistingHostState(paths, inventory, options = {}) {
     });
   }
   try {
+    const hostAliasesById = new Map(hostConfig.aliases.map((alias) => [alias.alias, alias]));
+    const seenLeaseAliases = new Set();
     for (const { name, record } of listJsonFileEntries(paths.leasesDir)) {
       assertValidLeaseRecord(record);
       assertStoredRecordFileName(name, record.leaseId, "lease");
+      const hostAlias = hostAliasesById.get(record.alias);
+      if (!hostAlias) {
+        throw new BrokerError(`Lease ${record.leaseId} names unknown alias ${record.alias}.`, {
+          alias: record.alias,
+          leaseId: record.leaseId,
+          reasonCode: "invalid-config",
+        });
+      }
+      if (record.simulatorId !== hostAlias.simulatorId) {
+        throw new BrokerError(
+          `Lease ${record.leaseId} simulator ${record.simulatorId} does not match alias ${record.alias}.`,
+          {
+            alias: record.alias,
+            expectedSimulatorId: hostAlias.simulatorId,
+            leaseId: record.leaseId,
+            reasonCode: "invalid-config",
+            simulatorId: record.simulatorId,
+          },
+        );
+      }
+      if (seenLeaseAliases.has(record.alias)) {
+        throw new BrokerError(`Multiple lease records claim alias ${record.alias}.`, {
+          alias: record.alias,
+          reasonCode: "invalid-config",
+        });
+      }
+      seenLeaseAliases.add(record.alias);
     }
     for (const { name, record } of listJsonFileEntries(paths.pinsDir)) {
       assertValidPinRecord(record);
@@ -1909,9 +1950,16 @@ function buildSetupPlan(paths, options = {}) {
   if (setupStateContainsExistingBrokerArtifacts(paths)) {
     return blockedSetupExistingStateWithoutHost(paths, options);
   }
-  if (fs.existsSync(paths.knownProjectsPath)) {
+  if (pathOccupied(paths.knownProjectsPath)) {
     try {
-      normalizeKnownProjects(readJsonIfExists(paths.knownProjectsPath), nowIso(options.now));
+      const knownProjects = readJsonIfExists(paths.knownProjectsPath);
+      if (knownProjects === null) {
+        throw new BrokerError("The existing known-projects catalog could not be read as a regular file.", {
+          path: paths.knownProjectsPath,
+          reasonCode: "invalid-config",
+        });
+      }
+      normalizeKnownProjects(knownProjects, nowIso(options.now));
     } catch (error) {
       return blockedSetupInvalidKnownProjectsWithoutHost(paths, options, error);
     }

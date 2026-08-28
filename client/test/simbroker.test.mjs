@@ -822,6 +822,45 @@ test("setup rejects missing or stale confirmation and irrelevant flags before mu
   }
 });
 
+test("setup treats extra snapshot simulator rows as finishing work", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "stale-snapshot-alias");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "stale-snapshot-alias",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
+  const snapshot = readJson(snapshotPath);
+  snapshot.simulators = [
+    ...snapshot.simulators,
+    {
+      alias: "retired-1",
+      health: "healthy",
+      simulatorId: "SIM-RETIRED-1",
+    },
+  ];
+  writeJson(snapshotPath, snapshot);
+
+  const finishing = runCli(fixture, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required");
+  assert.equal(finishing.json.service.action, "keep");
+
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
 test("setup treats a path-mismatched snapshot as finishing work", () => {
   const root = makeTempDir();
   const fixture = {

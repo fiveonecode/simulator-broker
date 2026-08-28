@@ -228,6 +228,10 @@ function brokerPaths(paths) {
   });
 }
 
+function committedAliasSimulatorId(resolvedPaths, alias) {
+  return readJson(resolvedPaths.hostConfigPath).aliases.find((entry) => entry.alias === alias).simulatorId;
+}
+
 function quotedSetupPath(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
@@ -1653,7 +1657,7 @@ test("setup blocks leases and pins with mistyped optional snapshot fields", () =
     projectName: "Demo App",
     purposeId: "agent-ui-session",
     repoRoot: path.join(paths.root, "repo"),
-    simulatorId: "SIM-UI-1",
+    simulatorId: committedAliasSimulatorId(resolvedPaths, "ui-1"),
     startedAt: "2026-01-01T00:00:00.000Z",
   };
   const completeLeasePath = path.join(resolvedPaths.leasesDir, "optional-snapshot-lease.json");
@@ -1746,6 +1750,91 @@ test("setup blocks leases and pins with mistyped optional snapshot fields", () =
   });
 });
 
+test("setup blocks leases that disagree with their host alias or share an alias", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "lease-host-agreement",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "lease-host-agreement",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const uiOneSimulatorId = committedAliasSimulatorId(resolvedPaths, "ui-1");
+  const uiTwoSimulatorId = committedAliasSimulatorId(resolvedPaths, "ui-2");
+  const completeLease = {
+    actorId: "agent:1",
+    actorType: "agent",
+    alias: "ui-1",
+    displayName: "UI One",
+    leaseId: "cross-alias-lease",
+    leaseKind: "ephemeral",
+    ownerPid: process.pid,
+    projectId: "demo-app",
+    projectName: "Demo App",
+    purposeId: "agent-ui-session",
+    repoRoot: path.join(paths.root, "repo"),
+    simulatorId: uiTwoSimulatorId,
+    startedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const crossAliasPath = path.join(resolvedPaths.leasesDir, "cross-alias-lease.json");
+  writeJson(crossAliasPath, completeLease);
+  const crossAliasBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(crossAliasBlocked.status, "blocked");
+  assert.ok(crossAliasBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: crossAliasBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(crossAliasPath).simulatorId, uiTwoSimulatorId);
+  fs.rmSync(crossAliasPath);
+
+  const unknownAliasPath = path.join(resolvedPaths.leasesDir, "unknown-alias-lease.json");
+  writeJson(unknownAliasPath, {
+    ...completeLease,
+    alias: "retired-1",
+    leaseId: "unknown-alias-lease",
+    simulatorId: uiOneSimulatorId,
+  });
+  const unknownAliasBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(unknownAliasBlocked.status, "blocked");
+  assert.ok(unknownAliasBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  fs.rmSync(unknownAliasPath);
+
+  const firstLeasePath = path.join(resolvedPaths.leasesDir, "first-alias-lease.json");
+  const secondLeasePath = path.join(resolvedPaths.leasesDir, "second-alias-lease.json");
+  writeJson(firstLeasePath, {
+    ...completeLease,
+    leaseId: "first-alias-lease",
+    simulatorId: uiOneSimulatorId,
+  });
+  writeJson(secondLeasePath, {
+    ...completeLease,
+    leaseId: "second-alias-lease",
+    simulatorId: uiOneSimulatorId,
+  });
+  const duplicateAliasBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(duplicateAliasBlocked.status, "blocked");
+  assert.ok(duplicateAliasBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: duplicateAliasBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(firstLeasePath), true);
+  assert.equal(fs.existsSync(secondLeasePath), true);
+});
+
 test("setup blocks an existing host-config that is not a regular file", () => {
   const paths = makePaths();
   const resolvedPaths = brokerPaths(paths);
@@ -1821,6 +1910,22 @@ test("setup blocks a missing host config when the state root already has broker 
     issue.id === "state-root" && issue.status === "blocked"));
   fs.rmSync(resolvedPaths.registryPath, { recursive: true });
 
+  fs.symlinkSync(path.join(paths.root, "missing-registry.json"), resolvedPaths.registryPath);
+  const danglingRegistryBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-registry",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(danglingRegistryBlocked.status, "blocked");
+  assert.ok(danglingRegistryBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: danglingRegistryBlocked.planId,
+    hostId: "fresh-over-dangling-registry",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.registryPath).isSymbolicLink(), true);
+  fs.rmSync(resolvedPaths.registryPath);
+
   const emptyLeaseDir = previewSetupBroker(resolvedPaths, {
     hostId: "fresh-empty-state",
     simctlAdapter: paths.simctl.adapter,
@@ -1867,6 +1972,24 @@ test("setup blocks a missing host when the state root already has an invalid kno
   assert.equal(validCatalog.status, "changes_required");
   assert.equal(validCatalog.confirmation.required, true);
   assert.equal(validCatalog.host.configured, false);
+
+  fs.rmSync(resolvedPaths.knownProjectsPath);
+  fs.symlinkSync(path.join(paths.root, "missing-known-projects.json"), resolvedPaths.knownProjectsPath);
+  const danglingCatalog = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-catalog",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(danglingCatalog.status, "blocked");
+  assert.equal(danglingCatalog.confirmation.required, false);
+  assert.ok(danglingCatalog.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: danglingCatalog.planId,
+    hostId: "fresh-over-dangling-catalog",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.knownProjectsPath).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
 });
 
 test("setup blocks an existing host whose registry marks an alias for repair", () => {

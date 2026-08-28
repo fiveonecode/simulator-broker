@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.15`
+> **Version:** `1.0.16`
 > **Last Updated:** `2026-08-28`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -73,7 +73,8 @@ host init is unchanged and documented only as advanced/troubleshooting.
   Newer valid records and deletions of known-projects, lease, or pin records
   are finishing work, not `ready`. The snapshot is not fresh if its recorded
   lease, pin, or catalog-backed project identities are not the same set as the
-  current files.
+  current files, or if the snapshot simulator alias set is not exactly the
+  current host alias set with matching Simulator IDs.
 - Non-TTY preview never prompts or mutates and prints a copyable apply command.
 - `--json` preview never prompts or mutates and emits exactly one JSON document.
 - Confirmed apply never prompts, recomputes under locks, and emits one human
@@ -218,6 +219,9 @@ Apply performs, in order:
   decode it as `Int`; a numeric string such as `"123"` or a larger JSON number
   that would round or fail Swift `Int` decoding is the same class of invalid
   existing-host state and must not be coerced into a ready snapshot.
+  A complete lease whose `alias` is missing from the host, whose `simulatorId`
+  does not match that host alias, or that shares an alias with another lease
+  file is the same class of invalid existing-host state.
   Persisted registry alias data that is schema-invalid, such as an
   unrecognized `health` or `powerState` value or an alias map that contains none of the
   configured host aliases, is also invalid; setup must not normalize it into a
@@ -226,7 +230,10 @@ Apply performs, in order:
   treat a missing host-config as a confirmable fresh plan when the selected
   state root already contains a registry path of any type, a JSON-named
   lease/pin directory entry of any type, or an existing known-projects catalog
-  that cannot be loaded as a valid catalog. Blocked-preview doctor, repair, and
+  that cannot be loaded as a valid catalog. Occupancy of `registry.json` and
+  `known-projects.json` uses the directory entry itself (`lstat`), so a
+  dangling symlink is occupied rather than treated as missing.
+  Blocked-preview doctor, repair, and
   setup remediation commands include the selected `--host-config`,
   `--state-root`, and `--service-socket` paths.
 - Preview probes the requested service socket even when no host is configured
@@ -467,6 +474,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.16 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on lease/host simulator disagreement, duplicate lease aliases, extra snapshot simulator rows, and dangling registry/known-projects occupancy during setup |
 | 1.0.15 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on incomplete setup device-type records, dangling host-config occupancy, and an invalid known-projects catalog during fresh provisioning |
 | 1.0.14 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on version-less selected runtimes and `ownerPid` values outside the safe integer range |
 | 1.0.13 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on unrecognized registry `powerState` and string `ownerPid`, remediating the actual failing host-config path, revalidating service identity before provisioning, and omitting app `--host-id` for already configured hosts |

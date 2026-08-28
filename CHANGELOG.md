@@ -54,8 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   finishing off the first-time review sheet and refreshes the dashboard when
   setup preview is already `ready`. Setup apply Stop/timeout waits for rollback
   inventory calls before escalating to SIGKILL. Occupied non-file
-  `registry.json` or JSON-named lease/pin entries block a confirmable fresh
-  plan. Known-projects catalog keys must match each record `projectId`.
+  `registry.json` or JSON-named lease/pin entries, including dangling
+  symlinks, block a confirmable fresh plan. A dangling `known-projects.json`
+  symlink is an invalid catalog rather than a missing file. Complete lease
+  records that name an unknown alias, point at another alias's Simulator, or
+  share an alias with another lease file stay blocked instead of `ready`.
+  Snapshot freshness requires the snapshot simulator alias set to equal the
+  current host alias set, so extra stale rows are finishing work.
+  Known-projects catalog keys must match each record `projectId`.
   Blocked-preview doctor and repair commands, plus pre-commit recovery, keep
   the selected broker paths and any explicit `--host-id` / `--ios-version`.
   Existing host-config directories or unreadable files are host-path blockers

@@ -789,6 +789,10 @@ function setupSnapshotReady(paths, corePreview) {
       (Array.isArray(snapshot.simulators) ? snapshot.simulators : [])
         .map((simulator) => [simulator.alias, simulator]),
     );
+    const hostAliasSet = new Set(corePreview.devices.map((device) => device.alias));
+    if (!setupSameStringSet(hostAliasSet, new Set(snapshotAliases.keys()))) {
+      return false;
+    }
     if (!corePreview.devices.every((device) => {
       const snapshotDevice = snapshotAliases.get(device.alias);
       return snapshotDevice
