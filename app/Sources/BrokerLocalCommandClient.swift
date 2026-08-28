@@ -274,6 +274,7 @@ struct BrokerCLIDoctorIssue: Decodable, Sendable, Equatable {
   let error: String?
   let health: String?
   let reasonCode: String?
+  let remediationCommands: [String]?
 }
 
 struct BrokerCLICommandEnvelope: Decodable, Sendable {
@@ -362,14 +363,20 @@ struct BrokerCLICommandEnvelope: Decodable, Sendable {
     }
     if let doctorIssues, doctorIssues.isEmpty == false {
       let summaries = doctorIssues.map { issue in
+        var summary: String
         if let alias = issue.alias, alias.isEmpty == false {
           let health = issue.health.map { " (\($0))" } ?? ""
-          return "\(alias)\(health)"
+          summary = "\(alias)\(health)"
+        } else if let error = issue.error, error.isEmpty == false {
+          summary = error
+        } else {
+          summary = issue.reasonCode ?? "unknown"
         }
-        if let error = issue.error, error.isEmpty == false {
-          return error
+        let commands = (issue.remediationCommands ?? []).filter { $0.isEmpty == false }
+        if commands.isEmpty == false {
+          summary += "; repair: \(commands.joined(separator: "; "))"
         }
-        return issue.reasonCode ?? "unknown"
+        return summary
       }
       message += " Doctor issues: \(summaries.joined(separator: "; "))."
     }

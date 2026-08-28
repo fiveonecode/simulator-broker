@@ -950,6 +950,55 @@ test("setup treats deleted known-projects, lease, or pin records as snapshot fin
   assert.equal(runCli(fixture, "service", "stop").status, 0);
 });
 
+test("setup treats omitted catalog-backed projects as snapshot finishing work", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "omitted-catalog");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "omitted-catalog",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(applied.json.status, "ready");
+
+  const knownProjectsPath = path.join(fixture.stateRoot, "known-projects.json");
+  writeJson(knownProjectsPath, {
+    projects: {
+      "omitted-catalog": {
+        lastObservedAt: "2026-08-25T00:00:00.000Z",
+        projectFilePath: path.join(root, "repo/.simulator-broker/project.json"),
+        projectId: "omitted-catalog",
+        projectName: "Omitted Catalog",
+        purposes: [],
+        repoRoot: path.join(root, "repo"),
+      },
+    },
+    updatedAt: "2026-08-25T00:00:00.000Z",
+    version: 1,
+  });
+  const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
+  const snapshot = readJson(snapshotPath);
+  snapshot.projects = [];
+  writeJson(snapshotPath, snapshot);
+
+  const finishing = runCli(fixture, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required");
+  assert.equal(finishing.json.confirmation.required, false);
+
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
 test("setup blocks when known-projects JSON is malformed after a healthy snapshot", () => {
   const root = makeTempDir();
   const fixture = {

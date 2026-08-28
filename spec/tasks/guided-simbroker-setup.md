@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.11`
+> **Version:** `1.0.12`
 > **Last Updated:** `2026-08-28`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -72,8 +72,8 @@ host init is unchanged and documented only as advanced/troubleshooting.
   Those files must be readable valid records, not merely parseable JSON.
   Newer valid records and deletions of known-projects, lease, or pin records
   are finishing work, not `ready`. The snapshot is not fresh if its recorded
-  lease, pin, or catalog-backed project identities no longer match the current
-  files.
+  lease, pin, or catalog-backed project identities are not the same set as the
+  current files.
 - Non-TTY preview never prompts or mutates and prints a copyable apply command.
 - `--json` preview never prompts or mutates and emits exactly one JSON document.
 - Confirmed apply never prompts, recomputes under locks, and emits one human
@@ -198,6 +198,10 @@ Apply performs, in order:
   `displayName`, `leaseKind`, `projectName`, or `repoRoot`, or a pin that has
   `pinId` and `alias` but omits `projectId`, `projectName`, `actorId`,
   `actorType`, `createdAt`, or `repoRoot`, is invalid existing-host state.
+  Present optional snapshot fields on an otherwise complete lease or pin, such
+  as `jobId`, `note`, or `purposeId`, must be strings when present; a numeric
+  or otherwise mistyped optional field is the same class of invalid
+  existing-host state.
   Persisted registry alias data that is schema-invalid, such as an
   unrecognized `health` value or an alias map that contains none of the
   configured host aliases, is also invalid; setup must not normalize it into a
@@ -245,8 +249,9 @@ first, preserves the sheet, and shows completed stages and recovery.
 Automatic finishing failure stays off the sheet and surfaces the recovery
 error on the dashboard. The read-only snapshot `Finish setup` action is hidden
 while setup is applying so an in-progress run can only be stopped through Stop.
-Displayed setup failures include the CLI `logPath`, `doctorIssues`, and
-incomplete rollback count when those fields are present.
+Displayed setup failures include the CLI `logPath`, `doctorIssues` including
+per-issue `remediationCommands` when present, and incomplete rollback count
+when those fields are present.
 
 The app accepts only setup schema version 1 and rejects a future or otherwise
 unsupported version before presenting or applying its plan. The `@MainActor
@@ -440,6 +445,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.12 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on mistyped optional lease/pin snapshot fields, require catalog-backed project-ID set equality for snapshot freshness, and display doctor `remediationCommands` in app setup failures |
 | 1.0.11 | 2026-08-28 | `spec-steward`, `ios-dev` | Health-failure doctor and per-alias repair commands keep the selected `--host-config`, `--state-root`, and `--service-socket` paths |
 | 1.0.10 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on occupied non-file registry/lease/pin paths and catalog-key/`projectId` mismatch, keep selected paths and host/runtime flags on setup recovery/repair commands, classify host-config I/O separately from simctl inventory, hide duplicate Finish setup while applying, and surface setup log/doctor/rollback diagnostics in the app |
 | 1.0.9 | 2026-08-25 | `spec-steward`, `ios-dev` | Fail closed on snapshot-incomplete lease/pin records and schema-invalid persisted registry alias data instead of normalizing them to `ready` |

@@ -55,7 +55,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doctor-issue, and incomplete-rollback diagnostics from CLI setup errors.
   After setup preview or apply, the app announces success only when the
   refreshed dashboard still has a live `brokerd`. Health-failure doctor issues
-  keep path-qualified `host status` and `simulators repair` commands. Getting
+  keep path-qualified `host status` and `simulators repair` commands, and the
+  macOS app now decodes those per-issue `remediationCommands` into the
+  displayed setup failure. Present optional lease/pin snapshot fields such as
+  `jobId`, `note`, and `purposeId` must be strings when present; mistyped
+  values stay blocked instead of `ready`. Snapshot freshness compares
+  catalog-backed project IDs with `known-projects.json` for set equality, so
+  an empty or incomplete snapshot `projects` array is finishing work rather
+  than a stale `ready`. Getting
   started now carries the same next-Alpha warning as the root README so
   published `0.1.0-alpha.2` installs are not directed at `simbroker setup`.
 - Public CI no longer runs the full-repo home-path leak scan on

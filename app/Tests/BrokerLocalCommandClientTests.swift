@@ -278,7 +278,15 @@ final class BrokerLocalCommandClientTests: XCTestCase {
       "logPath": "/tmp/simbroker-state/brokerd.log",
       "rollbackFailureCount": 1,
       "doctorIssues": [
-        {"alias": "ui-1", "health": "repair-needed", "reasonCode": "alias-unhealthy"}
+        {
+          "alias": "ui-1",
+          "health": "repair-needed",
+          "reasonCode": "alias-unhealthy",
+          "remediationCommands": [
+            "simbroker host status --host-config '/tmp/host.json'",
+            "simbroker simulators repair --alias ui-1 --host-config '/tmp/host.json'"
+          ]
+        }
       ],
       "recoveryCommand": "simbroker setup --host-config '/tmp/host.json'"
     }
@@ -289,7 +297,7 @@ final class BrokerLocalCommandClientTests: XCTestCase {
     XCTAssertTrue(message.contains("Completed: preflight, confirmation, host."))
     XCTAssertTrue(message.contains("Rollback cleanup was incomplete for 1 Simulator operation(s)."))
     XCTAssertTrue(message.contains("Service log: /tmp/simbroker-state/brokerd.log."))
-    XCTAssertTrue(message.contains("Doctor issues: ui-1 (repair-needed)."))
+    XCTAssertTrue(message.contains("Doctor issues: ui-1 (repair-needed); repair: simbroker host status --host-config '/tmp/host.json'; simbroker simulators repair --alias ui-1 --host-config '/tmp/host.json'."))
     XCTAssertTrue(message.contains("Recovery: simbroker setup --host-config '/tmp/host.json'"))
   }
 

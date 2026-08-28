@@ -1380,6 +1380,98 @@ test("setup blocks snapshot-incomplete leases, pins, and schema-invalid registry
   );
 });
 
+test("setup blocks leases and pins with mistyped optional snapshot fields", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "optional-snapshot-fields",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "optional-snapshot-fields",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const completeLease = {
+    actorId: "agent:1",
+    actorType: "agent",
+    alias: "ui-1",
+    displayName: "UI One",
+    leaseId: "optional-snapshot-lease",
+    leaseKind: "ephemeral",
+    ownerPid: process.pid,
+    projectId: "demo-app",
+    projectName: "Demo App",
+    purposeId: "agent-ui-session",
+    repoRoot: path.join(paths.root, "repo"),
+    simulatorId: "SIM-UI-1",
+    startedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const completeLeasePath = path.join(resolvedPaths.leasesDir, "optional-snapshot-lease.json");
+  writeJson(completeLeasePath, completeLease);
+  const completeLeaseAllowed = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.notEqual(completeLeaseAllowed.status, "blocked");
+  assert.equal(
+    completeLeaseAllowed.prerequisites.some((issue) => issue.id === "leases" && issue.status === "blocked"),
+    false,
+  );
+
+  writeJson(completeLeasePath, { ...completeLease, jobId: 42 });
+  const mistypedLeaseBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(mistypedLeaseBlocked.status, "blocked");
+  assert.ok(mistypedLeaseBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: mistypedLeaseBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(completeLeasePath).jobId, 42);
+  fs.rmSync(completeLeasePath);
+
+  const completePin = {
+    actorId: "human:local-cli",
+    actorType: "human",
+    alias: "manual-1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    pinId: "optional-snapshot-pin",
+    projectId: "demo-app",
+    projectName: "Demo App",
+    repoRoot: path.join(paths.root, "repo"),
+  };
+  const completePinPath = path.join(resolvedPaths.pinsDir, "optional-snapshot-pin.json");
+  writeJson(completePinPath, completePin);
+  const completePinAllowed = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.notEqual(completePinAllowed.status, "blocked");
+  assert.equal(
+    completePinAllowed.prerequisites.some((issue) => issue.id === "leases" && issue.status === "blocked"),
+    false,
+  );
+
+  writeJson(completePinPath, { ...completePin, note: 42, purposeId: 42 });
+  const mistypedPinBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(mistypedPinBlocked.status, "blocked");
+  assert.ok(mistypedPinBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: mistypedPinBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.deepEqual(readJson(completePinPath), {
+    ...completePin,
+    note: 42,
+    purposeId: 42,
+  });
+});
+
 test("setup blocks an existing host-config that is not a regular file", () => {
   const paths = makePaths();
   const resolvedPaths = brokerPaths(paths);

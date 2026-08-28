@@ -2504,6 +2504,13 @@ function assertValidLeaseRecord(record) {
   requireString(record.repoRoot, "lease.repoRoot");
   requireString(record.startedAt, "lease.startedAt");
   requirePositiveIntegerField(record.ownerPid, "lease.ownerPid");
+  requireOptionalString(record.artifactPath, "lease.artifactPath");
+  requireOptionalString(record.expiresAt, "lease.expiresAt");
+  requireOptionalString(record.jobId, "lease.jobId");
+  requireOptionalString(record.jobKind, "lease.jobKind");
+  requireOptionalString(record.pinId, "lease.pinId");
+  requireOptionalString(record.resetPolicy, "lease.resetPolicy");
+  requireOptionalString(record.sessionDir, "lease.sessionDir");
   return record;
 }
 
@@ -2517,6 +2524,8 @@ function assertValidPinRecord(record) {
   requireString(record.actorType, "pin.actorType");
   requireString(record.createdAt, "pin.createdAt");
   requireString(record.repoRoot, "pin.repoRoot");
+  requireOptionalString(record.note, "pin.note");
+  requireOptionalString(record.purposeId, "pin.purposeId");
   return record;
 }
 

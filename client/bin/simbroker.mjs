@@ -893,20 +893,12 @@ function setupDoctorRecordsMatchSnapshot(paths, snapshot) {
       .map((project) => project.projectId)
       .filter((projectId) => typeof projectId === "string" && projectId.length > 0),
   );
-  if (catalogProjectIds.size === 0) {
-    return true;
+  let currentProjectIds = new Set();
+  if (fs.existsSync(paths.knownProjectsPath)) {
+    const knownProjects = JSON.parse(fs.readFileSync(paths.knownProjectsPath, "utf8"));
+    currentProjectIds = new Set(Object.keys(knownProjects?.projects ?? {}));
   }
-  if (!fs.existsSync(paths.knownProjectsPath)) {
-    return false;
-  }
-  const knownProjects = JSON.parse(fs.readFileSync(paths.knownProjectsPath, "utf8"));
-  const currentProjectIds = new Set(Object.keys(knownProjects?.projects ?? {}));
-  for (const projectId of catalogProjectIds) {
-    if (!currentProjectIds.has(projectId)) {
-      return false;
-    }
-  }
-  return true;
+  return setupSameStringSet(catalogProjectIds, currentProjectIds);
 }
 
 function assertReadableLeaseRecord(record) {
