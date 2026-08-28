@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.18`
+> **Version:** `1.0.19`
 > **Last Updated:** `2026-08-28`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -76,10 +76,15 @@ host init is unchanged and documented only as advanced/troubleshooting.
   catalog-backed projects. The snapshot is not fresh if it omits fields the
   macOS dashboard requires to decode `BrokerAppSnapshot` (`generatedAt`, `ok`,
   `overview`, `recentEvents`, `activeLeases`, `pins`, `projects`,
-  `simulators`, `hostId`, and `stateRoot`), if its recorded lease, pin, or
-  catalog-backed project identities are not the same set as the current files,
-  or if the snapshot simulator alias set is not exactly the current host alias
-  set with matching Simulator IDs.
+  `simulators`, `hostId`, and `stateRoot`), if any nested `simulators`,
+  `activeLeases`, `pins`, `projects`, or `recentEvents` record omits fields
+  that the decoder requires (for example a simulator with only `alias`,
+  `simulatorId`, and `health` while `BrokerSimulator` also requires
+  `capabilities`, `deviceFamily`, `displayName`, `iosVersion`, and
+  `powerState`), if its recorded lease, pin, or catalog-backed project
+  identities are not the same set as the current files, or if the snapshot
+  simulator alias set is not exactly the current host alias set with matching
+  Simulator IDs.
 - Non-TTY preview never prompts or mutates and prints a copyable apply command.
 - `--json` preview never prompts or mutates and emits exactly one JSON document.
 - Confirmed apply never prompts, recomputes under locks, and emits one human
@@ -484,6 +489,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.19 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on nested dashboard snapshot records that the macOS decoder cannot load, such as simulators missing `capabilities`, `deviceFamily`, `displayName`, `iosVersion`, or `powerState` |
 | 1.0.18 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on truncated dashboard snapshots, deletion of an empty known-projects catalog, and non-string runtime build versions during setup |
 | 1.0.17 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on unknown pin aliases and duplicate pin alias claims during setup instead of collapsing them into a `ready` snapshot |
 | 1.0.16 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on lease/host simulator disagreement, duplicate lease aliases, extra snapshot simulator rows, and dangling registry/known-projects occupancy during setup |

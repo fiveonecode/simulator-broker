@@ -65,8 +65,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current host alias set, so extra stale rows are finishing work.
   A truncated `app-snapshot.json` that omits dashboard-required fields such as
   `generatedAt`, `ok`, `overview`, or `recentEvents` is finishing work rather
-  than `ready`. Deleting an empty `known-projects.json` is finishing work even
-  when both project-ID sets are empty. Runtime `buildVersion` is emitted only
+  than `ready`. Nested snapshot records must also match the dashboard decoder:
+  a simulator row with only `alias`, `simulatorId`, and `health` is finishing
+  work because `BrokerSimulator` still requires `capabilities`,
+  `deviceFamily`, `displayName`, `iosVersion`, and `powerState`. Deleting an
+  empty `known-projects.json` is finishing work even when both project-ID
+  sets are empty. Runtime `buildVersion` is emitted only
   when simctl reports a string, so a numeric build cannot reject the macOS
   setup plan decoder.
   Known-projects catalog keys must match each record `projectId`.

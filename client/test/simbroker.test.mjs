@@ -860,6 +860,86 @@ test("setup treats a truncated dashboard snapshot as finishing work", () => {
   assert.equal(runCli(fixture, "service", "stop").status, 0);
 });
 
+test("setup treats incomplete nested snapshot simulator records as finishing work", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "nested-snapshot-simulators");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "nested-snapshot-simulators",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(applied.json.status, "ready");
+
+  const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
+  const snapshot = readJson(snapshotPath);
+  snapshot.simulators = snapshot.simulators.map((simulator) => ({
+    alias: simulator.alias,
+    health: simulator.health,
+    simulatorId: simulator.simulatorId,
+  }));
+  writeJson(snapshotPath, snapshot);
+
+  const finishing = runCli(fixture, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required");
+  assert.equal(finishing.json.service.action, "keep");
+  assert.equal(finishing.json.confirmation.required, false);
+
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
+test("setup treats incomplete nested snapshot event records as finishing work", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "nested-snapshot-events");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "nested-snapshot-events",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(applied.json.status, "ready");
+
+  const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
+  const snapshot = readJson(snapshotPath);
+  snapshot.recentEvents = [
+    ...(Array.isArray(snapshot.recentEvents) ? snapshot.recentEvents : []),
+    {
+      timestamp: "2026-01-01T00:00:00.000Z",
+      type: "lease.acquired",
+    },
+  ];
+  writeJson(snapshotPath, snapshot);
+
+  const finishing = runCli(fixture, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required");
+  assert.equal(finishing.json.service.action, "keep");
+  assert.equal(finishing.json.confirmation.required, false);
+
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
 test("setup treats extra snapshot simulator rows as finishing work", () => {
   const root = makeTempDir();
   const fixture = {
@@ -885,7 +965,12 @@ test("setup treats extra snapshot simulator rows as finishing work", () => {
     ...snapshot.simulators,
     {
       alias: "retired-1",
+      capabilities: ["manual-persistent"],
+      deviceFamily: "iPhone",
+      displayName: "Retired One",
       health: "healthy",
+      iosVersion: "18.0",
+      powerState: "shutdown",
       simulatorId: "SIM-RETIRED-1",
     },
   ];

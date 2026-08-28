@@ -774,8 +774,180 @@ async function buildSetupPreview(paths, options) {
   });
 }
 
+function setupDashboardObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function setupDashboardOptionalString(value) {
+  return value == null || typeof value === "string";
+}
+
+function setupDashboardInteger(value) {
+  return Number.isInteger(value);
+}
+
+function setupDashboardOptionalInteger(value) {
+  return value == null || Number.isInteger(value);
+}
+
+function setupDashboardStringArray(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function setupDashboardRecordArray(value, matches) {
+  return Array.isArray(value) && value.every((item) => matches(item));
+}
+
+function setupDashboardOptionalRecord(value, matches) {
+  return value == null || matches(value);
+}
+
+function setupDashboardLeaseSummaryRecord(record) {
+  return setupDashboardObject(record)
+    && typeof record.actorId === "string"
+    && typeof record.actorType === "string"
+    && setupDashboardOptionalString(record.jobId)
+    && typeof record.leaseId === "string"
+    && typeof record.projectId === "string"
+    && typeof record.purposeId === "string";
+}
+
+function setupDashboardPinSummaryRecord(record) {
+  return setupDashboardObject(record)
+    && typeof record.pinId === "string"
+    && typeof record.projectId === "string"
+    && setupDashboardOptionalString(record.purposeId);
+}
+
+function setupDashboardSimulatorRecord(record) {
+  return setupDashboardObject(record)
+    && setupDashboardOptionalString(record.activeLeaseId)
+    && setupDashboardOptionalRecord(record.activeLeaseSummary, setupDashboardLeaseSummaryRecord)
+    && typeof record.alias === "string"
+    && setupDashboardStringArray(record.capabilities)
+    && typeof record.deviceFamily === "string"
+    && typeof record.displayName === "string"
+    && setupDashboardOptionalString(record.driftReason)
+    && typeof record.health === "string"
+    && typeof record.iosVersion === "string"
+    && setupDashboardOptionalString(record.lastBootedAt)
+    && setupDashboardOptionalString(record.lastErasedAt)
+    && setupDashboardOptionalString(record.lastLeaseReleasedAt)
+    && setupDashboardOptionalString(record.lastLeaseStartedAt)
+    && setupDashboardOptionalString(record.lastRepairedAt)
+    && setupDashboardOptionalString(record.lastShutdownAt)
+    && setupDashboardOptionalRecord(record.pin, setupDashboardPinSummaryRecord)
+    && typeof record.powerState === "string"
+    && setupDashboardOptionalString(record.resetPolicy)
+    && typeof record.simulatorId === "string";
+}
+
+function setupDashboardLeaseRecord(record) {
+  return setupDashboardObject(record)
+    && typeof record.actorId === "string"
+    && typeof record.actorType === "string"
+    && typeof record.alias === "string"
+    && setupDashboardOptionalString(record.artifactPath)
+    && typeof record.displayName === "string"
+    && setupDashboardOptionalString(record.expiresAt)
+    && setupDashboardOptionalString(record.jobId)
+    && setupDashboardOptionalString(record.jobKind)
+    && typeof record.leaseId === "string"
+    && typeof record.leaseKind === "string"
+    && setupDashboardInteger(record.ownerPid)
+    && setupDashboardOptionalString(record.pinId)
+    && typeof record.projectId === "string"
+    && typeof record.projectName === "string"
+    && typeof record.purposeId === "string"
+    && typeof record.repoRoot === "string"
+    && setupDashboardOptionalString(record.resetPolicy)
+    && setupDashboardOptionalString(record.sessionDir)
+    && typeof record.simulatorId === "string"
+    && typeof record.startedAt === "string";
+}
+
+function setupDashboardPinRecord(record) {
+  return setupDashboardObject(record)
+    && typeof record.actorId === "string"
+    && typeof record.actorType === "string"
+    && typeof record.alias === "string"
+    && typeof record.createdAt === "string"
+    && setupDashboardOptionalString(record.note)
+    && typeof record.pinId === "string"
+    && typeof record.projectId === "string"
+    && typeof record.projectName === "string"
+    && setupDashboardOptionalString(record.purposeId)
+    && typeof record.repoRoot === "string";
+}
+
+function setupDashboardPurposeRequiresRecord(record) {
+  return setupDashboardObject(record)
+    && setupDashboardOptionalString(record.deviceFamily)
+    && setupDashboardOptionalString(record.iosVersion);
+}
+
+function setupDashboardProjectPurposeRecord(record) {
+  return setupDashboardObject(record)
+    && setupDashboardInteger(record.activeLeaseCount)
+    && setupDashboardOptionalString(record.capability)
+    && setupDashboardOptionalString(record.defaultActorType)
+    && typeof record.displayName === "string"
+    && setupDashboardInteger(record.pinnedAliasCount)
+    && typeof record.purposeId === "string"
+    && setupDashboardOptionalRecord(record.requires, setupDashboardPurposeRequiresRecord);
+}
+
+function setupDashboardProjectRecord(record) {
+  return setupDashboardObject(record)
+    && setupDashboardStringArray(record.activeAliases)
+    && setupDashboardInteger(record.activeLeaseCount)
+    && setupDashboardOptionalString(record.lastEventAt)
+    && setupDashboardInteger(record.pinnedAliasCount)
+    && setupDashboardOptionalString(record.projectFilePath)
+    && typeof record.projectId === "string"
+    && typeof record.projectName === "string"
+    && setupDashboardRecordArray(record.purposes, setupDashboardProjectPurposeRecord)
+    && setupDashboardOptionalString(record.repoRoot);
+}
+
+function setupDashboardEventRecord(record) {
+  return setupDashboardObject(record)
+    && setupDashboardOptionalString(record.actorId)
+    && setupDashboardOptionalString(record.actorType)
+    && setupDashboardOptionalString(record.alias)
+    && typeof record.eventId === "string"
+    && setupDashboardOptionalString(record.jobId)
+    && setupDashboardOptionalString(record.leaseId)
+    && setupDashboardOptionalRecord(record.payload, (payload) => (
+      setupDashboardObject(payload) && setupDashboardOptionalString(payload.actorId)
+    ))
+    && setupDashboardOptionalString(record.projectId)
+    && setupDashboardOptionalString(record.purposeId)
+    && typeof record.timestamp === "string"
+    && typeof record.type === "string";
+}
+
+function setupDashboardIdleCleanupResultRecord(record) {
+  return setupDashboardObject(record)
+    && typeof record.completedAt === "string"
+    && setupDashboardInteger(record.eligibleCount)
+    && setupDashboardInteger(record.failureCount)
+    && setupDashboardInteger(record.shutdownCount)
+    && typeof record.source === "string"
+    && typeof record.status === "string";
+}
+
+function setupDashboardIdleRecord(record) {
+  return setupDashboardObject(record)
+    && typeof record.configured === "boolean"
+    && setupDashboardInteger(record.eligibleCount)
+    && setupDashboardOptionalInteger(record.graceSeconds)
+    && setupDashboardOptionalRecord(record.lastCleanupResult, setupDashboardIdleCleanupResultRecord)
+    && setupDashboardOptionalString(record.nextScheduledCleanupAt);
+}
+
 function setupSnapshotMatchesDashboardContract(snapshot) {
-  if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+  if (!setupDashboardObject(snapshot)) {
     return false;
   }
   if (typeof snapshot.generatedAt !== "string" || snapshot.generatedAt.trim() === "") {
@@ -794,21 +966,22 @@ function setupSnapshotMatchesDashboardContract(snapshot) {
     return false;
   }
   const overview = snapshot.overview;
-  if (overview === null || typeof overview !== "object" || Array.isArray(overview)) {
+  if (!setupDashboardObject(overview)) {
     return false;
   }
   if (typeof overview.leaseSaturation !== "number" || !Number.isFinite(overview.leaseSaturation)
-    || !Number.isInteger(overview.leasedAliases)
-    || !Number.isInteger(overview.pinnedAliases)
-    || !Number.isInteger(overview.totalAliases)
-    || !Number.isInteger(overview.unhealthyAliases)) {
+    || !setupDashboardInteger(overview.leasedAliases)
+    || !setupDashboardInteger(overview.pinnedAliases)
+    || !setupDashboardInteger(overview.totalAliases)
+    || !setupDashboardInteger(overview.unhealthyAliases)) {
     return false;
   }
-  return Array.isArray(snapshot.activeLeases)
-    && Array.isArray(snapshot.pins)
-    && Array.isArray(snapshot.projects)
-    && Array.isArray(snapshot.recentEvents)
-    && Array.isArray(snapshot.simulators);
+  return setupDashboardOptionalRecord(snapshot.idle, setupDashboardIdleRecord)
+    && setupDashboardRecordArray(snapshot.activeLeases, setupDashboardLeaseRecord)
+    && setupDashboardRecordArray(snapshot.pins, setupDashboardPinRecord)
+    && setupDashboardRecordArray(snapshot.projects, setupDashboardProjectRecord)
+    && setupDashboardRecordArray(snapshot.recentEvents, setupDashboardEventRecord)
+    && setupDashboardRecordArray(snapshot.simulators, setupDashboardSimulatorRecord);
 }
 
 function setupSnapshotReady(paths, corePreview) {
