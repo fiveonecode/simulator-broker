@@ -63,8 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configured host is invalid existing registry state rather than a missing
   registry that finishing may reconstruct and replace. Snapshot integers must
   be JSON numbers in the safe integer range so the macOS dashboard can decode
-  them as `Int`, and duplicate snapshot `projectId` values or pin `alias`
-  values are finishing work rather than `ready`.
+  them as `Int`, and duplicate snapshot `projectId` values, pin `alias`
+  values, or simulator `alias` values are finishing work rather than `ready`.
+  Two valid purpose records in one known-projects catalog project that share
+  the same `id` stay blocked instead of collapsing into a `ready` snapshot.
   Complete lease
   records that name an unknown alias, point at another alias's Simulator, or
   share an alias with another lease file stay blocked instead of `ready`.

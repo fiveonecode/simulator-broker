@@ -1,8 +1,8 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.21`
-> **Last Updated:** `2026-08-28`
+> **Version:** `1.0.22`
+> **Last Updated:** `2026-08-29`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
 > **Target:** Next Alpha PR
@@ -244,7 +244,10 @@ Apply performs, in order:
   unrecognized `health` or `powerState` value or an alias map that contains none of the
   configured host aliases, is also invalid; setup must not normalize it into a
   `ready` host. A known-projects catalog key that disagrees with that record's
-  `projectId` is the same class of invalid existing-host state. Setup does not
+  `projectId` is the same class of invalid existing-host state. Two otherwise
+  valid purpose records in one catalog project that share the same `id` are
+  also invalid; setup must not collapse them with a purpose-ID map and then
+  report `ready`. Setup does not
   treat a missing host-config as a confirmable fresh plan when the selected
   state root already contains a registry path of any type, a JSON-named
   lease/pin directory entry of any type, or an existing known-projects catalog
@@ -264,7 +267,10 @@ Apply performs, in order:
   finishing work; setup must not collapse duplicate identities with a set
   comparison and then report `ready`. A snapshot `pins` array that repeats the
   same `alias` is likewise finishing work; setup must not collapse duplicate pin
-  rows with a pin-ID set comparison and then report `ready`.
+  rows with a pin-ID set comparison and then report `ready`. A snapshot
+  `simulators` array that repeats the same `alias` is finishing work; setup
+  must not collapse duplicate simulator rows with an alias `Map` and then
+  report `ready`.
   Blocked-preview doctor, repair, and
   setup remediation commands include the selected `--host-config`,
   `--state-root`, and `--service-socket` paths.
@@ -506,6 +512,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.22 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on duplicate known-projects purpose IDs and duplicate snapshot simulator aliases |
 | 1.0.21 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on configured-host dangling registries and duplicate snapshot pin aliases |
 | 1.0.20 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on configured-host dangling known-projects catalogs, duplicate snapshot project IDs, reusable devices without a UDID, snapshot integers outside the safe integer range, and runtime versions outside the host `<major>` / `<major.minor>` schema |
 | 1.0.19 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on nested dashboard snapshot records that the macOS decoder cannot load, such as simulators missing `capabilities`, `deviceFamily`, `displayName`, `iosVersion`, or `powerState` |

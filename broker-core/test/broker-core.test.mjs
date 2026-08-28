@@ -2199,6 +2199,65 @@ test("setup blocks a configured host whose known-projects catalog is a dangling 
   assert.equal(fs.lstatSync(resolvedPaths.knownProjectsPath).isSymbolicLink(), true);
 });
 
+test("setup blocks a configured host whose known-projects catalog repeats a purpose id", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "duplicate-catalog-purpose",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "duplicate-catalog-purpose",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const duplicatePurpose = {
+    capability: "interactive-resettable",
+    defaultActorType: "agent",
+    displayName: "Agent UI Session",
+    id: "agent-ui-session",
+  };
+  writeJson(resolvedPaths.knownProjectsPath, {
+    projects: {
+      "demo-app": {
+        lastObservedAt: "2026-01-01T00:00:00.000Z",
+        projectFilePath: path.join(paths.root, "repo/.simulator-broker/project.json"),
+        projectId: "demo-app",
+        projectName: "Demo App",
+        purposes: [
+          duplicatePurpose,
+          {
+            ...duplicatePurpose,
+            displayName: "Agent UI Session Duplicate",
+          },
+        ],
+        repoRoot: path.join(paths.root, "repo"),
+      },
+    },
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    version: 1,
+  });
+
+  const blocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.confirmation.required, false);
+  assert.ok(blocked.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: blocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(
+    readJson(resolvedPaths.knownProjectsPath).projects["demo-app"].purposes.filter(
+      (purpose) => purpose.id === "agent-ui-session",
+    ).length,
+    2,
+  );
+});
+
 test("setup blocks a configured host whose registry is a dangling symlink", () => {
   const paths = makePaths();
   const resolvedPaths = brokerPaths(paths);

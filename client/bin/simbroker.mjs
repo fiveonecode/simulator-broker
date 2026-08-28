@@ -994,7 +994,8 @@ function setupSnapshotMatchesDashboardContract(snapshot) {
     && setupDashboardRecordArray(snapshot.projects, setupDashboardProjectRecord)
     && setupDashboardUniqueStringValues(snapshot.projects.map((project) => project.projectId))
     && setupDashboardRecordArray(snapshot.recentEvents, setupDashboardEventRecord)
-    && setupDashboardRecordArray(snapshot.simulators, setupDashboardSimulatorRecord);
+    && setupDashboardRecordArray(snapshot.simulators, setupDashboardSimulatorRecord)
+    && setupDashboardUniqueStringValues(snapshot.simulators.map((simulator) => simulator.alias));
 }
 
 function setupSnapshotReady(paths, corePreview) {

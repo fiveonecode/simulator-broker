@@ -2319,6 +2319,16 @@ function normalizeKnownProjects(rawKnownProjects, timestamp) {
     const project = requireObject(rawProject, fieldPrefix);
     const purposes = requireArray(project.purposes, `${fieldPrefix}.purposes`)
       .map((purpose, index) => validateProjectPurpose(purpose, `${fieldPrefix}.purposes[${index}]`));
+    const purposeIds = new Set();
+    for (const purpose of purposes) {
+      if (purposeIds.has(purpose.id)) {
+        throw new BrokerError(`Duplicate purpose ${purpose.id} in ${fieldPrefix}.purposes.`, {
+          field: `${fieldPrefix}.purposes`,
+          reasonCode: "invalid-config",
+        });
+      }
+      purposeIds.add(purpose.id);
+    }
 
     const recordProjectId = requireString(project.projectId, `${fieldPrefix}.projectId`);
     if (recordProjectId !== projectId) {
