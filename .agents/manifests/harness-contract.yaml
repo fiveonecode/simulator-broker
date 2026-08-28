@@ -5,10 +5,12 @@ globs:
   - AGENTS.md
   - CLAUDE.md
   - WORKFLOW.md
+  - autopilot.yml
   - package-lock.json
   - package.json
   - scripts/agent_detached_status.cjs
   - scripts/bootstrap_agent_harness.sh
+  - scripts/check_managed_skill_ownership.sh
   - scripts/validate.sh
 owner: harness-maintainer
 required_skills:
@@ -27,10 +29,12 @@ allowed_paths:
   - AGENTS.md
   - CLAUDE.md
   - WORKFLOW.md
+  - autopilot.yml
   - package-lock.json
   - package.json
   - scripts/agent_detached_status.cjs
   - scripts/bootstrap_agent_harness.sh
+  - scripts/check_managed_skill_ownership.sh
   - scripts/validate.sh
   - spec/**
 forbidden_paths:

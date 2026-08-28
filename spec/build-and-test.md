@@ -109,6 +109,13 @@ A first extracted implementation slice now exists:
 
 The current deterministic verification contract includes implementation tests plus spec integrity.
 
+Codex Autopilot is a separate origin-default-branch gate. It runs only the
+command in `autopilot.yml` (`npm test`). Autopilot does not read `.agents` or
+`WORKFLOW.md` as its contract. Missing origin `autopilot.yml` is not skip.
+Local full-repo validation remains `./scripts/validate.sh`. GitHub-hosted CI
+stays the split Ubuntu/macOS jobs and still does not run `test:app` or
+`verify:public-surface`.
+
 Generated agent harness commands:
 
 <!-- agent-harness-commands:start -->
