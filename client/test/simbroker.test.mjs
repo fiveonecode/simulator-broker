@@ -942,6 +942,51 @@ test("setup treats duplicate snapshot project identities as finishing work", () 
   assert.equal(runCli(fixture, "service", "stop").status, 0);
 });
 
+test("setup treats duplicate snapshot pin aliases as finishing work", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "duplicate-snapshot-pins");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "duplicate-snapshot-pins",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(applied.json.status, "ready");
+
+  const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
+  const snapshot = readJson(snapshotPath);
+  const duplicatePin = {
+    actorId: "codex",
+    actorType: "agent",
+    alias: "manual-1",
+    createdAt: "2026-08-28T00:00:00.000Z",
+    pinId: "pin-1",
+    projectId: "demo-app",
+    projectName: "Demo App",
+    repoRoot: path.join(root, "repo"),
+  };
+  snapshot.pins = [duplicatePin, { ...duplicatePin }];
+  writeJson(snapshotPath, snapshot);
+
+  const finishing = runCli(fixture, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required");
+  assert.equal(finishing.json.service.action, "keep");
+  assert.equal(finishing.json.confirmation.required, false);
+
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
 test("setup treats snapshot integers outside the safe integer range as finishing work", () => {
   const root = makeTempDir();
   const fixture = {

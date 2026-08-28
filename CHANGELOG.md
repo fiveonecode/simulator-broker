@@ -59,9 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `registry.json` or JSON-named lease/pin entries, including dangling
   symlinks, block a confirmable fresh plan. A dangling `known-projects.json`
   symlink is an invalid catalog rather than a missing file, including on an
-  already configured host. Snapshot integers must be JSON numbers in the safe
-  integer range so the macOS dashboard can decode them as `Int`, and duplicate
-  snapshot `projectId` values are finishing work rather than `ready`.
+  already configured host. A dangling `registry.json` symlink on an already
+  configured host is invalid existing registry state rather than a missing
+  registry that finishing may reconstruct and replace. Snapshot integers must
+  be JSON numbers in the safe integer range so the macOS dashboard can decode
+  them as `Int`, and duplicate snapshot `projectId` values or pin `alias`
+  values are finishing work rather than `ready`.
   Complete lease
   records that name an unknown alias, point at another alias's Simulator, or
   share an alias with another lease file stay blocked instead of `ready`.

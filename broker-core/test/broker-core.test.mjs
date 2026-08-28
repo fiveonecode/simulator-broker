@@ -2199,6 +2199,35 @@ test("setup blocks a configured host whose known-projects catalog is a dangling 
   assert.equal(fs.lstatSync(resolvedPaths.knownProjectsPath).isSymbolicLink(), true);
 });
 
+test("setup blocks a configured host whose registry is a dangling symlink", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "configured-dangling-registry",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "configured-dangling-registry",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  fs.rmSync(resolvedPaths.registryPath);
+  fs.symlinkSync(path.join(paths.root, "missing-registry.json"), resolvedPaths.registryPath);
+
+  const blocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.confirmation.required, false);
+  assert.ok(blocked.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: blocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.registryPath).isSymbolicLink(), true);
+});
+
 test("setup blocks an existing host whose registry marks an alias for repair", () => {
   const paths = makePaths();
   const resolvedPaths = brokerPaths(paths);

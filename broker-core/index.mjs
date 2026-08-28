@@ -1632,18 +1632,32 @@ function pathOccupied(candidate) {
   }
 }
 
-function readOccupiedKnownProjects(filePath) {
+function readOccupiedJsonFile(filePath, message) {
   if (!pathOccupied(filePath)) {
     return null;
   }
-  const knownProjects = readJsonIfExists(filePath);
-  if (knownProjects === null) {
-    throw new BrokerError("The existing known-projects catalog could not be read as a regular file.", {
+  const payload = readJsonIfExists(filePath);
+  if (payload === null) {
+    throw new BrokerError(message, {
       path: filePath,
       reasonCode: "invalid-config",
     });
   }
-  return knownProjects;
+  return payload;
+}
+
+function readOccupiedKnownProjects(filePath) {
+  return readOccupiedJsonFile(
+    filePath,
+    "The existing known-projects catalog could not be read as a regular file.",
+  );
+}
+
+function readOccupiedRegistry(filePath) {
+  return readOccupiedJsonFile(
+    filePath,
+    "The existing broker registry could not be read as a regular file.",
+  );
 }
 
 function setupStateContainsLeaseOrPinRecords(paths) {
@@ -1825,7 +1839,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
   let registryInitializationRequired = false;
   let registryMissing = false;
   try {
-    const persistedRegistry = readJsonIfExists(paths.registryPath);
+    const persistedRegistry = readOccupiedRegistry(paths.registryPath);
     if (persistedRegistry === null) {
       registryMissing = true;
       registry = normalizeRegistry(null, hostConfig, nowIso(options.now));

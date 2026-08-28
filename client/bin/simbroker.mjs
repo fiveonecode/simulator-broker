@@ -990,6 +990,7 @@ function setupSnapshotMatchesDashboardContract(snapshot) {
   return setupDashboardOptionalRecord(snapshot.idle, setupDashboardIdleRecord)
     && setupDashboardRecordArray(snapshot.activeLeases, setupDashboardLeaseRecord)
     && setupDashboardRecordArray(snapshot.pins, setupDashboardPinRecord)
+    && setupDashboardUniqueStringValues(snapshot.pins.map((pin) => pin.alias))
     && setupDashboardRecordArray(snapshot.projects, setupDashboardProjectRecord)
     && setupDashboardUniqueStringValues(snapshot.projects.map((project) => project.projectId))
     && setupDashboardRecordArray(snapshot.recentEvents, setupDashboardEventRecord)
