@@ -2237,6 +2237,41 @@ test("setup blocks a missing host config when the state root already has broker 
   assert.equal(fs.lstatSync(resolvedPaths.registryPath).isSymbolicLink(), true);
   fs.rmSync(resolvedPaths.registryPath);
 
+  fs.rmSync(resolvedPaths.leasesDir, { recursive: true, force: true });
+  fs.symlinkSync(path.join(paths.root, "missing-leases"), resolvedPaths.leasesDir);
+  const danglingLeasesBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-leases",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(danglingLeasesBlocked.status, "blocked");
+  assert.ok(danglingLeasesBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: danglingLeasesBlocked.planId,
+    hostId: "fresh-over-dangling-leases",
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.lstatSync(resolvedPaths.leasesDir).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+  fs.rmSync(resolvedPaths.leasesDir);
+
+  fs.rmSync(resolvedPaths.pinsDir, { recursive: true, force: true });
+  fs.symlinkSync(path.join(paths.root, "missing-pins"), resolvedPaths.pinsDir);
+  const danglingPinsBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-pins",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(danglingPinsBlocked.status, "blocked");
+  assert.ok(danglingPinsBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: danglingPinsBlocked.planId,
+    hostId: "fresh-over-dangling-pins",
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.lstatSync(resolvedPaths.pinsDir).isSymbolicLink(), true);
+  fs.rmSync(resolvedPaths.pinsDir);
+
   const emptyLeaseDir = previewSetupBroker(resolvedPaths, {
     hostId: "fresh-empty-state",
     simctlAdapter: paths.simctl.adapter,
@@ -2300,6 +2335,62 @@ test("setup blocks a missing host when the state root already has an invalid kno
     simctlAdapter: paths.simctl.adapter,
   }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
   assert.equal(fs.lstatSync(resolvedPaths.knownProjectsPath).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+});
+
+test("setup blocks a missing host when the state root already has an invalid idle policy", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  fs.mkdirSync(resolvedPaths.stateRoot, { recursive: true });
+  fs.writeFileSync(resolvedPaths.idlePolicyPath, "{not-json\n");
+
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-idle-policy",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(preview.status, "blocked");
+  assert.equal(preview.confirmation.required, false);
+  assert.ok(preview.prerequisites.some((issue) =>
+    issue.id === "idle-policy" && issue.status === "blocked"));
+  assert.deepEqual(
+    preview.prerequisites.find((issue) => issue.id === "idle-policy").remediationCommands,
+    [setupCommandWithSelectedPaths("simbroker doctor", resolvedPaths)],
+  );
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "fresh-over-idle-policy",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+
+  writeJson(resolvedPaths.idlePolicyPath, {
+    graceSeconds: 60,
+    version: 1,
+  });
+  const validPolicy = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-idle-policy",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(validPolicy.status, "changes_required");
+  assert.equal(validPolicy.confirmation.required, true);
+  assert.equal(validPolicy.host.configured, false);
+
+  fs.rmSync(resolvedPaths.idlePolicyPath);
+  fs.symlinkSync(path.join(paths.root, "missing-idle-policy.json"), resolvedPaths.idlePolicyPath);
+  const danglingPolicy = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-idle-policy",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(danglingPolicy.status, "blocked");
+  assert.equal(danglingPolicy.confirmation.required, false);
+  assert.ok(danglingPolicy.prerequisites.some((issue) =>
+    issue.id === "idle-policy" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: danglingPolicy.planId,
+    hostId: "fresh-over-dangling-idle-policy",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.idlePolicyPath).isSymbolicLink(), true);
   assert.equal(fs.existsSync(paths.hostConfigPath), false);
 });
 
@@ -2418,6 +2509,79 @@ test("setup blocks a configured host whose registry is a dangling symlink", () =
     simctlAdapter: paths.simctl.adapter,
   }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
   assert.equal(fs.lstatSync(resolvedPaths.registryPath).isSymbolicLink(), true);
+});
+
+test("setup blocks a configured host whose leases or pins directory is a dangling symlink", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "configured-dangling-leases",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "configured-dangling-leases",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  fs.rmSync(resolvedPaths.leasesDir, { recursive: true, force: true });
+  fs.symlinkSync(path.join(paths.root, "missing-leases"), resolvedPaths.leasesDir);
+
+  const leasesBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(leasesBlocked.status, "blocked");
+  assert.equal(leasesBlocked.confirmation.required, false);
+  assert.ok(leasesBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: leasesBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.lstatSync(resolvedPaths.leasesDir).isSymbolicLink(), true);
+  fs.rmSync(resolvedPaths.leasesDir);
+  fs.mkdirSync(resolvedPaths.leasesDir, { recursive: true });
+
+  fs.rmSync(resolvedPaths.pinsDir, { recursive: true, force: true });
+  fs.symlinkSync(path.join(paths.root, "missing-pins"), resolvedPaths.pinsDir);
+  const pinsBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(pinsBlocked.status, "blocked");
+  assert.ok(pinsBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: pinsBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.lstatSync(resolvedPaths.pinsDir).isSymbolicLink(), true);
+});
+
+test("setup blocks a configured host whose idle policy is malformed", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "configured-idle-policy",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "configured-idle-policy",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  fs.writeFileSync(resolvedPaths.idlePolicyPath, "{not-json\n");
+
+  const blocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.confirmation.required, false);
+  assert.ok(blocked.prerequisites.some((issue) =>
+    issue.id === "idle-policy" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: blocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(resolvedPaths.idlePolicyPath), true);
 });
 
 test("setup blocks registry and known-projects FIFOs before reading JSON", { timeout: 5_000 }, () => {

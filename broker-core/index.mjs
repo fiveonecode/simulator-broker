@@ -1645,6 +1645,17 @@ function pathOccupied(candidate) {
   }
 }
 
+function setupOccupiedDirectoryInvalid(directoryPath) {
+  if (!pathOccupied(directoryPath)) {
+    return false;
+  }
+  try {
+    return fs.statSync(directoryPath).isDirectory() !== true;
+  } catch {
+    return true;
+  }
+}
+
 function readOccupiedJsonFile(filePath, message) {
   if (!pathOccupied(filePath)) {
     return null;
@@ -1685,12 +1696,35 @@ function readOccupiedRegistry(filePath) {
   );
 }
 
+function readOccupiedIdlePolicy(paths) {
+  if (!pathOccupied(paths.idlePolicyPath)) {
+    return null;
+  }
+  let stats;
+  try {
+    stats = fs.statSync(paths.idlePolicyPath);
+  } catch {
+    stats = null;
+  }
+  if (stats?.isFile() !== true) {
+    throw new BrokerError("The existing idle policy could not be read as a regular file.", {
+      path: paths.idlePolicyPath,
+      reasonCode: "invalid-config",
+    });
+  }
+  return readIdlePolicy(paths);
+}
+
 function setupStateContainsLeaseOrPinRecords(paths) {
   try {
-    return [paths.leasesDir, paths.pinsDir].some((directoryPath) =>
-      fs.existsSync(directoryPath)
+    return [paths.leasesDir, paths.pinsDir].some((directoryPath) => {
+      if (setupOccupiedDirectoryInvalid(directoryPath)) {
+        return true;
+      }
+      return fs.existsSync(directoryPath)
         && fs.readdirSync(directoryPath, { withFileTypes: true })
-          .some((entry) => entry.name.endsWith(".json")));
+          .some((entry) => entry.name.endsWith(".json"));
+    });
   } catch {
     // Unreadable mutation state is not safe to reinterpret as an untouched setup.
     return true;
@@ -1799,7 +1833,25 @@ function setupExistingHostState(paths, inventory, options = {}) {
     });
   }
   try {
+    readOccupiedIdlePolicy(paths);
+  } catch (error) {
+    issues.push({
+      id: "idle-policy",
+      status: "blocked",
+      summary: "The existing idle policy is invalid and setup will not replace it automatically.",
+      details: error instanceof BrokerError ? error.payload : { message: error.message },
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    });
+  }
+  try {
     const hostAliasesById = new Map(hostConfig.aliases.map((alias) => [alias.alias, alias]));
+    if (setupOccupiedDirectoryInvalid(paths.leasesDir) || setupOccupiedDirectoryInvalid(paths.pinsDir)) {
+      throw new BrokerError("The existing lease or pin directory could not be used as a directory.", {
+        leasesDir: paths.leasesDir,
+        pinsDir: paths.pinsDir,
+        reasonCode: "invalid-config",
+      });
+    }
     const seenLeaseAliases = new Set();
     for (const { name, record } of listJsonFileEntries(paths.leasesDir)) {
       assertValidLeaseRecord(record);
@@ -2019,6 +2071,16 @@ function blockedSetupInvalidKnownProjectsWithoutHost(paths, options, error) {
   });
 }
 
+function blockedSetupInvalidIdlePolicyWithoutHost(paths, options, error) {
+  return blockedUnconfiguredSetupPreview(paths, options, {
+    details: error instanceof BrokerError ? error.payload : { message: error.message },
+    id: "idle-policy",
+    remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    status: "blocked",
+    summary: "The existing idle policy is invalid and setup will not replace it automatically.",
+  });
+}
+
 function buildSetupPlan(paths, options = {}) {
   const inventory = readSimctlInventory(options);
   if (fs.existsSync(paths.hostConfigPath)) {
@@ -2032,6 +2094,13 @@ function buildSetupPlan(paths, options = {}) {
       normalizeKnownProjects(readOccupiedKnownProjects(paths.knownProjectsPath), nowIso(options.now));
     } catch (error) {
       return blockedSetupInvalidKnownProjectsWithoutHost(paths, options, error);
+    }
+  }
+  if (pathOccupied(paths.idlePolicyPath)) {
+    try {
+      readOccupiedIdlePolicy(paths);
+    } catch (error) {
+      return blockedSetupInvalidIdlePolicyWithoutHost(paths, options, error);
     }
   }
 

@@ -72,7 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   device-type identity, and samples apply registry/`host.initialized`
   timestamps after both provisioning locks. Occupied `registry.json` and
   `known-projects.json` FIFOs and other non-files fail closed before JSON
-  read. Snapshot `overview.leaseSaturation` outside `0` through `1` is
+  read. Occupied `leases/` or `pins/` paths that do not resolve to directories,
+  including dangling directory symlinks, block a confirmable fresh plan and
+  configured-host `ready`. Occupied `idle-policy.json` that is malformed or not
+  a regular file is the same class of existing-state failure, so setup cannot
+  provision a host and then fail at `brokerd` idle-policy reconciliation.
+  Snapshot `overview.leaseSaturation` outside `0` through `1` is
   finishing work rather than `ready`. The non-TTY copyable apply command
   includes the resolved `--host-config`, `--state-root`, and
   `--service-socket` paths even when those were selected only through

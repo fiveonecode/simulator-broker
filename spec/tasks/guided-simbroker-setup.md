@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.23`
+> **Version:** `1.0.24`
 > **Last Updated:** `2026-08-29`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -261,19 +261,32 @@ Apply performs, in order:
   report `ready`. Setup does not
   treat a missing host-config as a confirmable fresh plan when the selected
   state root already contains a registry path of any type, a JSON-named
-  lease/pin directory entry of any type, or an existing known-projects catalog
-  that cannot be loaded as a valid catalog. Occupancy of `registry.json` and
-  `known-projects.json` uses the directory entry itself (`lstat`), so a
+  lease/pin directory entry of any type, a `leases/` or `pins/` path that is
+  occupied but does not resolve to a directory, or an existing known-projects
+  catalog that cannot be loaded as a valid catalog. Occupancy of `registry.json`
+  and `known-projects.json` uses the directory entry itself (`lstat`), so a
   dangling symlink is occupied rather than treated as missing. Occupied
   registry and catalog paths must then resolve to a regular file before any
   JSON read; a FIFO, directory, socket, or other non-file is invalid existing
-  state rather than a blocking open. That catalog
+  state rather than a blocking open. Occupancy of `leases/` and `pins/` uses
+  the directory entry itself (`lstat`); a dangling symlink, file, FIFO, or
+  other non-directory at those paths is invalid existing mutation state rather
+  than an empty directory that setup may treat as unused. That catalog
   occupancy rule applies to a configured host as well as a missing host-config:
   a dangling `known-projects.json` symlink is an invalid catalog, not an empty
   catalog that finishing may replace. The same occupancy rule applies to a
   configured-host `registry.json`: a dangling registry symlink is invalid
   existing registry state, not a missing registry that finishing may reconstruct
-  and atomically replace. Dashboard snapshot integers such as
+  and atomically replace. The same occupancy rule applies to configured-host
+  `leases/` and `pins/` paths: a dangling directory symlink is invalid existing
+  lease/pin state, not an empty directory that setup may report as `ready`.
+  Occupied `idle-policy.json` is the same class of existing-state validation:
+  the path must resolve to a regular file containing a valid idle policy before
+  a missing host-config is a confirmable fresh plan and before a configured host
+  is `ready`. A malformed, dangling, FIFO, or otherwise non-file idle-policy
+  artifact is diagnosed with `simbroker doctor`; setup must not create a host
+  over it or report `ready` for a machine whose `brokerd` startup would reject
+  the policy. Dashboard snapshot integers such as
   `overview.totalAliases` must be JSON numbers in the safe integer range
   (`-9007199254740991` through `9007199254740991`) so the macOS app can decode
   them as `Int`; a larger JSON number is finishing work rather than `ready`.
@@ -533,6 +546,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.24 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-directory `leases/` and `pins/` paths and on occupied invalid `idle-policy.json` before fresh provisioning or configured-host `ready` |
 | 1.0.23 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on non-string runtime identifiers, out-of-range snapshot leaseSaturation, occupied FIFO/non-file registry and catalog JSON, emit resolved paths on the copyable apply command, sample apply timestamps after both locks, and keep duplicate runtime records identifier-stable |
 | 1.0.22 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on duplicate known-projects purpose IDs and duplicate snapshot simulator aliases |
 | 1.0.21 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on configured-host dangling registries and duplicate snapshot pin aliases |
