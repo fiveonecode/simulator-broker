@@ -136,17 +136,9 @@ private final class ProcessRunState: @unchecked Sendable {
         return
       }
 
-      var message = envelope.error ?? (stderrText.isEmpty ? "Broker CLI command failed." : stderrText)
-      if let failedStage = envelope.failedStage {
-        message += " Failed stage: \(failedStage)."
-      }
-      if let completedStages = envelope.completedStages, completedStages.isEmpty == false {
-        message += " Completed: \(completedStages.joined(separator: ", "))."
-      }
-      if let recoveryCommand = envelope.recoveryCommand {
-        message += " Recovery: \(recoveryCommand)"
-      }
-      finish(.failure(BrokerCLICommandError.commandFailed(message)))
+      finish(.failure(BrokerCLICommandError.commandFailed(
+        envelope.failureDisplayMessage(stderrText: stderrText)
+      )))
     } catch {
       finish(.failure(BrokerCLICommandError.invalidJSONResponse(cliPath)))
     }
@@ -277,15 +269,25 @@ private final class ProcessRunState: @unchecked Sendable {
   }
 }
 
+struct BrokerCLIDoctorIssue: Decodable, Sendable, Equatable {
+  let alias: String?
+  let error: String?
+  let health: String?
+  let reasonCode: String?
+}
+
 struct BrokerCLICommandEnvelope: Decodable, Sendable {
   let completedStages: [String]?
+  let doctorIssues: [BrokerCLIDoctorIssue]?
   let error: String?
   let exitCode: Int?
   let failedStage: String?
   let hostCommitted: Bool?
+  let logPath: String?
   let ok: Bool?
   let reasonCode: String?
   let recoveryCommand: String?
+  let rollbackFailureCount: Int?
   let setupPlan: BrokerSetupPlan?
   let started: Bool?
   let status: String?
@@ -293,26 +295,32 @@ struct BrokerCLICommandEnvelope: Decodable, Sendable {
 
   init(
     completedStages: [String]? = nil,
+    doctorIssues: [BrokerCLIDoctorIssue]? = nil,
     error: String?,
     exitCode: Int?,
     failedStage: String? = nil,
     hostCommitted: Bool? = nil,
+    logPath: String? = nil,
     ok: Bool?,
     reasonCode: String?,
     recoveryCommand: String? = nil,
+    rollbackFailureCount: Int? = nil,
     setupPlan: BrokerSetupPlan? = nil,
     started: Bool?,
     status: String? = nil,
     unchanged: Bool?
   ) {
     self.completedStages = completedStages
+    self.doctorIssues = doctorIssues
     self.error = error
     self.exitCode = exitCode
     self.failedStage = failedStage
     self.hostCommitted = hostCommitted
+    self.logPath = logPath
     self.ok = ok
     self.reasonCode = reasonCode
     self.recoveryCommand = recoveryCommand
+    self.rollbackFailureCount = rollbackFailureCount
     self.setupPlan = setupPlan
     self.started = started
     self.status = status
@@ -322,28 +330,67 @@ struct BrokerCLICommandEnvelope: Decodable, Sendable {
   init(from decoder: any Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     completedStages = try container.decodeIfPresent([String].self, forKey: .completedStages)
+    doctorIssues = try container.decodeIfPresent([BrokerCLIDoctorIssue].self, forKey: .doctorIssues)
     error = try container.decodeIfPresent(String.self, forKey: .error)
     exitCode = try container.decodeIfPresent(Int.self, forKey: .exitCode)
     failedStage = try container.decodeIfPresent(String.self, forKey: .failedStage)
     hostCommitted = try container.decodeIfPresent(Bool.self, forKey: .hostCommitted)
+    logPath = try container.decodeIfPresent(String.self, forKey: .logPath)
     ok = try container.decodeIfPresent(Bool.self, forKey: .ok)
     reasonCode = try container.decodeIfPresent(String.self, forKey: .reasonCode)
     recoveryCommand = try container.decodeIfPresent(String.self, forKey: .recoveryCommand)
+    rollbackFailureCount = try container.decodeIfPresent(Int.self, forKey: .rollbackFailureCount)
     setupPlan = try? BrokerSetupPlan(from: decoder)
     started = try container.decodeIfPresent(Bool.self, forKey: .started)
     status = try container.decodeIfPresent(String.self, forKey: .status)
     unchanged = try container.decodeIfPresent(Bool.self, forKey: .unchanged)
   }
 
+  func failureDisplayMessage(stderrText: String = "") -> String {
+    var message = error ?? (stderrText.isEmpty ? "Broker CLI command failed." : stderrText)
+    if let failedStage {
+      message += " Failed stage: \(failedStage)."
+    }
+    if let completedStages, completedStages.isEmpty == false {
+      message += " Completed: \(completedStages.joined(separator: ", "))."
+    }
+    if let rollbackFailureCount, rollbackFailureCount > 0 {
+      message += " Rollback cleanup was incomplete for \(rollbackFailureCount) Simulator operation(s)."
+    }
+    if let logPath, logPath.isEmpty == false {
+      message += " Service log: \(logPath)."
+    }
+    if let doctorIssues, doctorIssues.isEmpty == false {
+      let summaries = doctorIssues.map { issue in
+        if let alias = issue.alias, alias.isEmpty == false {
+          let health = issue.health.map { " (\($0))" } ?? ""
+          return "\(alias)\(health)"
+        }
+        if let error = issue.error, error.isEmpty == false {
+          return error
+        }
+        return issue.reasonCode ?? "unknown"
+      }
+      message += " Doctor issues: \(summaries.joined(separator: "; "))."
+    }
+    if let recoveryCommand {
+      message += " Recovery: \(recoveryCommand)"
+    }
+    return message
+  }
+
   private enum CodingKeys: String, CodingKey {
     case completedStages
+    case doctorIssues
     case error
     case exitCode
     case failedStage
     case hostCommitted
+    case logPath
     case ok
     case reasonCode
     case recoveryCommand
+    case rollbackFailureCount
     case started
     case status
     case unchanged

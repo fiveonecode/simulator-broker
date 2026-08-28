@@ -679,6 +679,19 @@ function setupOptions(flags) {
 }
 
 function setupPrerequisiteFromError(error) {
+  const ioCode = error?.code ?? error?.payload?.code;
+  if (ioCode === "EACCES" || ioCode === "EISDIR" || ioCode === "ENOTDIR" || ioCode === "EPERM") {
+    return {
+      details: {
+        code: ioCode,
+        error: error?.message ?? String(error),
+      },
+      id: "host-config-path",
+      remediationCommands: [],
+      status: "blocked",
+      summary: "The host configuration or broker state could not be read as a regular file.",
+    };
+  }
   const reasonCode = error?.payload?.reasonCode ?? error?.reasonCode ?? "simctl-inventory-invalid";
   const runtimeProblem = reasonCode === "runtime-not-found" || reasonCode === "device-type-not-found";
   return {
@@ -697,9 +710,9 @@ function setupPrerequisiteFromError(error) {
   };
 }
 
-function serviceIdentityRecoveryCommands(error, paths) {
+function serviceIdentityRecoveryCommands(error, paths, options = {}) {
   const actual = error?.payload?.actual;
-  const retryCommand = setupRecoveryCommand(paths);
+  const retryCommand = setupRecoveryCommand(paths, options);
   if ([actual?.hostConfigPath, actual?.stateRoot, actual?.socketPath]
     .every((value) => typeof value === "string" && value.length > 0)) {
     return [
@@ -747,7 +760,7 @@ async function buildSetupPreview(paths, options) {
         prerequisites: [...corePreview.prerequisites, {
           details: error?.payload ?? { error: error?.message ?? String(error) },
           id: "service-identity",
-          remediationCommands: serviceIdentityRecoveryCommands(error, paths),
+          remediationCommands: serviceIdentityRecoveryCommands(error, paths, options),
           status: "blocked",
           summary: error?.message ?? "The running broker service uses different paths.",
         }],
@@ -940,8 +953,8 @@ function shellQuoteArgument(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
-function setupRecoveryCommand(paths) {
-  return [
+function setupRecoveryCommand(paths, options = {}) {
+  const parts = [
     "simbroker",
     "setup",
     "--host-config",
@@ -950,7 +963,14 @@ function setupRecoveryCommand(paths) {
     shellQuoteArgument(paths.stateRoot),
     "--service-socket",
     shellQuoteArgument(paths.serviceSocketPath),
-  ].join(" ");
+  ];
+  if (options.iosVersion) {
+    parts.push("--ios-version", shellQuoteArgument(options.iosVersion));
+  }
+  if (options.hostId) {
+    parts.push("--host-id", shellQuoteArgument(options.hostId));
+  }
+  return parts.join(" ");
 }
 
 function setupApplyCommand(preview, flags, options) {
@@ -1027,7 +1047,7 @@ function decorateSetupFailure(error, stage, completedStages, hostCommitted, serv
 
 async function applySetup(paths, options, cancellation) {
   const completedStages = ["preflight", "confirmation"];
-  const recoveryCommand = setupRecoveryCommand(paths);
+  const recoveryCommand = setupRecoveryCommand(paths, options);
   let activeStage = "provisioning";
   let hostCommitted = fs.existsSync(paths.hostConfigPath);
   let serviceRunning = false;
@@ -1174,7 +1194,7 @@ async function runSetup(paths, flags) {
   const options = setupOptions(flags);
   const preview = await buildSetupPreview(paths, options);
   const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true && !wantsJson();
-  const recoveryCommand = setupRecoveryCommand(paths);
+  const recoveryCommand = setupRecoveryCommand(paths, options);
 
   if (options.apply && !options.confirmPlanId) {
     throw new BrokerError("Setup apply requires the current plan confirmation.", {
@@ -1329,7 +1349,10 @@ main()
       let recoveryCommand = "simbroker setup";
       if (setupInvocation) {
         try {
-          recoveryCommand = setupRecoveryCommand(buildPaths(invocation.flags));
+          recoveryCommand = setupRecoveryCommand(buildPaths(invocation.flags), {
+            hostId: flagValue(invocation.flags, "host-id"),
+            iosVersion: flagValue(invocation.flags, "ios-version"),
+          });
         } catch {
           recoveryCommand = "simbroker setup";
         }

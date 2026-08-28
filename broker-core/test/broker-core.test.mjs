@@ -228,6 +228,22 @@ function brokerPaths(paths) {
   });
 }
 
+function quotedSetupPath(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function setupCommandWithSelectedPaths(command, paths) {
+  return [
+    command,
+    "--host-config",
+    quotedSetupPath(paths.hostConfigPath),
+    "--state-root",
+    quotedSetupPath(paths.stateRoot),
+    "--service-socket",
+    quotedSetupPath(paths.serviceSocketPath),
+  ].join(" ");
+}
+
 function readCapacityTransactions(resolvedPaths) {
   if (!fs.existsSync(resolvedPaths.capacityTransactionsDir)) {
     return [];
@@ -1183,6 +1199,31 @@ test("setup blocks an existing host when doctor-relevant state files are malform
   assert.equal(knownProjectsBlocked.status, "blocked");
   assert.ok(knownProjectsBlocked.prerequisites.some((issue) =>
     issue.id === "known-projects" && issue.status === "blocked"));
+  assert.deepEqual(
+    knownProjectsBlocked.prerequisites.find((issue) => issue.id === "known-projects").remediationCommands,
+    [setupCommandWithSelectedPaths("simbroker doctor", resolvedPaths)],
+  );
+
+  writeJson(resolvedPaths.knownProjectsPath, {
+    projects: {
+      "catalog-a": {
+        lastObservedAt: "2026-01-01T00:00:00.000Z",
+        projectFilePath: path.join(paths.root, "repo/.simulator-broker/project.json"),
+        projectId: "catalog-b",
+        projectName: "Mismatched Catalog",
+        purposes: [],
+        repoRoot: path.join(paths.root, "repo"),
+      },
+    },
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    version: 1,
+  });
+  const mismatchedCatalogBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(mismatchedCatalogBlocked.status, "blocked");
+  assert.ok(mismatchedCatalogBlocked.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
 
   writeJson(resolvedPaths.knownProjectsPath, {
     projects: {},
@@ -1339,6 +1380,23 @@ test("setup blocks snapshot-incomplete leases, pins, and schema-invalid registry
   );
 });
 
+test("setup blocks an existing host-config that is not a regular file", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  fs.mkdirSync(paths.hostConfigPath);
+
+  const preview = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(preview.status, "blocked");
+  assert.ok(preview.prerequisites.some((issue) =>
+    issue.id === "host-config" && issue.status === "blocked"));
+  assert.deepEqual(preview.nextSteps, [
+    setupCommandWithSelectedPaths("simbroker doctor", resolvedPaths),
+  ]);
+});
+
 test("setup blocks a missing host config when the state root already has broker records", () => {
   const paths = makePaths();
   const resolvedPaths = brokerPaths(paths);
@@ -1378,6 +1436,25 @@ test("setup blocks a missing host config when the state root already has broker 
     issue.id === "state-root" && issue.status === "blocked"));
 
   fs.rmSync(path.join(resolvedPaths.leasesDir, "leftover.json"));
+  fs.mkdirSync(path.join(resolvedPaths.leasesDir, "directory.json"));
+  const leaseDirectoryBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(leaseDirectoryBlocked.status, "blocked");
+  assert.ok(leaseDirectoryBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  fs.rmSync(path.join(resolvedPaths.leasesDir, "directory.json"), { recursive: true });
+
+  fs.mkdirSync(resolvedPaths.registryPath);
+  const registryDirectoryBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-registry-dir",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(registryDirectoryBlocked.status, "blocked");
+  assert.ok(registryDirectoryBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  fs.rmSync(resolvedPaths.registryPath, { recursive: true });
+
   const emptyLeaseDir = previewSetupBroker(resolvedPaths, {
     hostId: "fresh-empty-state",
     simctlAdapter: paths.simctl.adapter,
@@ -1411,7 +1488,9 @@ test("setup blocks an existing host whose registry marks an alias for repair", (
   assert.equal(blocked.status, "blocked");
   assert.equal(blocked.service.action, "blocked");
   assert.ok(blocked.prerequisites.some((issue) => issue.alias === "ui-1"));
-  assert.deepEqual(blocked.nextSteps, ["simbroker simulators repair --alias ui-1"]);
+  assert.deepEqual(blocked.nextSteps, [
+    setupCommandWithSelectedPaths("simbroker simulators repair --alias ui-1", resolvedPaths),
+  ]);
 });
 
 test("setup accepts major-only requirements but does not recreate an arbitrary missing registry", () => {
@@ -1564,7 +1643,9 @@ test("setup keeps missing-registry recovery blocked for a non-starter host", () 
   const blocked = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
 
   assert.equal(blocked.status, "blocked");
-  assert.deepEqual(blocked.nextSteps, ["simbroker doctor"]);
+  assert.deepEqual(blocked.nextSteps, [
+    setupCommandWithSelectedPaths("simbroker doctor", resolvedPaths),
+  ]);
 });
 
 test("setup rolls back every pre-commit create failure and cooperative interruption", () => {

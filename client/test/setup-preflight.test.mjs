@@ -148,6 +148,25 @@ test("setup preflight accepts an existing writable host-config file", () => {
   assert.equal(hostConfig.status, "ready");
 });
 
+test("setup preflight blocks an existing host-config that is a directory", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-host-dir-"));
+  const hostConfigPath = path.join(root, "host.json");
+  fs.mkdirSync(hostConfigPath);
+  const paths = {
+    hostConfigPath,
+    stateRoot: path.join(root, "state"),
+  };
+  const prerequisites = evaluateSetupPrerequisites(paths, {
+    commandRunner: readyCommandRunner,
+    env: {},
+    nodeVersion: "20.0.0",
+    platform: "darwin",
+  });
+  const hostConfig = prerequisites.find((prerequisite) => prerequisite.id === "host-config-path");
+  assert.equal(hostConfig.status, "blocked");
+  assert.match(hostConfig.summary, /readable regular file/);
+});
+
 test("setup preflight blocks destinations whose ancestor is a regular file", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-file-"));
   const blockingFile = path.join(root, "existing-file");

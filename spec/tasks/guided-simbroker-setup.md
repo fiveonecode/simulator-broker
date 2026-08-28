@@ -1,8 +1,8 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.9`
-> **Last Updated:** `2026-08-25`
+> **Version:** `1.0.10`
+> **Last Updated:** `2026-08-28`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
 > **Target:** Next Alpha PR
@@ -91,7 +91,9 @@ Before planning, setup performs bounded, read-only checks:
 6. `simctl list --json runtimes`, `devices`, and `devicetypes` are valid.
 7. One available iOS runtime supports both starter families.
 8. Nearest existing host-config/state-root ancestors are searchable, writable
-   directories. An existing state root must itself be a directory.
+   directories. An existing state root must itself be a directory. An existing
+   host-config path must be a readable regular file; a directory, FIFO, or other
+   non-file is a host-config path blocker, not a Simulator inventory failure.
 9. Disk availability is reported as bytes and formatted GiB when supported.
 
 Setup never executes the remediation commands. Blockers provide exact manual
@@ -173,8 +175,11 @@ Apply performs, in order:
   reused/external devices and leave no claiming host/registry state.
 - After host commit, preserve host and devices; rerun `simbroker setup` with
   the same selected `--host-config`, `--state-root`, and `--service-socket`
-  paths, shell-quoted. When the host commit succeeded but initial registry
-  persistence did not, setup previews registry initialization as safe finishing
+  paths, shell-quoted. Before host commit, the advertised recovery command also
+  keeps any explicit `--host-id` and `--ios-version` selections so retry does
+  not silently change the requested host or runtime. When the host commit
+  succeeded but initial registry persistence did not, setup previews registry
+  initialization as safe finishing
   work only when the host is attributable to the canonical starter shape, every
   alias records the exact runtime version used by its Simulator, every Simulator
   uses the setup-selected runtime and device type, and no lease, pin, or pending
@@ -195,9 +200,13 @@ Apply performs, in order:
   Persisted registry alias data that is schema-invalid, such as an
   unrecognized `health` value or an alias map that contains none of the
   configured host aliases, is also invalid; setup must not normalize it into a
-  `ready` host. Setup does not treat a missing host-config as a confirmable
-  fresh plan when the selected state root already contains a registry file or
-  lease/pin JSON.
+  `ready` host. A known-projects catalog key that disagrees with that record's
+  `projectId` is the same class of invalid existing-host state. Setup does not
+  treat a missing host-config as a confirmable fresh plan when the selected
+  state root already contains a registry path of any type, or a JSON-named
+  lease/pin directory entry of any type. Blocked-preview doctor, repair, and
+  setup remediation commands include the selected `--host-config`,
+  `--state-root`, and `--service-socket` paths.
 - Preview probes the requested service socket even when no host is configured
   yet. A running broker with a different host-config, state-root, or socket
   identity is a `service-identity` blocker and is not confirmable, so apply
@@ -233,7 +242,10 @@ is already `ready` refreshes the current snapshot before reporting that
 success, matching confirmed apply. Failure of a confirmable plan refreshes
 first, preserves the sheet, and shows completed stages and recovery.
 Automatic finishing failure stays off the sheet and surfaces the recovery
-error on the dashboard.
+error on the dashboard. The read-only snapshot `Finish setup` action is hidden
+while setup is applying so an in-progress run can only be stopped through Stop.
+Displayed setup failures include the CLI `logPath`, `doctorIssues`, and
+incomplete rollback count when those fields are present.
 
 The app accepts only setup schema version 1 and rejects a future or otherwise
 unsupported version before presenting or applying its plan. The `@MainActor
@@ -333,8 +345,10 @@ where deterministic local tooling needs them.
 
 Existing runtime, type, service identity/timeout, invalid config, and unhealthy
 alias codes remain valid. Setup errors include failed/completed stages, host
-commit state, service state, exact recovery command, and public-safe doctor
-issues. JSON stdout is exactly one document with no progress/prompt text.
+commit state, service state, exact recovery command, public-safe doctor
+issues, service log path, and incomplete rollback counts. The macOS app
+decodes those diagnostic fields into the displayed setup error. JSON stdout is
+exactly one document with no progress/prompt text.
 
 ## 5. State transitions
 
@@ -425,6 +439,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.10 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on occupied non-file registry/lease/pin paths and catalog-key/`projectId` mismatch, keep selected paths and host/runtime flags on setup recovery/repair commands, classify host-config I/O separately from simctl inventory, hide duplicate Finish setup while applying, and surface setup log/doctor/rollback diagnostics in the app |
 | 1.0.9 | 2026-08-25 | `spec-steward`, `ios-dev` | Fail closed on snapshot-incomplete lease/pin records and schema-invalid persisted registry alias data instead of normalizing them to `ready` |
 | 1.0.8 | 2026-08-25 | `spec-steward`, `ios-dev` | Block partial lease records and missing-host state roots that already contain registry/lease/pin artifacts, keep selected paths on service-identity retries, and refresh the app dashboard on an already-ready setup preview |
 | 1.0.7 | 2026-08-25 | `spec-steward`, `ios-dev` | App Stop/timeout SIGTERM window includes rollback attribution inventory and the extra inventory after an indeterminate create failure |

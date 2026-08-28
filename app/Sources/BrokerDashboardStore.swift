@@ -281,6 +281,10 @@ final class BrokerDashboardStore {
     canRunLocalBrokerCommands && hostConfigExists && loadedState?.service == nil
   }
 
+  var canOfferReadOnlyFinishSetup: Bool {
+    startupState == .readOnlySnapshot && canStartBrokerService && isApplyingAction == false
+  }
+
   var canRefreshSnapshotArtifact: Bool {
     canRunLocalBrokerCommands && hostConfigExists
   }

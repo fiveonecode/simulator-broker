@@ -503,6 +503,10 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertEqual(store.startupState, .readOnlySnapshot)
     XCTAssertEqual(store.commandStatusText, "Read-only snapshot")
     XCTAssertTrue(store.canStartBrokerService)
+    XCTAssertTrue(store.canOfferReadOnlyFinishSetup)
+
+    store.isApplyingAction = true
+    XCTAssertFalse(store.canOfferReadOnlyFinishSetup)
   }
 
   func testStartupStatePrioritizesMissingHostBootstrapWhenServiceExists() {

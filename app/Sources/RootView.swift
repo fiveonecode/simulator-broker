@@ -189,7 +189,7 @@ struct RootView: View {
   @ViewBuilder
   private var readOnlySnapshotMessageCard: some View {
     if store.startupState == .readOnlySnapshot {
-      if store.canStartBrokerService {
+      if store.canOfferReadOnlyFinishSetup {
         StatusMessageCard(
           color: .orange,
           message: "Broker commands are disabled because brokerd is not running. Start the service to enable pinning, release, and lifecycle actions.",

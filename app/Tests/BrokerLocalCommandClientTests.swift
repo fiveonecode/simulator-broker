@@ -268,6 +268,31 @@ final class BrokerLocalCommandClientTests: XCTestCase {
     )
   }
 
+  func testSetupFailureMessageIncludesServiceLogAndDoctorIssues() throws {
+    let envelope = try JSONDecoder().decode(BrokerCLICommandEnvelope.self, from: Data("""
+    {
+      "ok": false,
+      "error": "Broker health verification failed after setup.",
+      "failedStage": "health",
+      "completedStages": ["preflight", "confirmation", "host"],
+      "logPath": "/tmp/simbroker-state/brokerd.log",
+      "rollbackFailureCount": 1,
+      "doctorIssues": [
+        {"alias": "ui-1", "health": "repair-needed", "reasonCode": "alias-unhealthy"}
+      ],
+      "recoveryCommand": "simbroker setup --host-config '/tmp/host.json'"
+    }
+    """.utf8))
+
+    let message = envelope.failureDisplayMessage()
+    XCTAssertTrue(message.contains("Failed stage: health."))
+    XCTAssertTrue(message.contains("Completed: preflight, confirmation, host."))
+    XCTAssertTrue(message.contains("Rollback cleanup was incomplete for 1 Simulator operation(s)."))
+    XCTAssertTrue(message.contains("Service log: /tmp/simbroker-state/brokerd.log."))
+    XCTAssertTrue(message.contains("Doctor issues: ui-1 (repair-needed)."))
+    XCTAssertTrue(message.contains("Recovery: simbroker setup --host-config '/tmp/host.json'"))
+  }
+
   private func makeTempRoot() throws -> URL {
     let url = URL(fileURLWithPath: NSTemporaryDirectory())
       .appending(path: "simbroker-command-client-tests-\(UUID().uuidString)")

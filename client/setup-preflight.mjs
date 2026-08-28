@@ -84,20 +84,28 @@ function pathPrerequisite(id, destination, summary, { existingMustBeDirectory = 
         `${summary} exists and is not a directory.`,
       );
     }
-    if (ancestorStats.isDirectory() !== true) {
-      if (destinationExists && existingMustBeDirectory !== true) {
-        const parent = path.dirname(ancestor);
-        checkedPath = parent;
-        fs.accessSync(parent, fs.constants.W_OK | fs.constants.X_OK);
-        fs.accessSync(ancestor, fs.constants.W_OK);
-        return {
-          details: { checkedPath: parent, destination: resolvedDestination },
+    if (destinationExists && existingMustBeDirectory !== true) {
+      if (ancestorStats.isFile() !== true) {
+        return blockedPathPrerequisite(
           id,
-          remediationCommands: [],
-          status: "ready",
-          summary: `${summary} is writable.`,
-        };
+          resolvedDestination,
+          ancestor,
+          `${summary} exists and is not a readable regular file.`,
+        );
       }
+      const parent = path.dirname(ancestor);
+      checkedPath = parent;
+      fs.accessSync(parent, fs.constants.W_OK | fs.constants.X_OK);
+      fs.accessSync(ancestor, fs.constants.R_OK | fs.constants.W_OK);
+      return {
+        details: { checkedPath: parent, destination: resolvedDestination },
+        id,
+        remediationCommands: [],
+        status: "ready",
+        summary: `${summary} is writable.`,
+      };
+    }
+    if (ancestorStats.isDirectory() !== true) {
       return blockedPathPrerequisite(
         id,
         resolvedDestination,

@@ -905,8 +905,18 @@ function readHostConfigOrThrow(paths) {
     throw missingHostConfigError(paths);
   }
   try {
+    const stats = fs.statSync(paths.hostConfigPath);
+    if (stats.isFile() !== true) {
+      throw new BrokerError("Host config could not be read as a regular file.", {
+        hostConfigPath: paths.hostConfigPath,
+        reasonCode: "invalid-config",
+      });
+    }
     return validateHostConfig(readJson(paths.hostConfigPath));
   } catch (error) {
+    if (error instanceof BrokerError) {
+      throw error;
+    }
     if (error instanceof SyntaxError) {
       throw new BrokerError("Host config contains invalid JSON.", {
         reasonCode: "invalid-config",
@@ -1575,7 +1585,7 @@ function setupStateContainsLeaseOrPinRecords(paths) {
     return [paths.leasesDir, paths.pinsDir].some((directoryPath) =>
       fs.existsSync(directoryPath)
         && fs.readdirSync(directoryPath, { withFileTypes: true })
-          .some((entry) => entry.isFile() && entry.name.endsWith(".json")));
+          .some((entry) => entry.name.endsWith(".json")));
   } catch {
     // Unreadable mutation state is not safe to reinterpret as an untouched setup.
     return true;
@@ -1584,13 +1594,29 @@ function setupStateContainsLeaseOrPinRecords(paths) {
 
 function setupStateContainsExistingBrokerArtifacts(paths) {
   try {
-    if (fs.existsSync(paths.registryPath) && fs.statSync(paths.registryPath).isFile()) {
+    if (fs.existsSync(paths.registryPath)) {
       return true;
     }
     return setupStateContainsLeaseOrPinRecords(paths);
   } catch {
     return true;
   }
+}
+
+function shellQuoteArgument(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function setupCliCommandWithSelectedPaths(command, paths) {
+  return [
+    command,
+    "--host-config",
+    shellQuoteArgument(paths.hostConfigPath),
+    "--state-root",
+    shellQuoteArgument(paths.stateRoot),
+    "--service-socket",
+    shellQuoteArgument(paths.serviceSocketPath),
+  ].join(" ");
 }
 
 function setupExistingHostState(paths, inventory, options = {}) {
@@ -1617,7 +1643,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
         devices: [],
         host: { action: "keep", configured: true, hostId },
         mode: "preview",
-        nextSteps: ["simbroker doctor"],
+        nextSteps: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
         ok: true,
         planId,
         prerequisites: [{
@@ -1625,7 +1651,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
           id: "host-config",
           status: "blocked",
           summary: error.message,
-          remediationCommands: ["simbroker doctor"],
+          remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
         }],
         runtime: null,
         schemaVersion: SETUP_SCHEMA_VERSION,
@@ -1653,7 +1679,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
         configuredHostId: hostConfig.hostId,
         requestedHostId,
       },
-      remediationCommands: ["simbroker setup"],
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker setup", paths)],
     });
   }
   try {
@@ -1664,7 +1690,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
       status: "blocked",
       summary: "The existing known-projects catalog is invalid and setup will not replace it automatically.",
       details: error instanceof BrokerError ? error.payload : { message: error.message },
-      remediationCommands: ["simbroker doctor"],
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
     });
   }
   try {
@@ -1676,7 +1702,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
       status: "blocked",
       summary: "Existing lease or pin records are invalid and setup will not replace them automatically.",
       details: error instanceof BrokerError ? error.payload : { message: error.message },
-      remediationCommands: ["simbroker doctor"],
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
     });
   }
   let registry = null;
@@ -1697,7 +1723,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
       status: "blocked",
       summary: "The existing broker registry is invalid and setup will not replace it automatically.",
       details: error instanceof BrokerError ? error.payload : { message: error.message },
-      remediationCommands: ["simbroker doctor"],
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
     });
   }
   const devices = hostConfig.aliases.map((alias) => {
@@ -1717,7 +1743,9 @@ function setupExistingHostState(paths, inventory, options = {}) {
         summary: registryHealth === "repair-needed" || registryHealth === "repairing"
           ? `Managed alias ${alias.alias} requires repair before setup can continue.`
           : `Managed alias ${alias.alias} does not resolve to its configured available Simulator.`,
-        remediationCommands: [`simbroker simulators repair --alias ${alias.alias}`],
+        remediationCommands: [
+          setupCliCommandWithSelectedPaths(`simbroker simulators repair --alias ${alias.alias}`, paths),
+        ],
       });
     }
     return {
@@ -1751,7 +1779,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
         id: "registry",
         status: "blocked",
         summary: "The existing broker registry is missing and setup will not recreate it automatically.",
-        remediationCommands: ["simbroker doctor"],
+        remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
       });
   }
   const planId = setupPlanFingerprint({
@@ -1802,12 +1830,12 @@ function blockedSetupExistingStateWithoutHost(paths, options = {}) {
       devices: [],
       host: { action: "keep", configured: false, hostId },
       mode: "preview",
-      nextSteps: ["simbroker doctor"],
+      nextSteps: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
       ok: true,
       planId,
       prerequisites: [{
         id: "state-root",
-        remediationCommands: ["simbroker doctor"],
+        remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
         status: "blocked",
         summary: "The selected state root already contains broker state and setup will not create a new host over it.",
       }],
@@ -2138,10 +2166,19 @@ function normalizeKnownProjects(rawKnownProjects, timestamp) {
     const purposes = requireArray(project.purposes, `${fieldPrefix}.purposes`)
       .map((purpose, index) => validateProjectPurpose(purpose, `${fieldPrefix}.purposes[${index}]`));
 
+    const recordProjectId = requireString(project.projectId, `${fieldPrefix}.projectId`);
+    if (recordProjectId !== projectId) {
+      throw new BrokerError(`${fieldPrefix}.projectId must equal the catalog key.`, {
+        actualProjectId: recordProjectId,
+        catalogKey: projectId,
+        field: `${fieldPrefix}.projectId`,
+        reasonCode: "invalid-config",
+      });
+    }
     projects[projectId] = {
       lastObservedAt: typeof project.lastObservedAt === "string" ? project.lastObservedAt : timestamp,
       projectFilePath: requireString(project.projectFilePath, `${fieldPrefix}.projectFilePath`),
-      projectId: requireString(project.projectId, `${fieldPrefix}.projectId`),
+      projectId: recordProjectId,
       projectName: requireString(project.projectName, `${fieldPrefix}.projectName`),
       purposes,
       repoRoot: requireString(project.repoRoot, `${fieldPrefix}.repoRoot`),
@@ -2420,8 +2457,25 @@ function listJsonFiles(dirPath) {
   return fs.readdirSync(dirPath)
     .filter((name) => name.endsWith(".json"))
     .sort()
-    .map((name) => path.join(dirPath, name))
-    .map(readJson);
+    .map((name) => {
+      const filePath = path.join(dirPath, name);
+      let stats;
+      try {
+        stats = fs.statSync(filePath);
+      } catch {
+        throw new BrokerError(`Unable to read ${filePath}.`, {
+          path: filePath,
+          reasonCode: "invalid-config",
+        });
+      }
+      if (stats.isFile() !== true) {
+        throw new BrokerError(`${filePath} is not a regular JSON file.`, {
+          path: filePath,
+          reasonCode: "invalid-config",
+        });
+      }
+      return readJson(filePath);
+    });
 }
 
 function requirePositiveIntegerField(value, name) {

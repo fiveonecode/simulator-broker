@@ -44,7 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `--service-socket` paths. The macOS app keeps automatic service/snapshot
   finishing off the first-time review sheet and refreshes the dashboard when
   setup preview is already `ready`. Setup apply Stop/timeout waits for rollback
-  inventory calls before escalating to SIGKILL.
+  inventory calls before escalating to SIGKILL. Occupied non-file
+  `registry.json` or JSON-named lease/pin entries block a confirmable fresh
+  plan. Known-projects catalog keys must match each record `projectId`.
+  Blocked-preview doctor and repair commands, plus pre-commit recovery, keep
+  the selected broker paths and any explicit `--host-id` / `--ios-version`.
+  Existing host-config directories or unreadable files are host-path blockers
+  rather than `simctl-inventory` failures. The macOS app hides the read-only
+  `Finish setup` action while setup is applying and surfaces service log,
+  doctor-issue, and incomplete-rollback diagnostics from CLI setup errors.
 - Public CI no longer runs the full-repo home-path leak scan on
   GitHub-hosted runners. Ubuntu (10 minutes) runs skill ownership,
   `test:broker-core`, and `test:harness-adoption`. macOS (15 minutes)

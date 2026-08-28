@@ -740,6 +740,22 @@ test("setup rejects missing or stale confirmation and irrelevant flags before mu
   assert.equal(missing.json.recoveryCommand.includes(fixture.stateRoot), true);
   assert.equal(fs.existsSync(fixture.hostConfigPath), false);
 
+  const missingWithSelections = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--json",
+    "--host-id",
+    "guided-retry",
+    "--ios-version",
+    "18",
+  );
+  assert.equal(missingWithSelections.status, 5);
+  assert.equal(missingWithSelections.json.reasonCode, "setup-confirmation-required");
+  assert.match(missingWithSelections.json.recoveryCommand, /--host-id 'guided-retry'/);
+  assert.match(missingWithSelections.json.recoveryCommand, /--ios-version '18'/);
+  assert.equal(fs.existsSync(fixture.hostConfigPath), false);
+
   const stale = runCli(fixture, "setup", "--apply", "--confirm", "sha256:stale", "--json");
   assert.equal(stale.status, 5);
   assert.equal(stale.json.reasonCode, "setup-plan-stale");
