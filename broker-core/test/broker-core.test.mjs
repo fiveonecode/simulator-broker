@@ -2237,6 +2237,38 @@ test("setup blocks an existing host-config that is not a regular file", () => {
   ]);
 });
 
+test("setup treats a dangling host-config symlink as occupied existing state", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-host",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(preview.status, "changes_required");
+  assert.equal(preview.host.configured, false);
+
+  fs.symlinkSync(path.join(paths.root, "missing-host.json"), paths.hostConfigPath);
+
+  const occupiedPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-host",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(occupiedPreview.status, "blocked");
+  assert.ok(occupiedPreview.prerequisites.some((issue) =>
+    issue.id === "host-config" && issue.status === "blocked"));
+  assert.match(
+    occupiedPreview.prerequisites.find((issue) => issue.id === "host-config").summary,
+    /regular file/,
+  );
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "fresh-over-dangling-host",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-plan-stale");
+  assert.equal(fs.lstatSync(paths.hostConfigPath).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+});
+
 test("setup blocks a missing host config when the state root already has broker records", () => {
   const paths = makePaths();
   const resolvedPaths = brokerPaths(paths);
@@ -2502,6 +2534,60 @@ test("setup blocks a missing host when the state root already has an invalid idl
   }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
   assert.equal(fs.lstatSync(resolvedPaths.idlePolicyPath).isSymbolicLink(), true);
   assert.equal(fs.existsSync(paths.hostConfigPath), false);
+});
+
+test("setup blocks a missing host when events.ndjson is occupied and not a regular file", { timeout: 5_000 }, () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  fs.mkdirSync(resolvedPaths.stateRoot, { recursive: true });
+  makeFifo(resolvedPaths.eventsPath);
+
+  const fifoBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-events-fifo",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(fifoBlocked.status, "blocked");
+  assert.equal(fifoBlocked.confirmation.required, false);
+  assert.ok(fifoBlocked.prerequisites.some((issue) =>
+    issue.id === "events" && issue.status === "blocked"));
+  assert.deepEqual(
+    fifoBlocked.prerequisites.find((issue) => issue.id === "events").remediationCommands,
+    [setupCommandWithSelectedPaths("simbroker doctor", resolvedPaths)],
+  );
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: fifoBlocked.planId,
+    hostId: "fresh-over-events-fifo",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.eventsPath).isFIFO(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+  fs.rmSync(resolvedPaths.eventsPath);
+
+  fs.symlinkSync(path.join(paths.root, "missing-events.ndjson"), resolvedPaths.eventsPath);
+  const danglingBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-events",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(danglingBlocked.status, "blocked");
+  assert.ok(danglingBlocked.prerequisites.some((issue) =>
+    issue.id === "events" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: danglingBlocked.planId,
+    hostId: "fresh-over-dangling-events",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.eventsPath).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+  fs.rmSync(resolvedPaths.eventsPath);
+
+  fs.writeFileSync(resolvedPaths.eventsPath, "");
+  const leftoverEvents = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-regular-events",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(leftoverEvents.status, "changes_required");
+  assert.equal(leftoverEvents.confirmation.required, true);
+  assert.equal(leftoverEvents.host.configured, false);
 });
 
 test("setup blocks a configured host whose known-projects catalog is a dangling symlink", () => {

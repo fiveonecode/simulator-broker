@@ -83,6 +83,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directories. Occupied `idle-policy.json` that is malformed or not
   a regular file is the same class of existing-state failure, so setup cannot
   provision a host and then fail at `brokerd` idle-policy reconciliation.
+  Under-lock plan recomputation treats a dangling host-config symlink as
+  occupied existing host state rather than a missing destination that apply
+  may replace. Path-access remediations walk past `EACCES` ancestors so
+  `chmod` targets the searchable parent that actually failed, not an
+  unreachable destination. Occupied `events.ndjson` that is not a regular
+  file blocks a confirmable fresh plan so apply cannot create Simulators and
+  then hang opening a FIFO audit log.
   Snapshot `overview.leaseSaturation` outside `0` through `1` is
   finishing work rather than `ready`. The non-TTY copyable apply command
   includes the resolved `--host-config`, `--state-root`, and

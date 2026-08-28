@@ -176,6 +176,36 @@ test("setup preflight remediates an unreadable host-config file instead of its p
   assert.deepEqual(hostConfig.remediationCommands, [`chmod u+rw '${hostConfigPath}'`]);
 });
 
+test("setup preflight remediates an unsearchable ancestor instead of the unreachable destination", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-unsearchable-"));
+  const blockedAncestor = path.join(root, "blocked");
+  fs.mkdirSync(blockedAncestor);
+  fs.chmodSync(blockedAncestor, 0o000);
+  t.after(() => {
+    try {
+      fs.chmodSync(blockedAncestor, 0o755);
+    } catch {
+      // Restore enough access for temp cleanup.
+    }
+  });
+  const hostConfigPath = path.join(blockedAncestor, "nested", "host.json");
+  const paths = {
+    hostConfigPath,
+    stateRoot: path.join(root, "state"),
+  };
+  const prerequisites = evaluateSetupPrerequisites(paths, {
+    commandRunner: readyCommandRunner,
+    env: {},
+    nodeVersion: "20.0.0",
+    platform: "darwin",
+  });
+  const hostConfig = prerequisites.find((prerequisite) => prerequisite.id === "host-config-path");
+  assert.equal(hostConfig.status, "blocked");
+  assert.equal(hostConfig.details.checkedPath, blockedAncestor);
+  assert.notEqual(hostConfig.details.checkedPath, hostConfigPath);
+  assert.deepEqual(hostConfig.remediationCommands, [`chmod u+wx '${blockedAncestor}'`]);
+});
+
 test("setup preflight remediates a non-writable host-config parent directory", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-host-parent-"));
   const parent = path.join(root, "config");

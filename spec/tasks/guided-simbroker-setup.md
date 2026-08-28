@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.25`
+> **Version:** `1.0.26`
 > **Last Updated:** `2026-08-29`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -106,7 +106,10 @@ Before planning, setup performs bounded, read-only checks:
 7. One available iOS runtime supports both starter families.
 8. Nearest existing host-config/state-root ancestors are searchable, writable
    directories. Occupancy is the directory entry itself (`lstat`), so a dangling
-   symlink is occupied rather than treated as missing. An existing state root
+   symlink is occupied rather than treated as missing. If `lstat` fails with
+   `EACCES` because an ancestor lacks search permission, walk upward to the
+   first ancestor that `lstat` can observe instead of treating the unreachable
+   destination as the nearest existing path. An existing state root
    must itself be a directory. An existing host-config path must be a readable
    regular file; a directory, FIFO, dangling symlink, or other non-file is a
    host-config path blocker, not a Simulator inventory failure.
@@ -118,7 +121,8 @@ Settings > Components, or `xcodebuild -downloadPlatform iOS`. Path-access
 blockers advertise a shell-safe `chmod` for the path and bits that actually
 failed: `u+rw` for an existing host-config file that is not readable and
 writable, and `u+wx` for a parent or destination directory that is not
-searchable and writable. Disk is `info`,
+searchable and writable. An `EACCES` traversal failure therefore remediates
+the ancestor that blocked search, not the unresolved destination. Disk is `info`,
 is never blocking, and is excluded from the plan fingerprint.
 
 The Xcode command contract is grounded in installed Xcode help when an official
@@ -297,7 +301,17 @@ Apply performs, in order:
   is `ready`. A malformed, dangling, FIFO, or otherwise non-file idle-policy
   artifact is diagnosed with `simbroker doctor`; setup must not create a host
   over it or report `ready` for a machine whose `brokerd` startup would reject
-  the policy. Dashboard snapshot integers such as
+  the policy. Occupied `events.ndjson` uses the same pre-mutation regular-file
+  rule: if the audit-log path is occupied it must resolve to a regular file
+  before a missing host-config is a confirmable fresh plan. A FIFO, dangling
+  symlink, directory, or other non-file at that path is diagnosed with
+  `simbroker doctor`; setup must not create Simulators and then block in
+  `open(..., "a")` on a FIFO without a reader. A leftover regular
+  `events.ndjson` file remains appendable and does not by itself block fresh
+  setup. Under-lock plan recomputation uses the same host-config occupancy
+  rule as preflight: a dangling host-config symlink is occupied existing host
+  state, not a missing destination that confirmed apply may replace.
+  Dashboard snapshot integers such as
   `overview.totalAliases` must be JSON numbers in the safe integer range
   (`-9007199254740991` through `9007199254740991`) so the macOS app can decode
   them as `Int`; a larger JSON number is finishing work rather than `ready`.
@@ -557,6 +571,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.26 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-file `events.ndjson` and dangling host-config occupancy during under-lock plan recomputation, and walk past `EACCES` ancestors when advertising path chmod remediations |
 | 1.0.25 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-directory `capacity-transactions/` and `evidence/` paths before fresh provisioning or configured-host `ready`, and keep preferred device-type selection identifier-stable when preferred names tie |
 | 1.0.24 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-directory `leases/` and `pins/` paths and on occupied invalid `idle-policy.json` before fresh provisioning or configured-host `ready` |
 | 1.0.23 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on non-string runtime identifiers, out-of-range snapshot leaseSaturation, occupied FIFO/non-file registry and catalog JSON, emit resolved paths on the copyable apply command, sample apply timestamps after both locks, and keep duplicate runtime records identifier-stable |

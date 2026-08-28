@@ -42,7 +42,7 @@ function pathOccupied(candidate) {
     fs.lstatSync(candidate);
     return true;
   } catch (error) {
-    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR" || error?.code === "EACCES") {
       return false;
     }
     return true;

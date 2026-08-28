@@ -905,17 +905,22 @@ function missingHostConfigError(paths) {
 }
 
 function readHostConfigOrThrow(paths) {
-  if (fs.existsSync(paths.hostConfigPath) === false) {
+  if (!pathOccupied(paths.hostConfigPath)) {
     throw missingHostConfigError(paths);
   }
+  let stats;
   try {
-    const stats = fs.statSync(paths.hostConfigPath);
-    if (stats.isFile() !== true) {
-      throw new BrokerError("Host config could not be read as a regular file.", {
-        hostConfigPath: paths.hostConfigPath,
-        reasonCode: "invalid-config",
-      });
-    }
+    stats = fs.statSync(paths.hostConfigPath);
+  } catch {
+    stats = null;
+  }
+  if (stats?.isFile() !== true) {
+    throw new BrokerError("Host config could not be read as a regular file.", {
+      hostConfigPath: paths.hostConfigPath,
+      reasonCode: "invalid-config",
+    });
+  }
+  try {
     return validateHostConfig(readJson(paths.hostConfigPath));
   } catch (error) {
     if (error instanceof BrokerError) {
@@ -1667,6 +1672,17 @@ function setupOwnedStateDirectoriesInvalid(paths) {
     || setupOccupiedDirectoryInvalid(paths.evidenceDir);
 }
 
+function setupOccupiedAuditLogInvalid(paths) {
+  if (!pathOccupied(paths.eventsPath)) {
+    return false;
+  }
+  try {
+    return fs.statSync(paths.eventsPath).isFile() !== true;
+  } catch {
+    return true;
+  }
+}
+
 function readOccupiedJsonFile(filePath, message) {
   if (!pathOccupied(filePath)) {
     return null;
@@ -2112,9 +2128,19 @@ function blockedSetupInvalidIdlePolicyWithoutHost(paths, options, error) {
   });
 }
 
+function blockedSetupInvalidEventsWithoutHost(paths, options = {}) {
+  return blockedUnconfiguredSetupPreview(paths, options, {
+    details: { path: paths.eventsPath },
+    id: "events",
+    remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    status: "blocked",
+    summary: "The existing audit log is not a regular file and setup will not create a new host over it.",
+  });
+}
+
 function buildSetupPlan(paths, options = {}) {
   const inventory = readSimctlInventory(options);
-  if (fs.existsSync(paths.hostConfigPath)) {
+  if (pathOccupied(paths.hostConfigPath)) {
     return setupExistingHostState(paths, inventory, options);
   }
   if (setupStateContainsExistingBrokerArtifacts(paths)) {
@@ -2133,6 +2159,9 @@ function buildSetupPlan(paths, options = {}) {
     } catch (error) {
       return blockedSetupInvalidIdlePolicyWithoutHost(paths, options, error);
     }
+  }
+  if (setupOccupiedAuditLogInvalid(paths)) {
+    return blockedSetupInvalidEventsWithoutHost(paths, options);
   }
 
   const runtime = selectRuntimeForSetup(inventory, options.iosVersion);
