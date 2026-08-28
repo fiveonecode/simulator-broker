@@ -2581,6 +2581,23 @@ test("setup blocks a missing host when events.ndjson is occupied and not a regul
   fs.rmSync(resolvedPaths.eventsPath);
 
   fs.writeFileSync(resolvedPaths.eventsPath, "");
+  fs.chmodSync(resolvedPaths.eventsPath, 0o444);
+  const readOnlyBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-readonly-events",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(readOnlyBlocked.status, "blocked");
+  assert.equal(readOnlyBlocked.confirmation.required, false);
+  assert.ok(readOnlyBlocked.prerequisites.some((issue) =>
+    issue.id === "events" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: readOnlyBlocked.planId,
+    hostId: "fresh-over-readonly-events",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+  fs.chmodSync(resolvedPaths.eventsPath, 0o644);
+
   const leftoverEvents = previewSetupBroker(resolvedPaths, {
     hostId: "fresh-over-regular-events",
     simctlAdapter: paths.simctl.adapter,

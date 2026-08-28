@@ -1677,7 +1677,11 @@ function setupOccupiedAuditLogInvalid(paths) {
     return false;
   }
   try {
-    return fs.statSync(paths.eventsPath).isFile() !== true;
+    if (fs.statSync(paths.eventsPath).isFile() !== true) {
+      return true;
+    }
+    fs.accessSync(paths.eventsPath, fs.constants.W_OK);
+    return false;
   } catch {
     return true;
   }
@@ -2134,7 +2138,7 @@ function blockedSetupInvalidEventsWithoutHost(paths, options = {}) {
     id: "events",
     remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
     status: "blocked",
-    summary: "The existing audit log is not a regular file and setup will not create a new host over it.",
+    summary: "The existing audit log is not a writable regular file and setup will not create a new host over it.",
   });
 }
 

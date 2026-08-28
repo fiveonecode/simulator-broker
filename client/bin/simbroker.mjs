@@ -107,6 +107,75 @@ function setupOccupiedPathNotRegularFile(filePath) {
   }
 }
 
+function setupOccupiedPathNotWritableRegularFile(filePath) {
+  if (!pathOccupied(filePath)) {
+    return false;
+  }
+  try {
+    if (fs.statSync(filePath).isFile() !== true) {
+      return true;
+    }
+    fs.accessSync(filePath, fs.constants.W_OK);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function nearestExistingAncestor(destination) {
+  let candidate = path.resolve(destination);
+  while (!pathOccupied(candidate)) {
+    const parent = path.dirname(candidate);
+    if (parent === candidate) {
+      return null;
+    }
+    candidate = parent;
+  }
+  return candidate;
+}
+
+function setupOccupiedSocketUnusable(socketPath) {
+  if (!pathOccupied(socketPath)) {
+    return false;
+  }
+  try {
+    const stats = fs.lstatSync(socketPath);
+    if (stats.isSocket()) {
+      return false;
+    }
+    if (stats.isSymbolicLink()) {
+      try {
+        return fs.statSync(socketPath).isSocket() !== true;
+      } catch {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function setupServiceSocketParentUnusable(socketPath) {
+  const resolvedSocketPath = path.resolve(socketPath);
+  const ancestor = nearestExistingAncestor(resolvedSocketPath);
+  const checkedPath = ancestor === resolvedSocketPath
+    ? path.dirname(resolvedSocketPath)
+    : ancestor;
+  if (checkedPath == null) {
+    return { checkedPath: null, unusable: true };
+  }
+  try {
+    if (fs.statSync(checkedPath).isDirectory() !== true) {
+      return { checkedPath, unusable: true };
+    }
+    fs.accessSync(checkedPath, fs.constants.W_OK | fs.constants.X_OK);
+    return { checkedPath, unusable: false };
+  } catch {
+    return { checkedPath, unusable: true };
+  }
+}
+
 function removeIfExists(filePath) {
   if (fs.existsSync(filePath)) {
     fs.rmSync(filePath, { force: true });
@@ -420,8 +489,8 @@ async function startService(paths, { signal } = {}) {
 
   ensurePrivateDir(paths.stateRoot);
   throwIfAborted(signal);
-  if (setupOccupiedPathNotRegularFile(paths.serviceLogPath)) {
-    throw new BrokerError("The existing service log is not a regular file.", {
+  if (setupOccupiedPathNotWritableRegularFile(paths.serviceLogPath)) {
+    throw new BrokerError("The existing service log is not a writable regular file.", {
       logPath: paths.serviceLogPath,
       reasonCode: "invalid-config",
     });
@@ -1035,6 +1104,7 @@ function setupSnapshotMatchesDashboardContract(snapshot) {
   }
   return setupDashboardOptionalRecord(snapshot.idle, setupDashboardIdleRecord)
     && setupDashboardRecordArray(snapshot.activeLeases, setupDashboardLeaseRecord)
+    && setupDashboardUniqueStringValues(snapshot.activeLeases.map((lease) => lease.leaseId))
     && setupDashboardRecordArray(snapshot.pins, setupDashboardPinRecord)
     && setupDashboardUniqueStringValues(snapshot.pins.map((pin) => pin.alias))
     && setupDashboardRecordArray(snapshot.projects, setupDashboardProjectRecord)
@@ -1248,13 +1318,37 @@ function setupServiceArtifactBlockers(paths) {
       summary: "The existing service metadata is not a regular file and setup will not probe it.",
     });
   }
-  if (setupOccupiedPathNotRegularFile(paths.serviceLogPath)) {
+  if (setupOccupiedPathNotWritableRegularFile(paths.serviceLogPath)) {
     blockers.push({
       details: { path: paths.serviceLogPath },
       id: "service-log",
       remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
       status: "blocked",
-      summary: "The existing service log is not a regular file and setup will not start a service over it.",
+      summary: "The existing service log is not a writable regular file and setup will not start a service over it.",
+    });
+  }
+  if (setupOccupiedSocketUnusable(paths.serviceSocketPath)) {
+    blockers.push({
+      details: { path: paths.serviceSocketPath },
+      id: "service-socket",
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+      status: "blocked",
+      summary: "The existing service socket path is occupied and setup will not bind over it.",
+    });
+  }
+  const socketParent = setupServiceSocketParentUnusable(paths.serviceSocketPath);
+  if (socketParent.unusable) {
+    blockers.push({
+      details: {
+        checkedPath: socketParent.checkedPath,
+        destination: paths.serviceSocketPath,
+      },
+      id: "service-socket",
+      remediationCommands: socketParent.checkedPath
+        ? [`chmod u+wx ${shellQuoteArgument(socketParent.checkedPath)}`]
+        : [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+      status: "blocked",
+      summary: "The service socket destination is not under a searchable, writable directory.",
     });
   }
   return blockers;

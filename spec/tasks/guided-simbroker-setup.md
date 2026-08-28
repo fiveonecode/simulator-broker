@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.27`
+> **Version:** `1.0.28`
 > **Last Updated:** `2026-08-29`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -301,14 +301,14 @@ Apply performs, in order:
   is `ready`. A malformed, dangling, FIFO, or otherwise non-file idle-policy
   artifact is diagnosed with `simbroker doctor`; setup must not create a host
   over it or report `ready` for a machine whose `brokerd` startup would reject
-  the policy. Occupied `events.ndjson` uses the same pre-mutation regular-file
-  rule: if the audit-log path is occupied it must resolve to a regular file
-  before a missing host-config is a confirmable fresh plan. A FIFO, dangling
-  symlink, directory, or other non-file at that path is diagnosed with
-  `simbroker doctor`; setup must not create Simulators and then block in
-  `open(..., "a")` on a FIFO without a reader. A leftover regular
-  `events.ndjson` file remains appendable and does not by itself block fresh
-  setup. Occupied `brokerd.json` uses the same regular-file rule before the
+  the policy. Occupied `events.ndjson` uses the same pre-mutation writable
+  regular-file rule: if the audit-log path is occupied it must resolve to a
+  writable regular file before a missing host-config is a confirmable fresh
+  plan. A FIFO, dangling symlink, directory, other non-file, or read-only
+  regular file at that path is diagnosed with `simbroker doctor`; setup must
+  not create Simulators and then fail in `open(..., "a")`. A leftover writable
+  regular `events.ndjson` file remains appendable and does not by itself block
+  fresh setup. Occupied `brokerd.json` uses the same regular-file rule before the
   service-status probe: if the service metadata path is occupied it must
   resolve to a regular file. A FIFO, dangling symlink, directory, or other
   non-file is diagnosed with `simbroker doctor`; setup must not wait on a
@@ -317,12 +317,13 @@ Apply performs, in order:
   that does not resolve to a regular file is finishing work rather than
   `ready`; setup must not treat existence as a readable snapshot or block
   indefinitely on a FIFO read. Occupied `brokerd.log` uses the same
-  pre-mutation regular-file rule: if the service log path is occupied it must
-  resolve to a regular file before a confirmable plan and before the
-  provisioning worker. A FIFO, dangling symlink, directory, or other non-file
-  is diagnosed with `simbroker doctor`; setup must not create Simulators and
-  then block in `open(..., "a")` on a FIFO without a reader. A leftover
-  regular `brokerd.log` remains appendable and does not by itself block setup.
+  pre-mutation writable regular-file rule: if the service log path is occupied
+  it must resolve to a writable regular file before a confirmable plan and
+  before the provisioning worker. A FIFO, dangling symlink, directory, other
+  non-file, or read-only regular file is diagnosed with `simbroker doctor`;
+  setup must not create Simulators and then fail in `open(..., "a")`. A leftover
+  writable regular `brokerd.log` remains appendable and does not by itself
+  block setup.
   Under-lock plan recomputation uses the same host-config occupancy
   rule as preflight: a dangling host-config symlink is occupied existing host
   state, not a missing destination that confirmed apply may replace.
@@ -341,7 +342,9 @@ Apply performs, in order:
   rows with a pin-ID set comparison and then report `ready`. A snapshot
   `simulators` array that repeats the same `alias` is finishing work; setup
   must not collapse duplicate simulator rows with an alias `Map` and then
-  report `ready`.
+  report `ready`. A snapshot `activeLeases` array that repeats the same
+  `leaseId` is finishing work; setup must not collapse duplicate lease
+  identities with a lease-ID set comparison and then report `ready`.
   Blocked-preview doctor, repair, and
   setup remediation commands include the selected `--host-config`,
   `--state-root`, and `--service-socket` paths. The non-TTY copyable apply
@@ -350,9 +353,13 @@ Apply performs, in order:
   `SIMBROKER_SERVICE_SOCKET`.
 - Preview probes the requested service socket even when no host is configured
   yet. Occupied non-file `brokerd.json` is a `service-metadata` blocker before
-  that probe, and occupied non-file `brokerd.log` is a `service-log` blocker
-  before the provisioning worker. Confirmed apply revalidates that same socket
-  identity before the provisioning worker mutates host or devices. A running
+  that probe, occupied non-writable `brokerd.log` is a `service-log` blocker
+  before the provisioning worker, and a dangling symlink at the selected
+  service socket is a `service-socket` blocker before that probe. The nearest
+  existing ancestor of the socket destination must be a searchable writable
+  directory so confirmed apply cannot create devices and then fail at
+  `server.listen`. Confirmed apply revalidates that same socket identity before
+  the provisioning worker mutates host or devices. A running
   broker with a different host-config, state-root, or socket identity is a
   `service-identity` blocker and is not confirmable, so apply cannot create
   devices before `startService` discovers the mismatch.
@@ -588,6 +595,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.28 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied unwritable `events.ndjson` and `brokerd.log`, dangling or unwritable service-socket destinations before provisioning, and duplicate snapshot active-lease IDs |
 | 1.0.27 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-file `brokerd.json` before the service-status probe and occupied non-file `brokerd.log` before provisioning, and treat occupied non-file `app-snapshot.json` as finishing work rather than a blocking open |
 | 1.0.26 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-file `events.ndjson` and dangling host-config occupancy during under-lock plan recomputation, and walk past `EACCES` ancestors when advertising path chmod remediations |
 | 1.0.25 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-directory `capacity-transactions/` and `evidence/` paths before fresh provisioning or configured-host `ready`, and keep preferred device-type selection identifier-stable when preferred names tie |

@@ -87,15 +87,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   occupied existing host state rather than a missing destination that apply
   may replace. Path-access remediations walk past `EACCES` ancestors so
   `chmod` targets the searchable parent that actually failed, not an
-  unreachable destination. Occupied `events.ndjson` that is not a regular
-  file blocks a confirmable fresh plan so apply cannot create Simulators and
-  then hang opening a FIFO audit log. Occupied `brokerd.json` that is not a
-  regular file blocks setup before the service-status probe so preview cannot
-  hang on a FIFO metadata read. Occupied `app-snapshot.json` that is not a
-  regular file is finishing work rather than a blocking open. Occupied
-  `brokerd.log` that is not a regular file blocks setup before the
-  provisioning worker so apply cannot commit a host and then hang opening a
-  FIFO service log.
+  unreachable destination. Occupied `events.ndjson` that is not a writable
+  regular file blocks a confirmable fresh plan so apply cannot create
+  Simulators and then fail opening the audit log. Occupied `brokerd.json` that
+  is not a regular file blocks setup before the service-status probe so preview
+  cannot hang on a FIFO metadata read. Occupied `app-snapshot.json` that is not
+  a regular file is finishing work rather than a blocking open. Occupied
+  `brokerd.log` that is not a writable regular file blocks setup before the
+  provisioning worker so apply cannot commit a host and then fail opening the
+  service log. A dangling service-socket symlink or an unwritable socket
+  ancestor is a `service-socket` blocker before the status probe, so apply
+  cannot create devices and then fail at `server.listen`. Duplicate snapshot
+  `leaseId` values are finishing work rather than `ready`.
   Snapshot `overview.leaseSaturation` outside `0` through `1` is
   finishing work rather than `ready`. The non-TTY copyable apply command
   includes the resolved `--host-config`, `--state-root`, and
