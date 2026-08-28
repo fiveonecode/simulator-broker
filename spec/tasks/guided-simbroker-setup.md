@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.24`
+> **Version:** `1.0.25`
 > **Last Updated:** `2026-08-29`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -164,8 +164,11 @@ produces a blocked preview with manual install guidance.
 | `build-2` | iPhone | `build-fast` | `none` |
 | `ipad-1` | iPad | `interactive-resettable` | `erase-on-acquire` |
 
-Existing preferred-device-type rules are reused. When no preferred name
-matches, fallback candidates are sorted by identifier then name so equivalent
+Existing preferred-device-type rules are reused. Preferred-name matches are
+sorted newest extracted numeric name first, then identifier then name, so two
+complete records with the same preferred name cannot change the selected type
+or plan ID when inventory order changes. When no preferred name matches,
+fallback candidates are sorted by identifier then name so equivalent
 inventory order cannot change the selected type or plan ID. A Simulator is
 `reuse` only when broker name, runtime identifier, device type identifier, and
 a non-empty string UDID all match. Same-named incompatible devices, including
@@ -261,9 +264,10 @@ Apply performs, in order:
   report `ready`. Setup does not
   treat a missing host-config as a confirmable fresh plan when the selected
   state root already contains a registry path of any type, a JSON-named
-  lease/pin directory entry of any type, a `leases/` or `pins/` path that is
-  occupied but does not resolve to a directory, or an existing known-projects
-  catalog that cannot be loaded as a valid catalog. Occupancy of `registry.json`
+  lease/pin directory entry of any type, a `leases/`, `pins/`,
+  `capacity-transactions/`, or `evidence/` path that is occupied but does not
+  resolve to a directory, or an existing known-projects catalog that cannot be
+  loaded as a valid catalog. Occupancy of `registry.json`
   and `known-projects.json` uses the directory entry itself (`lstat`), so a
   dangling symlink is occupied rather than treated as missing. Occupied
   registry and catalog paths must then resolve to a regular file before any
@@ -271,7 +275,11 @@ Apply performs, in order:
   state rather than a blocking open. Occupancy of `leases/` and `pins/` uses
   the directory entry itself (`lstat`); a dangling symlink, file, FIFO, or
   other non-directory at those paths is invalid existing mutation state rather
-  than an empty directory that setup may treat as unused. That catalog
+  than an empty directory that setup may treat as unused. Occupancy of
+  `capacity-transactions/` and `evidence/` uses the same `lstat` rule; a
+  dangling symlink, file, FIFO, or other non-directory at those paths is
+  invalid existing state rather than a missing directory that setup may create
+  after committing a host. That catalog
   occupancy rule applies to a configured host as well as a missing host-config:
   a dangling `known-projects.json` symlink is an invalid catalog, not an empty
   catalog that finishing may replace. The same occupancy rule applies to a
@@ -280,6 +288,9 @@ Apply performs, in order:
   and atomically replace. The same occupancy rule applies to configured-host
   `leases/` and `pins/` paths: a dangling directory symlink is invalid existing
   lease/pin state, not an empty directory that setup may report as `ready`.
+  The same occupancy rule applies to configured-host `capacity-transactions/`
+  and `evidence/` paths: a dangling directory symlink is invalid existing
+  state-root layout, not a missing directory that setup may report as `ready`.
   Occupied `idle-policy.json` is the same class of existing-state validation:
   the path must resolve to a regular file containing a valid idle policy before
   a missing host-config is a confirmable fresh plan and before a configured host
@@ -546,6 +557,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.25 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-directory `capacity-transactions/` and `evidence/` paths before fresh provisioning or configured-host `ready`, and keep preferred device-type selection identifier-stable when preferred names tie |
 | 1.0.24 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-directory `leases/` and `pins/` paths and on occupied invalid `idle-policy.json` before fresh provisioning or configured-host `ready` |
 | 1.0.23 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on non-string runtime identifiers, out-of-range snapshot leaseSaturation, occupied FIFO/non-file registry and catalog JSON, emit resolved paths on the copyable apply command, sample apply timestamps after both locks, and keep duplicate runtime records identifier-stable |
 | 1.0.22 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on duplicate known-projects purpose IDs and duplicate snapshot simulator aliases |

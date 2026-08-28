@@ -1377,6 +1377,80 @@ test("setup fallback device types stay stable when preferred names are absent", 
   );
 });
 
+test("setup preferred device types stay stable when preferred names share identifiers", () => {
+  const root = makeTempDir();
+  const deviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16-B",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16-A",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16-B",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16-A",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+  ];
+  const runtime = {
+    buildversion: "22C146",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-18-2",
+    isAvailable: true,
+    version: "18.2",
+  };
+  const forwardSimctl = createSimctlFixture(root, {
+    runtimes: [{ ...runtime, supportedDeviceTypes: deviceTypes }],
+  });
+  const reversedRoot = makeTempDir();
+  const reversedSimctl = createSimctlFixture(reversedRoot, {
+    runtimes: [{ ...runtime, supportedDeviceTypes: [...deviceTypes].reverse() }],
+  });
+  const forwardPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+  const reversedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(reversedRoot, "host-config.json"),
+    stateRoot: path.join(reversedRoot, "state"),
+  });
+
+  const forward = previewSetupBroker(forwardPaths, {
+    hostId: "preferred-device-types",
+    simctlAdapter: forwardSimctl.adapter,
+  });
+  const reversed = previewSetupBroker(reversedPaths, {
+    hostId: "preferred-device-types",
+    simctlAdapter: reversedSimctl.adapter,
+  });
+
+  assert.equal(forward.planId, reversed.planId);
+  assert.equal(
+    forward.devices.find((device) => device.deviceFamily === "iPhone").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPhone-16-A",
+  );
+  assert.equal(
+    reversed.devices.find((device) => device.deviceFamily === "iPhone").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPhone-16-A",
+  );
+  assert.equal(
+    forward.devices.find((device) => device.deviceFamily === "iPad").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPad-A16-A",
+  );
+  assert.equal(
+    reversed.devices.find((device) => device.deviceFamily === "iPad").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPad-A16-A",
+  );
+});
+
 test("setup does not reuse a matching Simulator that omits UDID", () => {
   const root = makeTempDir();
   const matchingName = "Simulator Broker setup-udid ui-1";
@@ -2272,6 +2346,42 @@ test("setup blocks a missing host config when the state root already has broker 
   assert.equal(fs.lstatSync(resolvedPaths.pinsDir).isSymbolicLink(), true);
   fs.rmSync(resolvedPaths.pinsDir);
 
+  fs.rmSync(resolvedPaths.evidenceDir, { recursive: true, force: true });
+  fs.writeFileSync(resolvedPaths.evidenceDir, "occupied\n");
+  const evidenceFileBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-evidence-file",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(evidenceFileBlocked.status, "blocked");
+  assert.ok(evidenceFileBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: evidenceFileBlocked.planId,
+    hostId: "fresh-over-evidence-file",
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.statSync(resolvedPaths.evidenceDir).isFile(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+  fs.rmSync(resolvedPaths.evidenceDir);
+
+  fs.rmSync(resolvedPaths.capacityTransactionsDir, { recursive: true, force: true });
+  fs.symlinkSync(path.join(paths.root, "missing-capacity-transactions"), resolvedPaths.capacityTransactionsDir);
+  const danglingTransactionsBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-capacity-transactions",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(danglingTransactionsBlocked.status, "blocked");
+  assert.ok(danglingTransactionsBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: danglingTransactionsBlocked.planId,
+    hostId: "fresh-over-dangling-capacity-transactions",
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.lstatSync(resolvedPaths.capacityTransactionsDir).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+  fs.rmSync(resolvedPaths.capacityTransactionsDir);
+
   const emptyLeaseDir = previewSetupBroker(resolvedPaths, {
     hostId: "fresh-empty-state",
     simctlAdapter: paths.simctl.adapter,
@@ -2554,6 +2664,51 @@ test("setup blocks a configured host whose leases or pins directory is a danglin
     simctlAdapter: paths.simctl.adapter,
   }));
   assert.equal(fs.lstatSync(resolvedPaths.pinsDir).isSymbolicLink(), true);
+});
+
+test("setup blocks a configured host whose capacity-transactions or evidence directory is invalid", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "configured-dangling-setup-dirs",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "configured-dangling-setup-dirs",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  fs.rmSync(resolvedPaths.evidenceDir, { recursive: true, force: true });
+  fs.symlinkSync(path.join(paths.root, "missing-evidence"), resolvedPaths.evidenceDir);
+
+  const evidenceBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(evidenceBlocked.status, "blocked");
+  assert.equal(evidenceBlocked.confirmation.required, false);
+  assert.ok(evidenceBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: evidenceBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.lstatSync(resolvedPaths.evidenceDir).isSymbolicLink(), true);
+  fs.rmSync(resolvedPaths.evidenceDir);
+  fs.mkdirSync(resolvedPaths.evidenceDir, { recursive: true });
+
+  fs.rmSync(resolvedPaths.capacityTransactionsDir, { recursive: true, force: true });
+  fs.writeFileSync(resolvedPaths.capacityTransactionsDir, "occupied\n");
+  const transactionsBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(transactionsBlocked.status, "blocked");
+  assert.ok(transactionsBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: transactionsBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.statSync(resolvedPaths.capacityTransactionsDir).isFile(), true);
 });
 
 test("setup blocks a configured host whose idle policy is malformed", () => {

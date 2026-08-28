@@ -50,7 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   known-projects, lease/pin records, and the lease/pin directories, and to
   match the current doctor-record set, so deletions are finishing work rather
   than a stale `ready`. Fallback device-type selection is identifier-stable
-  when preferred names are absent. Setup failure recovery commands, including
+  when preferred names are absent, and preferred-name matches with the same
+  display name stay identifier-stable when inventory order changes. Setup
+  failure recovery commands, including
   service-identity retries, keep the selected `--host-config`, `--state-root`,
   and `--service-socket` paths. The macOS app keeps automatic service/snapshot
   finishing off the first-time review sheet and refreshes the dashboard when
@@ -74,7 +76,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `known-projects.json` FIFOs and other non-files fail closed before JSON
   read. Occupied `leases/` or `pins/` paths that do not resolve to directories,
   including dangling directory symlinks, block a confirmable fresh plan and
-  configured-host `ready`. Occupied `idle-policy.json` that is malformed or not
+  configured-host `ready`. Occupied `capacity-transactions/` or `evidence/`
+  paths that do not resolve to directories, including files, FIFOs, and
+  dangling directory symlinks, are the same class of existing-state failure,
+  so setup cannot commit a host and then fail while creating those
+  directories. Occupied `idle-policy.json` that is malformed or not
   a regular file is the same class of existing-state failure, so setup cannot
   provision a host and then fail at `brokerd` idle-policy reconciliation.
   Snapshot `overview.leaseSaturation` outside `0` through `1` is

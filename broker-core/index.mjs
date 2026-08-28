@@ -1140,7 +1140,13 @@ function selectPreferredDeviceType(runtime, deviceFamily) {
   const exactNamePattern = deviceFamily === "iPhone" ? /^iPhone \d+$/ : /^iPad \(/;
   const preferred = supportedDeviceTypes
     .filter((deviceType) => exactNamePattern.test(deviceType.name))
-    .sort((left, right) => compareVersions(right.name, left.name));
+    .sort((left, right) => {
+      const versionComparison = compareVersions(right.name, left.name);
+      if (versionComparison !== 0) {
+        return versionComparison;
+      }
+      return compareSetupDeviceTypes(left, right);
+    });
 
   if (preferred[0]) {
     return preferred[0];
@@ -1656,6 +1662,11 @@ function setupOccupiedDirectoryInvalid(directoryPath) {
   }
 }
 
+function setupOwnedStateDirectoriesInvalid(paths) {
+  return setupOccupiedDirectoryInvalid(paths.capacityTransactionsDir)
+    || setupOccupiedDirectoryInvalid(paths.evidenceDir);
+}
+
 function readOccupiedJsonFile(filePath, message) {
   if (!pathOccupied(filePath)) {
     return null;
@@ -1734,6 +1745,9 @@ function setupStateContainsLeaseOrPinRecords(paths) {
 function setupStateContainsExistingBrokerArtifacts(paths) {
   try {
     if (pathOccupied(paths.registryPath)) {
+      return true;
+    }
+    if (setupOwnedStateDirectoriesInvalid(paths)) {
       return true;
     }
     return setupStateContainsLeaseOrPinRecords(paths);
@@ -1839,6 +1853,23 @@ function setupExistingHostState(paths, inventory, options = {}) {
       id: "idle-policy",
       status: "blocked",
       summary: "The existing idle policy is invalid and setup will not replace it automatically.",
+      details: error instanceof BrokerError ? error.payload : { message: error.message },
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    });
+  }
+  try {
+    if (setupOwnedStateDirectoriesInvalid(paths)) {
+      throw new BrokerError("The existing capacity-transactions or evidence directory could not be used as a directory.", {
+        capacityTransactionsDir: paths.capacityTransactionsDir,
+        evidenceDir: paths.evidenceDir,
+        reasonCode: "invalid-config",
+      });
+    }
+  } catch (error) {
+    issues.push({
+      id: "state-root",
+      status: "blocked",
+      summary: "The existing capacity-transactions or evidence directory is invalid and setup will not replace it automatically.",
       details: error instanceof BrokerError ? error.payload : { message: error.message },
       remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
     });
