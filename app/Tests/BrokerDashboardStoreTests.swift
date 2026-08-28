@@ -559,6 +559,23 @@ final class BrokerDashboardStoreTests: XCTestCase {
       service: nil,
       snapshot: nil
     )
+    let readyState = BrokerLoadedState(
+      paths: runtimePaths,
+      tooling: BrokerToolingState(
+        cliPath: runtimePaths.configuredCLIURL,
+        hostConfigExists: true,
+        installMetadata: nil
+      ),
+      service: BrokerServiceMetadata(
+        hostConfigPath: runtimePaths.hostConfigURL.path,
+        pid: 321,
+        socketPath: runtimePaths.serviceSocketURL?.path ?? "/tmp/simbroker-setup.sock",
+        startedAt: "2026-04-09T10:00:00Z",
+        stateRoot: runtimePaths.stateRoot.path,
+        transport: "unix-http"
+      ),
+      snapshot: try loadFixture(named: "busy-snapshot")
+    )
     let localRunner = RecordingLocalCommandRunner()
     let setupPlan = try makeSetupPlan()
     await localRunner.enqueue(
@@ -585,7 +602,7 @@ final class BrokerDashboardStoreTests: XCTestCase {
       )
     )
     let store = BrokerDashboardStore(
-      loader: StubSnapshotLoader(state: loadedState),
+      loader: SequencedSnapshotLoader(states: [readyState]),
       commandClient: RecordingCommandClient(),
       localCommandRunner: localRunner,
       runtimePaths: runtimePaths
@@ -765,8 +782,21 @@ final class BrokerDashboardStoreTests: XCTestCase {
       service: nil,
       snapshot: nil
     )
+    let readyState = BrokerLoadedState(
+      paths: runtimePaths,
+      tooling: BrokerToolingState(cliPath: runtimePaths.configuredCLIURL, hostConfigExists: true, installMetadata: nil),
+      service: BrokerServiceMetadata(
+        hostConfigPath: runtimePaths.hostConfigURL.path,
+        pid: 321,
+        socketPath: "/tmp/simbroker-finish.sock",
+        startedAt: "2026-04-09T10:00:00Z",
+        stateRoot: runtimePaths.stateRoot.path,
+        transport: "unix-http"
+      ),
+      snapshot: try loadFixture(named: "busy-snapshot")
+    )
     let store = BrokerDashboardStore(
-      loader: StubSnapshotLoader(state: loadedState),
+      loader: SequencedSnapshotLoader(states: [readyState]),
       commandClient: RecordingCommandClient(),
       localCommandRunner: localRunner,
       runtimePaths: runtimePaths
@@ -854,6 +884,66 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertNotNil(store.loadedState?.snapshot)
     let loadCount = await loader.loadCount()
     XCTAssertEqual(loadCount, 1)
+  }
+
+  func testGuidedSetupReadyPreviewDoesNotAnnounceSuccessWithoutLiveService() async throws {
+    let runtimePaths = BrokerRuntimePaths(
+      stateRoot: URL(fileURLWithPath: "/tmp/simbroker-ready-no-service-state"),
+      hostConfigURL: URL(fileURLWithPath: "/tmp/simbroker-ready-no-service-host.json"),
+      configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker")
+    )
+    let staleState = BrokerLoadedState(
+      paths: runtimePaths,
+      tooling: BrokerToolingState(cliPath: runtimePaths.configuredCLIURL, hostConfigExists: false, installMetadata: nil),
+      service: nil,
+      snapshot: nil
+    )
+    let readOnlyState = BrokerLoadedState(
+      paths: runtimePaths,
+      tooling: BrokerToolingState(cliPath: runtimePaths.configuredCLIURL, hostConfigExists: true, installMetadata: nil),
+      service: nil,
+      snapshot: try loadFixture(named: "busy-snapshot")
+    )
+    let loader = SequencedSnapshotLoader(states: [readOnlyState])
+    let localRunner = RecordingLocalCommandRunner()
+    let setupPlan = try makeSetupPlan(
+      status: "ready",
+      confirmationRequired: false,
+      hostConfigured: true,
+      includeRuntime: false,
+      createCount: 0
+    )
+    await localRunner.enqueue(
+      BrokerCLICommandEnvelope(
+        error: nil,
+        exitCode: 0,
+        ok: true,
+        reasonCode: nil,
+        setupPlan: setupPlan,
+        started: nil,
+        status: "ready",
+        unchanged: nil
+      )
+    )
+    let store = BrokerDashboardStore(
+      loader: loader,
+      commandClient: RecordingCommandClient(),
+      localCommandRunner: localRunner,
+      runtimePaths: runtimePaths
+    )
+    store.loadedState = staleState
+
+    store.requestGuidedSetup()
+    try await waitUntil {
+      await MainActor.run { store.setupPhase == .idle && store.isApplyingAction == false && store.lastErrorMessage != nil }
+    }
+
+    XCTAssertNil(store.lastActionMessage)
+    XCTAssertEqual(store.startupState, .readOnlySnapshot)
+    XCTAssertEqual(
+      store.lastErrorMessage,
+      "Setup did not leave brokerd running. Refresh the dashboard or rerun setup."
+    )
   }
 
   func testGuidedSetupAutomaticFinishingDoesNotPresentSetupSheet() async throws {

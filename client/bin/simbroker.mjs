@@ -953,6 +953,42 @@ function shellQuoteArgument(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
+function setupCliCommandWithSelectedPaths(command, paths) {
+  return [
+    command,
+    "--host-config",
+    shellQuoteArgument(paths.hostConfigPath),
+    "--state-root",
+    shellQuoteArgument(paths.stateRoot),
+    "--service-socket",
+    shellQuoteArgument(paths.serviceSocketPath),
+  ].join(" ");
+}
+
+function qualifySetupDoctorIssues(issues, paths) {
+  return issues.map((issue) => {
+    if (issue == null || typeof issue !== "object") {
+      return issue;
+    }
+    if (Array.isArray(issue.remediationCommands) && issue.remediationCommands.length > 0) {
+      return issue;
+    }
+    if (typeof issue.alias === "string" && issue.alias.trim() !== "") {
+      return {
+        ...issue,
+        remediationCommands: [
+          setupCliCommandWithSelectedPaths("simbroker host status", paths),
+          setupCliCommandWithSelectedPaths(`simbroker simulators repair --alias ${issue.alias}`, paths),
+        ],
+      };
+    }
+    return {
+      ...issue,
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    };
+  });
+}
+
 function setupRecoveryCommand(paths, options = {}) {
   const parts = [
     "simbroker",
@@ -1152,7 +1188,7 @@ async function applySetup(paths, options, cancellation) {
       const doctorIssues = (health.issues ?? []).length > 0 ? health.issues : snapshotIssues;
       const unhealthyIssue = doctorIssues.some((issue) => issue.alias);
       throw new BrokerError("Broker health verification failed after setup.", {
-        doctorIssues,
+        doctorIssues: qualifySetupDoctorIssues(doctorIssues, paths),
         exitCode: unhealthyIssue ? BROKER_EXIT_CODES.repairNeeded : BROKER_EXIT_CODES.unavailable,
         missingExpectedAliases: postDoctorHealth.missingExpectedAliases,
         reasonCode: "setup-health-check-failed",

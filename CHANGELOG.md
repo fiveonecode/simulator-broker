@@ -53,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than `simctl-inventory` failures. The macOS app hides the read-only
   `Finish setup` action while setup is applying and surfaces service log,
   doctor-issue, and incomplete-rollback diagnostics from CLI setup errors.
+  After setup preview or apply, the app announces success only when the
+  refreshed dashboard still has a live `brokerd`. Health-failure doctor issues
+  keep path-qualified `host status` and `simulators repair` commands. Getting
+  started now carries the same next-Alpha warning as the root README so
+  published `0.1.0-alpha.2` installs are not directed at `simbroker setup`.
 - Public CI no longer runs the full-repo home-path leak scan on
   GitHub-hosted runners. Ubuntu (10 minutes) runs skill ownership,
   `test:broker-core`, and `test:harness-adoption`. macOS (15 minutes)

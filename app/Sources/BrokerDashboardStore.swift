@@ -50,6 +50,12 @@ private struct BrokerRefreshSupersededError: LocalizedError {
   }
 }
 
+private struct BrokerSetupServiceMissingAfterRefreshError: LocalizedError {
+  var errorDescription: String? {
+    "Setup did not leave brokerd running. Refresh the dashboard or rerun setup."
+  }
+}
+
 @MainActor
 @Observable
 final class BrokerDashboardStore {
@@ -571,6 +577,7 @@ final class BrokerDashboardStore {
         pendingSetupConfirmation = nil
         if plan.status == .ready {
           try await requireRefreshAfterMutation()
+          try requireLiveServiceAfterSetupRefresh()
           setupPhase = .idle
           lastErrorMessage = nil
           setActionMessage("Setup complete — brokerd is running and all managed simulators are healthy.")
@@ -974,6 +981,12 @@ final class BrokerDashboardStore {
     }
   }
 
+  private func requireLiveServiceAfterSetupRefresh() throws {
+    guard loadedState?.service != nil else {
+      throw BrokerSetupServiceMissingAfterRefreshError()
+    }
+  }
+
   private func requireRefreshAfterMutation(silent: Bool = false) async throws {
     var outcome = await refresh(silent: silent)
     var followedGenerations: Set<Int> = []
@@ -1227,6 +1240,7 @@ final class BrokerDashboardStore {
       throw BrokerCLICommandError.invalidJSONResponse(cliURL)
     }
     try await requireRefreshAfterMutation()
+    try requireLiveServiceAfterSetupRefresh()
     setupPlan = nil
     pendingSetupConfirmation = nil
     setupPhase = .idle

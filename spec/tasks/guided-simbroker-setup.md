@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.10`
+> **Version:** `1.0.11`
 > **Last Updated:** `2026-08-28`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -187,7 +187,8 @@ Apply performs, in order:
   Simulator state during apply.
 - Service failure preserves host and reports log path and exact retry.
 - Health failure preserves host/service and reports doctor issues plus exact
-  per-alias repair commands.
+  per-alias repair commands. Those health-failure repair commands include the
+  selected `--host-config`, `--state-root`, and `--service-socket` paths.
 - Existing invalid/unhealthy host is blocked without repair/replacement,
   lease/pin mutation, or retirement. Invalid known-projects, registry, or
   lease/pin JSON is the same class of existing-host failure: diagnose with
@@ -439,6 +440,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.11 | 2026-08-28 | `spec-steward`, `ios-dev` | Health-failure doctor and per-alias repair commands keep the selected `--host-config`, `--state-root`, and `--service-socket` paths |
 | 1.0.10 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on occupied non-file registry/lease/pin paths and catalog-key/`projectId` mismatch, keep selected paths and host/runtime flags on setup recovery/repair commands, classify host-config I/O separately from simctl inventory, hide duplicate Finish setup while applying, and surface setup log/doctor/rollback diagnostics in the app |
 | 1.0.9 | 2026-08-25 | `spec-steward`, `ios-dev` | Fail closed on snapshot-incomplete lease/pin records and schema-invalid persisted registry alias data instead of normalizing them to `ready` |
 | 1.0.8 | 2026-08-25 | `spec-steward`, `ios-dev` | Block partial lease records and missing-host state roots that already contain registry/lease/pin artifacts, keep selected paths on service-identity retries, and refresh the app dashboard on an already-ready setup preview |

@@ -116,6 +116,14 @@ test("newcomer docs enforce one guided machine setup and version-agnostic projec
   }
   assert.match(packageReadme, /published `0\.1\.0-alpha\.2` package predates\s*> guided setup/);
   assert.match(packageReadme, /available from `main` and source\s*> installs/);
+  assert.match(
+    gettingStarted,
+    /Next Alpha availability:[\s\S]*guided `simbroker setup` is currently available/,
+  );
+  assert.match(
+    gettingStarted,
+    /published `0\.1\.0-alpha\.2` Homebrew, npm,\s*> and cask artifacts predate this command/,
+  );
   for (const body of [readme, gettingStarted]) {
     assert.equal(
       body.includes("simbroker host init --bootstrap-config\nsimbroker service start"),

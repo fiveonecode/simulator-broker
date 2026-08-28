@@ -1464,6 +1464,35 @@ test("setup human errors include doctor issues and exact alias repair commands",
   assert.match(text, /simbroker simulators repair --alias ui-1/);
 });
 
+test("setup human errors keep selected paths on health-failure repair commands", () => {
+  const text = format({
+    command: "setup",
+    completedStages: ["host", "service"],
+    doctorIssues: [{
+      alias: "ui-1",
+      health: "repair-needed",
+      reasonCode: "alias-unhealthy",
+      remediationCommands: [
+        "simbroker host status --host-config '/tmp/custom-host.json' --state-root '/tmp/custom-state' --service-socket '/tmp/custom.sock'",
+        "simbroker simulators repair --alias ui-1 --host-config '/tmp/custom-host.json' --state-root '/tmp/custom-state' --service-socket '/tmp/custom.sock'",
+      ],
+    }],
+    error: "Setup health verification failed.",
+    failedStage: "health",
+    hostCommitted: true,
+    ok: false,
+    recoveryCommand: "simbroker setup --host-config '/tmp/custom-host.json' --state-root '/tmp/custom-state' --service-socket '/tmp/custom.sock'",
+  });
+
+  assert.match(text, /Doctor issues:/);
+  assert.match(text, /Alias ui-1: repair-needed/);
+  assert.match(text, /simbroker host status --host-config '\/tmp\/custom-host\.json'/);
+  assert.match(text, /simbroker simulators repair --alias ui-1 --host-config '\/tmp\/custom-host\.json'/);
+  assert.match(text, /--state-root '\/tmp\/custom-state'/);
+  assert.match(text, /--service-socket '\/tmp\/custom\.sock'/);
+  assert.equal(text.includes("inspect with `simbroker host status`, then repair"), false);
+});
+
 test("setup human errors report incomplete rollback without exposing simulator ids", () => {
   const text = format({
     command: "setup",

@@ -476,6 +476,15 @@ function formatSetupText(payload) {
   return formatSetupApplyText(payload);
 }
 
+function formatDoctorIssueNextSteps(issue, fallbackLines) {
+  const remediationLines = Array.isArray(issue.remediationCommands)
+    ? issue.remediationCommands
+      .filter((command) => typeof command === "string" && command.trim() !== "")
+      .map((command) => `  Next: \`${command}\`.`)
+    : [];
+  return remediationLines.length > 0 ? remediationLines : fallbackLines;
+}
+
 function formatDoctorIssue(issue) {
   if (issue == null || typeof issue !== "object") {
     return "- Unexpected doctor issue. Re-run with --json for details.";
@@ -484,7 +493,9 @@ function formatDoctorIssue(issue) {
   if (issue.reasonCode === "missing-registry") {
     return [
       "- Registry: missing.",
-      "  Next: run `simbroker host init --bootstrap-config` if this Mac is not set up yet.",
+      ...formatDoctorIssueNextSteps(issue, [
+        "  Next: run `simbroker host init --bootstrap-config` if this Mac is not set up yet.",
+      ]),
     ].join("\n");
   }
 
@@ -493,7 +504,9 @@ function formatDoctorIssue(issue) {
     const health = typeof issue.health === "string" ? issue.health : "unhealthy";
     return [
       `- Alias ${alias}: ${health}.`,
-      `  Next: inspect with \`simbroker host status\`, then repair with \`simbroker simulators repair --alias ${alias}\` if needed.`,
+      ...formatDoctorIssueNextSteps(issue, [
+        `  Next: inspect with \`simbroker host status\`, then repair with \`simbroker simulators repair --alias ${alias}\` if needed.`,
+      ]),
     ].join("\n");
   }
 

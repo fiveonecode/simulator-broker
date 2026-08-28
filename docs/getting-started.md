@@ -88,6 +88,11 @@ the same way as the CLI-only installer.
 Do this after the Homebrew CLI and optional cask resolve, and before hello
 world. Homebrew does not create Simulator devices.
 
+> **Next Alpha availability:** guided `simbroker setup` is currently available
+> from `main` and source installs. The published `0.1.0-alpha.2` Homebrew, npm,
+> and cask artifacts predate this command; use the clone installer above to try
+> it now, or wait for the next Alpha release.
+
 1. Launch `Simulator Broker.app`.
 2. If it shows **Set Up This Mac**, click **Complete first-time setup**.
 3. Review Xcode readiness, the automatically selected iOS runtime, available
