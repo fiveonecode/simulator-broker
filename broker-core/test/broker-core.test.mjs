@@ -923,6 +923,51 @@ test("setup selects the newest compatible iOS runtime and honors major and exact
   assert.ok(exact.devices.every((device) => device.runtimeVersion === "26.4"));
 });
 
+test("setup rejects an available iOS runtime that omits version before planning", () => {
+  const root = makeTempDir();
+  const supportedDeviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+  ];
+  const versionlessRuntime = {
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+    isAvailable: true,
+    supportedDeviceTypes,
+  };
+  const completeRuntime = {
+    buildversion: "23F76",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    isAvailable: true,
+    supportedDeviceTypes,
+    version: "26.5",
+  };
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  const versionlessOnly = createSimctlFixture(root, { runtimes: [versionlessRuntime] });
+  assert.throws(() => previewSetupBroker(resolvedPaths, {
+    simctlAdapter: versionlessOnly.adapter,
+  }), (error) => error instanceof BrokerError && error.payload.reasonCode === "runtime-not-found");
+
+  const mixed = createSimctlFixture(root, { runtimes: [versionlessRuntime, completeRuntime] });
+  const preview = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: mixed.adapter,
+  });
+  assert.equal(preview.runtime.version, "26.5");
+  assert.equal(preview.runtime.identifier, completeRuntime.identifier);
+  assert.ok(preview.devices.every((device) => device.runtimeVersion === "26.5"));
+});
+
 test("setup requires one runtime to support both starter device families", () => {
   const root = makeTempDir();
   const simctl = createSimctlFixture(root, {
@@ -1569,6 +1614,19 @@ test("setup blocks leases and pins with mistyped optional snapshot fields", () =
     simctlAdapter: paths.simctl.adapter,
   }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
   assert.equal(readJson(completeLeasePath).ownerPid, String(process.pid));
+
+  writeJson(completeLeasePath, { ...completeLease, ownerPid: 9223372036854775808 });
+  const oversizedOwnerPidBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(oversizedOwnerPidBlocked.status, "blocked");
+  assert.ok(oversizedOwnerPidBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: oversizedOwnerPidBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(completeLeasePath).ownerPid, 9223372036854776000);
   fs.rmSync(completeLeasePath);
 
   const completePin = {

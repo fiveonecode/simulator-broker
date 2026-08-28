@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.13`
+> **Version:** `1.0.14`
 > **Last Updated:** `2026-08-28`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -115,7 +115,10 @@ simctl`, and `xcrun simctl list --json`.
 Without override, choose the numerically newest available iOS runtime that
 supports both iPhone and iPad starter types. `--ios-version 26` chooses newest
 compatible 26.x; `26.4` chooses exactly 26.4. Ignore unavailable and non-iOS
-runtimes. Sort numeric version, build version, then identifier deterministically.
+runtimes, and ignore runtime records that omit a non-empty `version` string
+even when `--ios-version` is unset. An incomplete selected runtime is not a
+confirmable plan. Sort numeric version, build version, then identifier
+deterministically.
 When a runtime record omits `supportedDeviceTypes` or the array is empty, derive
 family compatibility and preferred starter types from the separately collected
 `devicetypes` inventory, matching capacity planning. No qualifying runtime
@@ -206,9 +209,11 @@ Apply performs, in order:
   as `jobId`, `note`, or `purposeId`, must be strings when present; a numeric
   or otherwise mistyped optional field is the same class of invalid
   existing-host state.
-  A live lease `ownerPid` must be a JSON number that is a positive integer;
-  a numeric string such as `"123"` is the same class of invalid existing-host
-  state and must not be coerced into a ready snapshot.
+  A live lease `ownerPid` must be a JSON number that is a positive integer in
+  the safe integer range (`1` through `9007199254740991`) so the macOS app can
+  decode it as `Int`; a numeric string such as `"123"` or a larger JSON number
+  that would round or fail Swift `Int` decoding is the same class of invalid
+  existing-host state and must not be coerced into a ready snapshot.
   Persisted registry alias data that is schema-invalid, such as an
   unrecognized `health` or `powerState` value or an alias map that contains none of the
   configured host aliases, is also invalid; setup must not normalize it into a
@@ -457,6 +462,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.14 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on version-less selected runtimes and `ownerPid` values outside the safe integer range |
 | 1.0.13 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on unrecognized registry `powerState` and string `ownerPid`, remediating the actual failing host-config path, revalidating service identity before provisioning, and omitting app `--host-id` for already configured hosts |
 | 1.0.12 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on mistyped optional lease/pin snapshot fields, require catalog-backed project-ID set equality for snapshot freshness, and display doctor `remediationCommands` in app setup failures |
 | 1.0.11 | 2026-08-28 | `spec-steward`, `ios-dev` | Health-failure doctor and per-alias repair commands keep the selected `--host-config`, `--state-root`, and `--service-socket` paths |

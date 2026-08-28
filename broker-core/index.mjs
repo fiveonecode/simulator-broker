@@ -1065,10 +1065,13 @@ function isAvailableIosRuntime(runtime) {
 }
 
 function runtimeMatchesRequestedVersion(runtime, requestedVersion) {
+  if (typeof runtime?.version !== "string" || runtime.version.length === 0) {
+    return false;
+  }
   if (!requestedVersion) {
     return true;
   }
-  const runtimeVersion = String(runtime.version ?? "");
+  const runtimeVersion = runtime.version;
   return isMajorOnlyVersion(requestedVersion)
     ? runtimeVersion.split(".")[0] === String(requestedVersion)
     : runtimeVersion === String(requestedVersion);
@@ -2513,7 +2516,7 @@ function assertStoredRecordFileName(fileName, recordId, kind) {
 }
 
 function requirePositiveIntegerField(value, name) {
-  if (typeof value !== "number" || Number.isInteger(value) !== true || value <= 0) {
+  if (typeof value !== "number" || Number.isSafeInteger(value) !== true || value <= 0) {
     throw new BrokerError(`${name} must be a positive integer.`, {
       field: name,
       reasonCode: "invalid-config",
