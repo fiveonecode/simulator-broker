@@ -763,6 +763,38 @@ test("non-TTY setup is read-only and prints a copyable confirmed apply command",
   assert.equal(fs.existsSync(fixture.hostConfigPath), false);
 });
 
+test("non-TTY setup apply command includes environment-selected paths", () => {
+  const root = makeTempDir();
+  const hostConfigPath = path.join(root, "host-config.json");
+  const stateRoot = path.join(root, "state");
+  const serviceSocket = path.join(root, "broker.sock");
+  const simctl = createSimctlFixture(root);
+  const preview = spawnSync(process.execPath, [
+    CLI_PATH,
+    "setup",
+    "--host-id",
+    "env-selected-paths",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ...simctl.env,
+      SIMBROKER_HOST_CONFIG: hostConfigPath,
+      SIMBROKER_SERVICE_SOCKET: serviceSocket,
+      SIMBROKER_STATE_ROOT: stateRoot,
+    },
+    killSignal: "SIGKILL",
+    timeout: CLI_TEST_TIMEOUT_MS,
+  });
+
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.match(preview.stdout, /simbroker setup --apply --confirm/);
+  assert.equal(preview.stdout.includes(`--host-config '${hostConfigPath}'`), true);
+  assert.equal(preview.stdout.includes(`--state-root '${stateRoot}'`), true);
+  assert.equal(preview.stdout.includes(`--service-socket '${serviceSocket}'`), true);
+  assert.equal(fs.existsSync(hostConfigPath), false);
+});
+
 test("setup rejects missing or stale confirmation and irrelevant flags before mutation", () => {
   const root = makeTempDir();
   const fixture = {
@@ -1046,6 +1078,41 @@ test("setup treats snapshot integers outside the safe integer range as finishing
   const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
   const snapshot = readJson(snapshotPath);
   snapshot.overview.totalAliases = 9223372036854775808;
+  writeJson(snapshotPath, snapshot);
+
+  const finishing = runCli(fixture, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required");
+  assert.equal(finishing.json.service.action, "keep");
+  assert.equal(finishing.json.confirmation.required, false);
+
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
+test("setup treats out-of-range snapshot leaseSaturation as finishing work", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "snapshot-saturation");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "snapshot-saturation",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(applied.json.status, "ready");
+
+  const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
+  const snapshot = readJson(snapshotPath);
+  snapshot.overview.leaseSaturation = 1e308;
   writeJson(snapshotPath, snapshot);
 
   const finishing = runCli(fixture, "setup", "--json");

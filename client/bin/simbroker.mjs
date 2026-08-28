@@ -981,6 +981,7 @@ function setupSnapshotMatchesDashboardContract(snapshot) {
     return false;
   }
   if (typeof overview.leaseSaturation !== "number" || !Number.isFinite(overview.leaseSaturation)
+    || overview.leaseSaturation < 0 || overview.leaseSaturation > 1
     || !setupDashboardInteger(overview.leasedAliases)
     || !setupDashboardInteger(overview.pinnedAliases)
     || !setupDashboardInteger(overview.totalAliases)
@@ -1235,18 +1236,25 @@ function setupRecoveryCommand(paths, options = {}) {
   return parts.join(" ");
 }
 
-function setupApplyCommand(preview, flags, options) {
-  const parts = ["simbroker", "setup", "--apply", "--confirm", shellQuoteArgument(preview.planId)];
-  for (const [flag, value] of [
-    ["ios-version", options.iosVersion],
-    ["host-id", options.hostId],
-    ["host-config", flagValue(flags, "host-config")],
-    ["state-root", flagValue(flags, "state-root")],
-    ["service-socket", flagValue(flags, "service-socket")],
-  ]) {
-    if (value !== null) {
-      parts.push(`--${flag}`, shellQuoteArgument(value));
-    }
+function setupApplyCommand(preview, paths, options) {
+  const parts = [
+    "simbroker",
+    "setup",
+    "--apply",
+    "--confirm",
+    shellQuoteArgument(preview.planId),
+    "--host-config",
+    shellQuoteArgument(paths.hostConfigPath),
+    "--state-root",
+    shellQuoteArgument(paths.stateRoot),
+    "--service-socket",
+    shellQuoteArgument(paths.serviceSocketPath),
+  ];
+  if (options.iosVersion) {
+    parts.push("--ios-version", shellQuoteArgument(options.iosVersion));
+  }
+  if (options.hostId) {
+    parts.push("--host-id", shellQuoteArgument(options.hostId));
   }
   return parts.join(" ");
 }
@@ -1493,7 +1501,7 @@ async function runSetup(paths, flags) {
         ...preview,
         confirmation: {
           ...preview.confirmation,
-          applyCommand: setupApplyCommand(preview, flags, options),
+          applyCommand: setupApplyCommand(preview, paths, options),
         },
       };
     }

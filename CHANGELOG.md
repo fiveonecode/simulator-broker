@@ -67,6 +67,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   values, or simulator `alias` values are finishing work rather than `ready`.
   Two valid purpose records in one known-projects catalog project that share
   the same `id` stay blocked instead of collapsing into a `ready` snapshot.
+  Setup ignores runtime records whose `identifier` is not a non-empty string,
+  keeps duplicate same-identifier runtime records plan-stable by supported
+  device-type identity, and samples apply registry/`host.initialized`
+  timestamps after both provisioning locks. Occupied `registry.json` and
+  `known-projects.json` FIFOs and other non-files fail closed before JSON
+  read. Snapshot `overview.leaseSaturation` outside `0` through `1` is
+  finishing work rather than `ready`. The non-TTY copyable apply command
+  includes the resolved `--host-config`, `--state-root`, and
+  `--service-socket` paths even when those were selected only through
+  environment variables.
   Complete lease
   records that name an unknown alias, point at another alias's Simulator, or
   share an alias with another lease file stay blocked instead of `ready`.

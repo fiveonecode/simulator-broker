@@ -1065,7 +1065,8 @@ function buildStarterProjectConfig({
 
 function isAvailableIosRuntime(runtime) {
   return runtime?.isAvailable !== false
-    && String(runtime?.identifier ?? "").includes(".iOS-");
+    && typeof runtime?.identifier === "string"
+    && runtime.identifier.includes(".iOS-");
 }
 
 function runtimeMatchesRequestedVersion(runtime, requestedVersion) {
@@ -1400,6 +1401,14 @@ function setupRuntimeBuildVersion(runtime) {
   return typeof value === "string" ? value : null;
 }
 
+function setupRuntimeSupportedTypeKey(runtime) {
+  const types = Array.isArray(runtime?.supportedDeviceTypes) ? runtime.supportedDeviceTypes : [];
+  return types
+    .map((deviceType) => typeof deviceType?.identifier === "string" ? deviceType.identifier : "")
+    .sort()
+    .join("\n");
+}
+
 function compareSetupRuntimes(left, right) {
   const versionComparison = compareVersions(right.version, left.version);
   if (versionComparison !== 0) {
@@ -1410,7 +1419,11 @@ function compareSetupRuntimes(left, right) {
   if (buildComparison !== 0) {
     return buildComparison;
   }
-  return String(left.identifier).localeCompare(String(right.identifier));
+  const identifierComparison = String(left.identifier ?? "").localeCompare(String(right.identifier ?? ""));
+  if (identifierComparison !== 0) {
+    return identifierComparison;
+  }
+  return setupRuntimeSupportedTypeKey(left).localeCompare(setupRuntimeSupportedTypeKey(right));
 }
 
 function runtimeSupportedDeviceTypes(runtime, inventory) {
@@ -1635,6 +1648,18 @@ function pathOccupied(candidate) {
 function readOccupiedJsonFile(filePath, message) {
   if (!pathOccupied(filePath)) {
     return null;
+  }
+  let stats;
+  try {
+    stats = fs.statSync(filePath);
+  } catch {
+    stats = null;
+  }
+  if (stats?.isFile() !== true) {
+    throw new BrokerError(message, {
+      path: filePath,
+      reasonCode: "invalid-config",
+    });
   }
   const payload = readJsonIfExists(filePath);
   if (payload === null) {
@@ -2094,8 +2119,9 @@ function setupCommittedHostIdentity(hostConfig) {
 }
 
 export function applySetupBroker(paths, options = {}) {
-  const timestamp = nowIso(options.now);
+  const lockTimestamp = nowIso(options.now);
   return withCapacityLock(paths, () => withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
     const { preview, inventory } = buildSetupPlan(paths, options);
     if (!options.confirmPlanId) {
       throw new BrokerError("Setup requires confirmation of the current plan.", {
@@ -2244,7 +2270,7 @@ export function applySetupBroker(paths, options = {}) {
       failedStage: "confirmation",
       hostCommitted: false,
     }),
-    now: timestamp,
+    now: lockTimestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
@@ -2254,7 +2280,7 @@ export function applySetupBroker(paths, options = {}) {
       failedStage: "confirmation",
       hostCommitted: false,
     }),
-    now: timestamp,
+    now: lockTimestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
     reclaimTimeoutMs: DEFAULT_LOCK_TIMEOUT_MS,

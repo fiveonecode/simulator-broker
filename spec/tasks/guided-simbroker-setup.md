@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.22`
+> **Version:** `1.0.23`
 > **Last Updated:** `2026-08-29`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -85,7 +85,10 @@ host init is unchanged and documented only as advanced/troubleshooting.
   identities are not the same set as the current files, or if the snapshot
   simulator alias set is not exactly the current host alias set with matching
   Simulator IDs.
-- Non-TTY preview never prompts or mutates and prints a copyable apply command.
+- Non-TTY preview never prompts or mutates and prints a copyable apply command
+  that includes the resolved `--host-config`, `--state-root`, and
+  `--service-socket` paths, including when those paths were selected only
+  through environment variables.
 - `--json` preview never prompts or mutates and emits exactly one JSON document.
 - Confirmed apply never prompts, recomputes under locks, and emits one human
   report or JSON document.
@@ -128,16 +131,23 @@ simctl`, and `xcrun simctl list --json`.
 Without override, choose the numerically newest available iOS runtime that
 supports both iPhone and iPad starter types. `--ios-version 26` chooses newest
 compatible 26.x; `26.4` chooses exactly 26.4. Ignore unavailable and non-iOS
-runtimes, and ignore runtime records that omit a non-empty `version` string
+runtimes, ignore runtime records whose `identifier` is not a non-empty string
+even when `String(identifier)` would still contain `.iOS-`, and ignore runtime
+records that omit a non-empty `version` string
 even when `--ios-version` is unset. Ignore runtime versions that are not
 `<major>` or `<major.minor>` so planning cannot select a value that
 `validateHostConfig` would reject after commit. An incomplete selected runtime is not a
 confirmable plan. Ignore device-type records that omit a non-empty `identifier`
 or `name` even when they still report a product family. An incomplete selected
-device type is not a confirmable plan. Sort numeric version, build version, then
-identifier deterministically. Emit `runtime.buildVersion` only when simctl
+device type is not a confirmable plan. Sort numeric version, build version,
+identifier, then the canonical supported device-type identifier list
+deterministically so duplicate runtime records with the same identifier,
+version, and build cannot change the selected starter types or plan ID.
+Emit `runtime.buildVersion` only when simctl
 reports a string; a numeric or otherwise non-string build is omitted so the
 macOS app can decode `BrokerSetupRuntimePlan.buildVersion` as `String?`.
+Emit `runtime.identifier` only as a non-empty string so the macOS app can
+decode `BrokerSetupRuntimePlan.identifier` as `String`.
 When a runtime record omits `supportedDeviceTypes` or the array is empty, derive
 family compatibility and preferred starter types from the separately collected
 `devicetypes` inventory, matching capacity planning. No qualifying runtime
@@ -174,7 +184,8 @@ records cannot change the ID.
 
 Apply acquires the capacity lock, then lease-mutation lock, rereads relevant
 state, recomputes, rejects stale confirmation before mutation, and applies only
-that plan. The setup-specific capacity-lock wait covers the bounded provisioning
+that plan. Registry writes and `host.initialized` timestamps are sampled after
+both locks are held, not before waiting for them. The setup-specific capacity-lock wait covers the bounded provisioning
 budget so a concurrent loser reaches revalidation and returns `setup-plan-stale`
 after the winner commits. Host-init and setup provisioning share rollback
 helpers without nested lock acquisition or time-of-check/time-of-use gaps.
@@ -253,7 +264,10 @@ Apply performs, in order:
   lease/pin directory entry of any type, or an existing known-projects catalog
   that cannot be loaded as a valid catalog. Occupancy of `registry.json` and
   `known-projects.json` uses the directory entry itself (`lstat`), so a
-  dangling symlink is occupied rather than treated as missing. That catalog
+  dangling symlink is occupied rather than treated as missing. Occupied
+  registry and catalog paths must then resolve to a regular file before any
+  JSON read; a FIFO, directory, socket, or other non-file is invalid existing
+  state rather than a blocking open. That catalog
   occupancy rule applies to a configured host as well as a missing host-config:
   a dangling `known-projects.json` symlink is an invalid catalog, not an empty
   catalog that finishing may replace. The same occupancy rule applies to a
@@ -263,6 +277,10 @@ Apply performs, in order:
   `overview.totalAliases` must be JSON numbers in the safe integer range
   (`-9007199254740991` through `9007199254740991`) so the macOS app can decode
   them as `Int`; a larger JSON number is finishing work rather than `ready`.
+  Snapshot `overview.leaseSaturation` must be a finite JSON number in `0`
+  through `1` inclusive so the macOS dashboard can render
+  `Int(leaseSaturation * 100)` without trapping; an out-of-range finite value
+  such as `1e308` is finishing work rather than `ready`.
   A snapshot `projects` array that repeats the same `projectId` is also
   finishing work; setup must not collapse duplicate identities with a set
   comparison and then report `ready`. A snapshot `pins` array that repeats the
@@ -273,7 +291,10 @@ Apply performs, in order:
   report `ready`.
   Blocked-preview doctor, repair, and
   setup remediation commands include the selected `--host-config`,
-  `--state-root`, and `--service-socket` paths.
+  `--state-root`, and `--service-socket` paths. The non-TTY copyable apply
+  command includes those same resolved paths even when they were selected
+  only through `SIMBROKER_HOST_CONFIG`, `SIMBROKER_STATE_ROOT`, or
+  `SIMBROKER_SERVICE_SOCKET`.
 - Preview probes the requested service socket even when no host is configured
   yet. Confirmed apply revalidates that same socket identity before the
   provisioning worker mutates host or devices. A running broker with a
@@ -512,6 +533,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.23 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on non-string runtime identifiers, out-of-range snapshot leaseSaturation, occupied FIFO/non-file registry and catalog JSON, emit resolved paths on the copyable apply command, sample apply timestamps after both locks, and keep duplicate runtime records identifier-stable |
 | 1.0.22 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on duplicate known-projects purpose IDs and duplicate snapshot simulator aliases |
 | 1.0.21 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on configured-host dangling registries and duplicate snapshot pin aliases |
 | 1.0.20 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on configured-host dangling known-projects catalogs, duplicate snapshot project IDs, reusable devices without a UDID, snapshot integers outside the safe integer range, and runtime versions outside the host `<major>` / `<major.minor>` schema |

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -234,6 +235,11 @@ function committedAliasSimulatorId(resolvedPaths, alias) {
 
 function quotedSetupPath(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function makeFifo(filePath) {
+  const result = spawnSync("mkfifo", [filePath], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
 }
 
 function setupCommandWithSelectedPaths(command, paths) {
@@ -964,6 +970,108 @@ test("setup omits a non-string runtime buildVersion from the confirmable preview
   assert.equal(preview.runtime.buildVersion, null);
 });
 
+test("setup ignores available iOS runtimes whose identifier is not a string", () => {
+  const root = makeTempDir();
+  const supportedDeviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+  ];
+  const arrayIdentifierRuntime = {
+    buildversion: "23F76",
+    identifier: ["com.apple.CoreSimulator.SimRuntime.iOS-26-5"],
+    isAvailable: true,
+    supportedDeviceTypes,
+    version: "26.5",
+  };
+  const completeRuntime = {
+    buildversion: "23F76",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-18-2",
+    isAvailable: true,
+    supportedDeviceTypes,
+    version: "18.2",
+  };
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  const arrayOnly = createSimctlFixture(root, { runtimes: [arrayIdentifierRuntime] });
+  assert.throws(() => previewSetupBroker(resolvedPaths, {
+    simctlAdapter: arrayOnly.adapter,
+  }), (error) => error instanceof BrokerError && error.payload.reasonCode === "runtime-not-found");
+
+  const mixed = createSimctlFixture(root, { runtimes: [arrayIdentifierRuntime, completeRuntime] });
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "string-runtime-id",
+    simctlAdapter: mixed.adapter,
+  });
+  assert.equal(preview.status, "changes_required");
+  assert.equal(preview.runtime.identifier, completeRuntime.identifier);
+  assert.equal(typeof preview.runtime.identifier, "string");
+});
+
+test("setup picks a deterministic runtime when duplicate identifiers advertise different device types", () => {
+  const root = makeTempDir();
+  const iPad = {
+    identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+    name: "iPad (A16)",
+    productFamily: "iPad",
+  };
+  const iPhone15 = {
+    identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-15",
+    name: "iPhone 15",
+    productFamily: "iPhone",
+  };
+  const iPhone16 = {
+    identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+    name: "iPhone 16",
+    productFamily: "iPhone",
+  };
+  const shared = {
+    buildversion: "23F76",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    isAvailable: true,
+    version: "26.5",
+  };
+  const first = {
+    ...shared,
+    supportedDeviceTypes: [iPhone16, iPad],
+  };
+  const second = {
+    ...shared,
+    supportedDeviceTypes: [iPhone15, iPad],
+  };
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  const forward = createSimctlFixture(root, { runtimes: [first, second] });
+  const forwardPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "duplicate-runtime",
+    simctlAdapter: forward.adapter,
+  });
+  const reversed = createSimctlFixture(root, { runtimes: [second, first] });
+  const reversedPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "duplicate-runtime",
+    simctlAdapter: reversed.adapter,
+  });
+
+  assert.equal(forwardPreview.planId, reversedPreview.planId);
+  assert.equal(typeof forwardPreview.runtime.identifier, "string");
+  const forwardIphone = forwardPreview.devices.find((device) => device.deviceFamily === "iPhone");
+  const reversedIphone = reversedPreview.devices.find((device) => device.deviceFamily === "iPhone");
+  assert.equal(forwardIphone.deviceTypeIdentifier, reversedIphone.deviceTypeIdentifier);
+});
+
 test("setup ignores available iOS runtimes whose version is outside the host schema", () => {
   const root = makeTempDir();
   const supportedDeviceTypes = [
@@ -1346,6 +1454,31 @@ test("setup preview is an exact stable six-device plan with strict reuse matchin
     simctlAdapter: simctl.adapter,
   });
   assert.equal(reordered.planId, first.planId);
+});
+
+test("setup apply timestamps host.initialized after both provisioning locks", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "lock-timestamp-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const samples = [];
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "lock-timestamp-setup",
+    now: () => {
+      const value = new Date(Date.UTC(2026, 0, 1, samples.length)).toISOString();
+      samples.push(value);
+      return value;
+    },
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.ok(samples.length >= 2);
+  const initialized = readEventsBroker(resolvedPaths, { type: "host.initialized" }).events.at(-1);
+  assert.equal(initialized.timestamp, samples[1]);
+  assert.notEqual(initialized.timestamp, samples[0]);
 });
 
 test("setup rejects missing and stale confirmation before mutation and is idempotent after apply", () => {
@@ -2285,6 +2418,59 @@ test("setup blocks a configured host whose registry is a dangling symlink", () =
     simctlAdapter: paths.simctl.adapter,
   }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
   assert.equal(fs.lstatSync(resolvedPaths.registryPath).isSymbolicLink(), true);
+});
+
+test("setup blocks registry and known-projects FIFOs before reading JSON", { timeout: 5_000 }, () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "configured-fifo-state",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "configured-fifo-state",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  fs.rmSync(resolvedPaths.registryPath);
+  makeFifo(resolvedPaths.registryPath);
+  const registryBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(registryBlocked.status, "blocked");
+  assert.ok(registryBlocked.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: registryBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.registryPath).isFIFO(), true);
+  fs.rmSync(resolvedPaths.registryPath);
+
+  fs.rmSync(resolvedPaths.knownProjectsPath);
+  makeFifo(resolvedPaths.knownProjectsPath);
+  const catalogBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(catalogBlocked.status, "blocked");
+  assert.ok(catalogBlocked.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+  assert.equal(fs.lstatSync(resolvedPaths.knownProjectsPath).isFIFO(), true);
+  fs.rmSync(resolvedPaths.knownProjectsPath);
+
+  const freshPaths = makePaths();
+  const freshResolved = brokerPaths(freshPaths);
+  fs.mkdirSync(freshResolved.stateRoot, { recursive: true });
+  makeFifo(freshResolved.knownProjectsPath);
+  const freshCatalogBlocked = previewSetupBroker(freshResolved, {
+    hostId: "fresh-fifo-catalog",
+    simctlAdapter: freshPaths.simctl.adapter,
+  });
+  assert.equal(freshCatalogBlocked.status, "blocked");
+  assert.ok(freshCatalogBlocked.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+  assert.equal(fs.existsSync(freshPaths.hostConfigPath), false);
 });
 
 test("setup blocks an existing host whose registry marks an alias for repair", () => {
