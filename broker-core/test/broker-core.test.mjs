@@ -1179,6 +1179,35 @@ test("setup rejects missing and stale confirmation before mutation and is idempo
   }), (error) => error.payload?.reasonCode === "setup-plan-stale");
 });
 
+test("setup uses the default host-id fallback for empty-slug requested IDs on rerun", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "!!!",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.notEqual(preview.host.hostId, "!!!");
+  assert.equal(preview.status, "changes_required");
+
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "!!!",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const rerun = previewSetupBroker(resolvedPaths, {
+    hostId: "!!!",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.notEqual(rerun.status, "blocked");
+  assert.equal(rerun.host.hostId, preview.host.hostId);
+  assert.equal(rerun.host.hostId, readJson(paths.hostConfigPath).hostId);
+  assert.equal(
+    rerun.prerequisites.some((issue) => issue.id === "host-id"),
+    false,
+  );
+});
+
 test("setup blocks an existing host when doctor-relevant state files are malformed", () => {
   const paths = makePaths();
   const resolvedPaths = brokerPaths(paths);
@@ -1273,6 +1302,74 @@ test("setup blocks an existing host when doctor-relevant state files are malform
     simctlAdapter: paths.simctl.adapter,
   }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
   assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, "partial-lease.json")), true);
+});
+
+test("setup blocks lease and pin files whose names disagree with their record IDs", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "mismatched-record-files",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "mismatched-record-files",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const completeLease = {
+    actorId: "agent:1",
+    actorType: "agent",
+    alias: "ui-1",
+    displayName: "UI One",
+    leaseId: "canonical-lease",
+    leaseKind: "ephemeral",
+    ownerPid: process.pid,
+    projectId: "demo-app",
+    projectName: "Demo App",
+    purposeId: "agent-ui-session",
+    repoRoot: path.join(paths.root, "repo"),
+    simulatorId: "SIM-UI-1",
+    startedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const mismatchedLeasePath = path.join(resolvedPaths.leasesDir, "orphaned-lease.json");
+  writeJson(mismatchedLeasePath, completeLease);
+  const mismatchedLeaseBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(mismatchedLeaseBlocked.status, "blocked");
+  assert.ok(mismatchedLeaseBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: mismatchedLeaseBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(mismatchedLeasePath).leaseId, "canonical-lease");
+  fs.rmSync(mismatchedLeasePath);
+
+  const completePin = {
+    actorId: "human:local-cli",
+    actorType: "human",
+    alias: "manual-1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    pinId: "canonical-pin",
+    projectId: "demo-app",
+    projectName: "Demo App",
+    repoRoot: path.join(paths.root, "repo"),
+  };
+  const mismatchedPinPath = path.join(resolvedPaths.pinsDir, "orphaned-pin.json");
+  writeJson(mismatchedPinPath, completePin);
+  const mismatchedPinBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(mismatchedPinBlocked.status, "blocked");
+  assert.ok(mismatchedPinBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: mismatchedPinBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(mismatchedPinPath).pinId, "canonical-pin");
 });
 
 test("setup blocks snapshot-incomplete leases, pins, and schema-invalid registry alias data", () => {
@@ -1581,7 +1678,44 @@ test("setup blocks an existing host whose registry marks an alias for repair", (
   assert.equal(blocked.service.action, "blocked");
   assert.ok(blocked.prerequisites.some((issue) => issue.alias === "ui-1"));
   assert.deepEqual(blocked.nextSteps, [
-    setupCommandWithSelectedPaths("simbroker simulators repair --alias ui-1", resolvedPaths),
+    setupCommandWithSelectedPaths(`simbroker simulators repair --alias ${shellQuote("ui-1")}`, resolvedPaths),
+  ]);
+});
+
+test("setup quotes aliases that contain whitespace in repair commands", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "quoted-alias-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "quoted-alias-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const hostConfig = readJson(paths.hostConfigPath);
+  const registry = readJson(resolvedPaths.registryPath);
+  const originalAlias = hostConfig.aliases.find((alias) => alias.alias === "ui-1");
+  originalAlias.alias = "QA Phone";
+  registry.aliases["QA Phone"] = {
+    ...registry.aliases["ui-1"],
+    health: "repair-needed",
+    driftReason: "test-unhealthy",
+  };
+  delete registry.aliases["ui-1"];
+  writeJson(paths.hostConfigPath, hostConfig);
+  writeJson(resolvedPaths.registryPath, registry);
+
+  const blocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const issue = blocked.prerequisites.find((item) => item.alias === "QA Phone");
+  assert.equal(blocked.status, "blocked");
+  assert.ok(issue);
+  assert.deepEqual(issue.remediationCommands, [
+    setupCommandWithSelectedPaths(`simbroker simulators repair --alias ${shellQuote("QA Phone")}`, resolvedPaths),
   ]);
 });
 

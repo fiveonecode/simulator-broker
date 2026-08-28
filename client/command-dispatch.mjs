@@ -476,6 +476,10 @@ function formatSetupText(payload) {
   return formatSetupApplyText(payload);
 }
 
+function shellQuoteArgument(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
 function formatDoctorIssueNextSteps(issue, fallbackLines) {
   const remediationLines = Array.isArray(issue.remediationCommands)
     ? issue.remediationCommands
@@ -505,7 +509,7 @@ function formatDoctorIssue(issue) {
     return [
       `- Alias ${alias}: ${health}.`,
       ...formatDoctorIssueNextSteps(issue, [
-        `  Next: inspect with \`simbroker host status\`, then repair with \`simbroker simulators repair --alias ${alias}\` if needed.`,
+        `  Next: inspect with \`simbroker host status\`, then repair with \`simbroker simulators repair --alias ${shellQuoteArgument(alias)}\` if needed.`,
       ]),
     ].join("\n");
   }

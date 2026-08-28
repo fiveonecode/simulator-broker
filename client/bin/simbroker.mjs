@@ -970,7 +970,10 @@ function qualifySetupDoctorIssues(issues, paths) {
         ...issue,
         remediationCommands: [
           setupCliCommandWithSelectedPaths("simbroker host status", paths),
-          setupCliCommandWithSelectedPaths(`simbroker simulators repair --alias ${issue.alias}`, paths),
+          setupCliCommandWithSelectedPaths(
+            `simbroker simulators repair --alias ${shellQuoteArgument(issue.alias)}`,
+            paths,
+          ),
         ],
       };
     }

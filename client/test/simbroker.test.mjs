@@ -1489,7 +1489,7 @@ test("doctor human formatter names unhealthy aliases and next commands", () => {
   assert.notEqual(text.trimStart()[0], "{");
   assert.match(text, /Status: needs attention/);
   assert.match(text, /Alias ui-1: repair-needed/);
-  assert.match(text, /simbroker simulators repair --alias ui-1/);
+  assert.match(text, /simbroker simulators repair --alias 'ui-1'/);
 });
 
 test("setup human errors include doctor issues and exact alias repair commands", () => {
@@ -1510,7 +1510,7 @@ test("setup human errors include doctor issues and exact alias repair commands",
 
   assert.match(text, /Doctor issues:/);
   assert.match(text, /Alias ui-1: repair-needed/);
-  assert.match(text, /simbroker simulators repair --alias ui-1/);
+  assert.match(text, /simbroker simulators repair --alias 'ui-1'/);
 });
 
 test("setup human errors keep selected paths on health-failure repair commands", () => {

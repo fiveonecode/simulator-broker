@@ -1489,7 +1489,7 @@ function setupDevicePlan(inventory, hostId, runtime) {
 
 function requestedSetupHostId(options) {
   return typeof options.hostId === "string" && options.hostId.trim() !== ""
-    ? slugifyIdentifier(options.hostId, options.hostId)
+    ? slugifyIdentifier(options.hostId, defaultHostId())
     : null;
 }
 
@@ -1694,8 +1694,14 @@ function setupExistingHostState(paths, inventory, options = {}) {
     });
   }
   try {
-    listJsonFiles(paths.leasesDir).forEach(assertValidLeaseRecord);
-    listJsonFiles(paths.pinsDir).forEach(assertValidPinRecord);
+    for (const { name, record } of listJsonFileEntries(paths.leasesDir)) {
+      assertValidLeaseRecord(record);
+      assertStoredRecordFileName(name, record.leaseId, "lease");
+    }
+    for (const { name, record } of listJsonFileEntries(paths.pinsDir)) {
+      assertValidPinRecord(record);
+      assertStoredRecordFileName(name, record.pinId, "pin");
+    }
   } catch (error) {
     issues.push({
       id: "leases",
@@ -1744,7 +1750,10 @@ function setupExistingHostState(paths, inventory, options = {}) {
           ? `Managed alias ${alias.alias} requires repair before setup can continue.`
           : `Managed alias ${alias.alias} does not resolve to its configured available Simulator.`,
         remediationCommands: [
-          setupCliCommandWithSelectedPaths(`simbroker simulators repair --alias ${alias.alias}`, paths),
+          setupCliCommandWithSelectedPaths(
+            `simbroker simulators repair --alias ${shellQuoteArgument(alias.alias)}`,
+            paths,
+          ),
         ],
       });
     }
@@ -2450,7 +2459,7 @@ function idleCleanupPlan(state) {
   };
 }
 
-function listJsonFiles(dirPath) {
+function listJsonFileEntries(dirPath) {
   if (!fs.existsSync(dirPath)) {
     return [];
   }
@@ -2474,8 +2483,24 @@ function listJsonFiles(dirPath) {
           reasonCode: "invalid-config",
         });
       }
-      return readJson(filePath);
+      return { name, record: readJson(filePath) };
     });
+}
+
+function listJsonFiles(dirPath) {
+  return listJsonFileEntries(dirPath).map((entry) => entry.record);
+}
+
+function assertStoredRecordFileName(fileName, recordId, kind) {
+  const expectedFileName = `${recordId}.json`;
+  if (fileName !== expectedFileName) {
+    throw new BrokerError(`${kind} file ${fileName} does not match ${kind} ID ${recordId}.`, {
+      expectedFileName,
+      fileName,
+      reasonCode: "invalid-config",
+      recordId,
+    });
+  }
 }
 
 function requirePositiveIntegerField(value, name) {
