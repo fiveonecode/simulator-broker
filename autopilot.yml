@@ -1,0 +1,10 @@
+version: 1
+verify:
+  command: npm test
+contract:
+  protectedPaths:
+    - .agents/**
+    - WORKFLOW.md
+    - autopilot.yml
+    - package-lock.json
+    - package.json

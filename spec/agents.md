@@ -1,5 +1,5 @@
 # Agents
-Related: `spec/README.md`, `spec/harness-integration.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `WORKFLOW.md`, `.agents/manifests/specs.yaml`, `.agents/manifests/harness-contract.yaml`, `.agents/manifests/agent-harness-runtime.yaml`, `.agents/manifests/broker-runtime.yaml`, `.agents/manifests/implementation-foundation.yaml`, `.agents/verify/implementation.yaml`, `.agents/verify/spec-only.yaml`
+Related: `spec/README.md`, `spec/harness-integration.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `WORKFLOW.md`, `autopilot.yml`, `.agents/manifests/specs.yaml`, `.agents/manifests/harness-contract.yaml`, `.agents/manifests/agent-harness-runtime.yaml`, `.agents/manifests/broker-runtime.yaml`, `.agents/manifests/implementation-foundation.yaml`, `.agents/verify/implementation.yaml`, `.agents/verify/spec-only.yaml`
 
 ## Purpose
 
@@ -13,7 +13,7 @@ Maintainers and agent runs still use `agent:context` / `agent:verify` /
 
 ## Current routing
 
-- `harness-contract` exclusively owns `WORKFLOW.md`, `.agents/`, agent
+- `harness-contract` exclusively owns `WORKFLOW.md`, `autopilot.yml`, `.agents/`, agent
   instructions, the canonical validator, and harness setup files
 - `agent-harness-runtime` exclusively owns executable `agent-harness/` source,
   tests, and package metadata, so harness code changes run executable checks
@@ -46,6 +46,28 @@ project skill roots. Project-local skills remain source-owned in this repository
 - Codex harness actions in `.codex/environments/environment.toml`, including `verify-specs`, must pass `--session-dir` under `${AGENT_HOME:-$HOME/.agents}/agent-harness/simulator-broker/`. The product slug is `simulator-broker`; it is not derived from `package.json` name `simulator-broker-app`.
 - App workflow changes should route through the resolved skills above instead of ad hoc shell chains or undocumented local commands.
 - When the app needs desktop-only behavior that SwiftUI cannot express cleanly, document the exact gap first and keep the implementation covered by `swiftui-pro` and `xcode-build`.
+
+## Autopilot origin contract
+Related: `autopilot.yml`, `WORKFLOW.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `.agents/manifests/harness-contract.yaml`
+
+Codex Autopilot loads target verification only from repository-root `autopilot.yml` on the origin default branch. It does not read `.agents` or `WORKFLOW.md` as the Autopilot gate. Local Symphony/agent runs still use `WORKFLOW.md` `validation.command` (`./scripts/validate.sh`) and `.agents`.
+
+In scope: origin Autopilot verification command, protected verifier paths, and `harness-contract` ownership of `autopilot.yml`. Out of scope: replacing `agent:complete`, GitHub CI, or `scripts/validate.sh`; authorizing Autopilot-labeled product PR merges.
+
+- `version` is integer `1`, not float `1.0`.
+- `verify.command` is `npm test`.
+- `contract.protectedPaths` includes `autopilot.yml`, `.agents/**`, `WORKFLOW.md`, `package.json`, and `package-lock.json`.
+- The `harness-contract` manifest is the single primary owner of `autopilot.yml`.
+- `autopilot.yaml` is invalid. Do not add a sibling alias.
+
+| ID | Requirement | Verifier |
+|----|-------------|----------|
+| SB-AP-001 | Origin default branch contains regular-file `autopilot.yml` | Autopilot origin inspect `ready_on_origin`; `verify:spec-only` |
+| SB-AP-002 | `verify.command` is `npm test` | `autopilot.yml` contents; `verify:spec-only` |
+| SB-AP-003 | Worker edits under `.agents/**` and `WORKFLOW.md` are Autopilot protected paths | `autopilot.yml` `protectedPaths` |
+| SB-AP-004 | `autopilot.yml` has exactly one primary manifest (`harness-contract`) | `npm run agent:preflight -- --paths-file` / config-contract |
+
+Missing origin `autopilot.yml` → Autopilot `waiting_external_prereq` / `external_prereq.missing`. Uncovered or overlapping `autopilot.yml` → spec-only / config-contract fail.
 
 ## Verification model
 
