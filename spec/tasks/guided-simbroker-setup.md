@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.17`
+> **Version:** `1.0.18`
 > **Last Updated:** `2026-08-28`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -71,10 +71,15 @@ host init is unchanged and documented only as advanced/troubleshooting.
   registry, known-projects, lease/pin JSON, and the lease/pin directories.
   Those files must be readable valid records, not merely parseable JSON.
   Newer valid records and deletions of known-projects, lease, or pin records
-  are finishing work, not `ready`. The snapshot is not fresh if its recorded
-  lease, pin, or catalog-backed project identities are not the same set as the
-  current files, or if the snapshot simulator alias set is not exactly the
-  current host alias set with matching Simulator IDs.
+  are finishing work, not `ready`. Deleting `known-projects.json` is finishing
+  work even when both the snapshot and the on-disk catalog have no
+  catalog-backed projects. The snapshot is not fresh if it omits fields the
+  macOS dashboard requires to decode `BrokerAppSnapshot` (`generatedAt`, `ok`,
+  `overview`, `recentEvents`, `activeLeases`, `pins`, `projects`,
+  `simulators`, `hostId`, and `stateRoot`), if its recorded lease, pin, or
+  catalog-backed project identities are not the same set as the current files,
+  or if the snapshot simulator alias set is not exactly the current host alias
+  set with matching Simulator IDs.
 - Non-TTY preview never prompts or mutates and prints a copyable apply command.
 - `--json` preview never prompts or mutates and emits exactly one JSON document.
 - Confirmed apply never prompts, recomputes under locks, and emits one human
@@ -123,7 +128,9 @@ even when `--ios-version` is unset. An incomplete selected runtime is not a
 confirmable plan. Ignore device-type records that omit a non-empty `identifier`
 or `name` even when they still report a product family. An incomplete selected
 device type is not a confirmable plan. Sort numeric version, build version, then
-identifier deterministically.
+identifier deterministically. Emit `runtime.buildVersion` only when simctl
+reports a string; a numeric or otherwise non-string build is omitted so the
+macOS app can decode `BrokerSetupRuntimePlan.buildVersion` as `String?`.
 When a runtime record omits `supportedDeviceTypes` or the array is empty, derive
 family compatibility and preferred starter types from the separately collected
 `devicetypes` inventory, matching capacity planning. No qualifying runtime
@@ -344,7 +351,7 @@ No third-party dependency is added.
 Status is `ready`, `changes_required`, or `blocked`. Prerequisites carry `id`,
 `ready|blocked|info`, summary, optional details, and remediation commands. Host
 reports existence/action/ID. Fresh runtime reports selection source, identifier,
-version, and optional build. Devices report alias/display/family/type/runtime,
+version, and optional string build. Devices report alias/display/family/type/runtime,
 capabilities/reset/action. Service reports running/action. Confirmation reports
 required and create/reuse counts. Next steps carry recovery or repo onboarding.
 
@@ -477,6 +484,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.18 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on truncated dashboard snapshots, deletion of an empty known-projects catalog, and non-string runtime build versions during setup |
 | 1.0.17 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on unknown pin aliases and duplicate pin alias claims during setup instead of collapsing them into a `ready` snapshot |
 | 1.0.16 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on lease/host simulator disagreement, duplicate lease aliases, extra snapshot simulator rows, and dangling registry/known-projects occupancy during setup |
 | 1.0.15 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on incomplete setup device-type records, dangling host-config occupancy, and an invalid known-projects catalog during fresh provisioning |

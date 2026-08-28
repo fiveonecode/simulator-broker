@@ -1389,7 +1389,8 @@ function readSimctlInventory(options = {}) {
 }
 
 function setupRuntimeBuildVersion(runtime) {
-  return runtime?.buildversion ?? runtime?.buildVersion ?? null;
+  const value = runtime?.buildversion ?? runtime?.buildVersion ?? null;
+  return typeof value === "string" ? value : null;
 }
 
 function compareSetupRuntimes(left, right) {

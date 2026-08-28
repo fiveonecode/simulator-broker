@@ -774,12 +774,52 @@ async function buildSetupPreview(paths, options) {
   });
 }
 
+function setupSnapshotMatchesDashboardContract(snapshot) {
+  if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return false;
+  }
+  if (typeof snapshot.generatedAt !== "string" || snapshot.generatedAt.trim() === "") {
+    return false;
+  }
+  if (typeof snapshot.hostId !== "string" || snapshot.hostId.trim() === "") {
+    return false;
+  }
+  if (typeof snapshot.ok !== "boolean") {
+    return false;
+  }
+  if (typeof snapshot.stateRoot !== "string" || snapshot.stateRoot.trim() === "") {
+    return false;
+  }
+  if (snapshot.hostConfigPath != null && typeof snapshot.hostConfigPath !== "string") {
+    return false;
+  }
+  const overview = snapshot.overview;
+  if (overview === null || typeof overview !== "object" || Array.isArray(overview)) {
+    return false;
+  }
+  if (typeof overview.leaseSaturation !== "number" || !Number.isFinite(overview.leaseSaturation)
+    || !Number.isInteger(overview.leasedAliases)
+    || !Number.isInteger(overview.pinnedAliases)
+    || !Number.isInteger(overview.totalAliases)
+    || !Number.isInteger(overview.unhealthyAliases)) {
+    return false;
+  }
+  return Array.isArray(snapshot.activeLeases)
+    && Array.isArray(snapshot.pins)
+    && Array.isArray(snapshot.projects)
+    && Array.isArray(snapshot.recentEvents)
+    && Array.isArray(snapshot.simulators);
+}
+
 function setupSnapshotReady(paths, corePreview) {
   if (!corePreview.host.configured || !fs.existsSync(paths.appSnapshotPath)) {
     return false;
   }
   try {
     const snapshot = JSON.parse(fs.readFileSync(paths.appSnapshotPath, "utf8"));
+    if (!setupSnapshotMatchesDashboardContract(snapshot)) {
+      return false;
+    }
     if (path.resolve(snapshot.hostConfigPath ?? "") !== path.resolve(paths.hostConfigPath)
       || path.resolve(snapshot.stateRoot ?? "") !== path.resolve(paths.stateRoot)
       || snapshot.hostId !== corePreview.host.hostId) {
@@ -897,11 +937,11 @@ function setupDoctorRecordsMatchSnapshot(paths, snapshot) {
       .map((project) => project.projectId)
       .filter((projectId) => typeof projectId === "string" && projectId.length > 0),
   );
-  let currentProjectIds = new Set();
-  if (fs.existsSync(paths.knownProjectsPath)) {
-    const knownProjects = JSON.parse(fs.readFileSync(paths.knownProjectsPath, "utf8"));
-    currentProjectIds = new Set(Object.keys(knownProjects?.projects ?? {}));
+  if (!fs.existsSync(paths.knownProjectsPath)) {
+    return false;
   }
+  const knownProjects = JSON.parse(fs.readFileSync(paths.knownProjectsPath, "utf8"));
+  const currentProjectIds = new Set(Object.keys(knownProjects?.projects ?? {}));
   return setupSameStringSet(catalogProjectIds, currentProjectIds);
 }
 

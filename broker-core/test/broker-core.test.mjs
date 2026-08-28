@@ -927,6 +927,43 @@ test("setup selects the newest compatible iOS runtime and honors major and exact
   assert.ok(exact.devices.every((device) => device.runtimeVersion === "26.4"));
 });
 
+test("setup omits a non-string runtime buildVersion from the confirmable preview", () => {
+  const root = makeTempDir();
+  const supportedDeviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+  ];
+  const numericBuildRuntime = {
+    buildversion: 23000,
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    isAvailable: true,
+    supportedDeviceTypes,
+    version: "26.5",
+  };
+  const simctl = createSimctlFixture(root, { runtimes: [numericBuildRuntime] });
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "numeric-build",
+    simctlAdapter: simctl.adapter,
+  });
+  assert.equal(preview.status, "changes_required");
+  assert.equal(preview.runtime.identifier, numericBuildRuntime.identifier);
+  assert.equal(preview.runtime.version, "26.5");
+  assert.equal(preview.runtime.buildVersion, null);
+});
+
 test("setup rejects an available iOS runtime that omits version before planning", () => {
   const root = makeTempDir();
   const supportedDeviceTypes = [

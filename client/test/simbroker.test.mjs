@@ -822,6 +822,44 @@ test("setup rejects missing or stale confirmation and irrelevant flags before mu
   }
 });
 
+test("setup treats a truncated dashboard snapshot as finishing work", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "truncated-snapshot");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "truncated-snapshot",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(applied.json.status, "ready");
+
+  const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
+  const snapshot = readJson(snapshotPath);
+  delete snapshot.generatedAt;
+  delete snapshot.idle;
+  delete snapshot.overview;
+  delete snapshot.recentEvents;
+  writeJson(snapshotPath, snapshot);
+
+  const finishing = runCli(fixture, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required");
+  assert.equal(finishing.json.service.action, "keep");
+  assert.equal(finishing.json.confirmation.required, false);
+
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
 test("setup treats extra snapshot simulator rows as finishing work", () => {
   const root = makeTempDir();
   const fixture = {
@@ -1026,6 +1064,47 @@ test("setup treats deleted known-projects, lease, or pin records as snapshot fin
   const deletedCatalog = runCli(fixture, "setup", "--json");
   assert.equal(deletedCatalog.status, 0, deletedCatalog.stderr);
   assert.equal(deletedCatalog.json.status, "changes_required");
+
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+});
+
+test("setup treats deletion of an empty known-projects catalog as snapshot finishing work", () => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "empty-catalog-deleted");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "empty-catalog-deleted",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(applied.json.status, "ready");
+
+  const knownProjectsPath = path.join(fixture.stateRoot, "known-projects.json");
+  writeJson(knownProjectsPath, {
+    projects: {},
+    updatedAt: "2026-08-25T00:00:00.000Z",
+    version: 1,
+  });
+  const snapshotPath = path.join(fixture.stateRoot, "app-snapshot.json");
+  const snapshot = readJson(snapshotPath);
+  snapshot.projects = [];
+  writeJson(snapshotPath, snapshot);
+  fs.rmSync(knownProjectsPath);
+
+  const finishing = runCli(fixture, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required");
+  assert.equal(finishing.json.confirmation.required, false);
 
   assert.equal(runCli(fixture, "service", "stop").status, 0);
 });

@@ -63,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another pin file stay blocked instead of collapsing into a `ready` snapshot.
   Snapshot freshness requires the snapshot simulator alias set to equal the
   current host alias set, so extra stale rows are finishing work.
+  A truncated `app-snapshot.json` that omits dashboard-required fields such as
+  `generatedAt`, `ok`, `overview`, or `recentEvents` is finishing work rather
+  than `ready`. Deleting an empty `known-projects.json` is finishing work even
+  when both project-ID sets are empty. Runtime `buildVersion` is emitted only
+  when simctl reports a string, so a numeric build cannot reject the macOS
+  setup plan decoder.
   Known-projects catalog keys must match each record `projectId`.
   Blocked-preview doctor and repair commands, plus pre-commit recovery, keep
   the selected broker paths and any explicit `--host-id` / `--ios-version`.
