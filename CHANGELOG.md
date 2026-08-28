@@ -26,10 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Guided setup binds existing-host confirmation to the requested `--host-id`,
   uses the separate device-type inventory when a runtime omits
   `supportedDeviceTypes`, treats an available iOS runtime that omits `version`
-  as not qualifying for planning, and fails closed when known-projects,
-  registry, or lease/pin JSON cannot be loaded or is not a complete identity
-  record instead of reporting `ready`. Incomplete live leases that omit
-  snapshot-required fields, pins that omit project identity, live leases whose
+  as not qualifying for planning, treats device-type records that omit
+  identifier or name as not qualifying for planning, and fails closed when
+  known-projects, registry, or lease/pin JSON cannot be loaded or is not a
+  complete identity record instead of reporting `ready`. A missing host-config
+  with an existing invalid known-projects catalog is blocked before
+  provisioning. Host-config occupancy uses the directory entry itself, so a
+  dangling symlink is a non-file path blocker rather than a missing destination.
+  Incomplete live leases that omit snapshot-required fields, pins that omit
+  project identity, live leases whose
   `ownerPid` is a numeric string or a JSON number outside the safe integer
   range, and persisted registry alias data with an unrecognized `health` or
   `powerState` value or no configured host aliases stay blocked instead of

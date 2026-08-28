@@ -37,9 +37,21 @@ export const SETUP_STARTER_ALIASES = Object.freeze([
   "ipad-1",
 ]);
 
+function pathOccupied(candidate) {
+  try {
+    fs.lstatSync(candidate);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+      return false;
+    }
+    return true;
+  }
+}
+
 function nearestExistingAncestor(destination) {
   let candidate = path.resolve(destination);
-  while (!fs.existsSync(candidate)) {
+  while (!pathOccupied(candidate)) {
     const parent = path.dirname(candidate);
     if (parent === candidate) {
       return null;
@@ -47,6 +59,17 @@ function nearestExistingAncestor(destination) {
     candidate = parent;
   }
   return candidate;
+}
+
+function resolvedPathStats(stats, destination) {
+  if (stats.isSymbolicLink() !== true) {
+    return stats;
+  }
+  try {
+    return fs.statSync(destination);
+  } catch {
+    return null;
+  }
 }
 
 function shellQuoteArgument(value) {
@@ -88,9 +111,9 @@ function pathPrerequisite(id, destination, summary, { existingMustBeDirectory = 
 
   let checkedPath = ancestor;
   try {
-    const ancestorStats = fs.statSync(ancestor);
+    const ancestorStats = resolvedPathStats(fs.lstatSync(ancestor), ancestor);
     const destinationExists = ancestor === resolvedDestination;
-    if (existingMustBeDirectory && destinationExists && ancestorStats.isDirectory() !== true) {
+    if (existingMustBeDirectory && destinationExists && ancestorStats?.isDirectory() !== true) {
       return blockedPathPrerequisite(
         id,
         resolvedDestination,
@@ -99,7 +122,7 @@ function pathPrerequisite(id, destination, summary, { existingMustBeDirectory = 
       );
     }
     if (destinationExists && existingMustBeDirectory !== true) {
-      if (ancestorStats.isFile() !== true) {
+      if (ancestorStats?.isFile() !== true) {
         return blockedPathPrerequisite(
           id,
           resolvedDestination,
@@ -138,7 +161,7 @@ function pathPrerequisite(id, destination, summary, { existingMustBeDirectory = 
         summary: `${summary} is writable.`,
       };
     }
-    if (ancestorStats.isDirectory() !== true) {
+    if (ancestorStats?.isDirectory() !== true) {
       return blockedPathPrerequisite(
         id,
         resolvedDestination,

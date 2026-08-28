@@ -1028,6 +1028,84 @@ test("setup uses the device-type inventory when a runtime omits supportedDeviceT
   assert.equal(emptyArrayPreview.devices.length, 6);
 });
 
+test("setup rejects device types that omit identifier or name before planning", () => {
+  const root = makeTempDir();
+  const incompleteDeviceTypes = [
+    {
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      productFamily: "iPad",
+    },
+  ];
+  const completeDeviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-SE",
+      name: "iPhone SE",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Air",
+      name: "iPad Air",
+      productFamily: "iPad",
+    },
+  ];
+  const runtime = {
+    buildversion: "23F76",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    isAvailable: true,
+    version: "26.5",
+  };
+  const incompleteOnly = createSimctlFixture(root, {
+    runtimes: [{ ...runtime, supportedDeviceTypes: incompleteDeviceTypes }],
+  });
+  const incompleteState = readJson(incompleteOnly.statePath);
+  incompleteState.devicetypes = incompleteDeviceTypes;
+  writeJson(incompleteOnly.statePath, incompleteState);
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  assert.throws(() => previewSetupBroker(resolvedPaths, {
+    simctlAdapter: incompleteOnly.adapter,
+  }), (error) => error instanceof BrokerError && error.payload.reasonCode === "runtime-not-found");
+
+  const mixedRoot = makeTempDir();
+  const mixed = createSimctlFixture(mixedRoot, {
+    runtimes: [{
+      ...runtime,
+      supportedDeviceTypes: [...incompleteDeviceTypes, ...completeDeviceTypes],
+    }],
+  });
+  const mixedState = readJson(mixed.statePath);
+  mixedState.devicetypes = [...incompleteDeviceTypes, ...completeDeviceTypes];
+  writeJson(mixed.statePath, mixedState);
+  const mixedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(mixedRoot, "host-config.json"),
+    stateRoot: path.join(mixedRoot, "state"),
+  });
+  const preview = previewSetupBroker(mixedPaths, {
+    hostId: "complete-device-types",
+    simctlAdapter: mixed.adapter,
+  });
+  assert.equal(preview.status, "changes_required");
+  assert.ok(preview.devices.every((device) => typeof device.deviceTypeIdentifier === "string"
+    && device.deviceTypeIdentifier.length > 0
+    && typeof device.deviceTypeName === "string"
+    && device.deviceTypeName.length > 0));
+  assert.equal(
+    preview.devices.find((device) => device.deviceFamily === "iPhone").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPhone-SE",
+  );
+  assert.equal(
+    preview.devices.find((device) => device.deviceFamily === "iPad").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPad-Air",
+  );
+});
+
 test("setup fallback device types stay stable when preferred names are absent", () => {
   const root = makeTempDir();
   const deviceTypes = [
@@ -1750,6 +1828,45 @@ test("setup blocks a missing host config when the state root already has broker 
   assert.equal(emptyLeaseDir.status, "changes_required");
   assert.equal(emptyLeaseDir.confirmation.required, true);
   assert.equal(emptyLeaseDir.host.configured, false);
+});
+
+test("setup blocks a missing host when the state root already has an invalid known-projects catalog", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  fs.mkdirSync(resolvedPaths.stateRoot, { recursive: true });
+  fs.writeFileSync(resolvedPaths.knownProjectsPath, "{not-json\n");
+
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-catalog",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(preview.status, "blocked");
+  assert.equal(preview.confirmation.required, false);
+  assert.ok(preview.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+  assert.deepEqual(
+    preview.prerequisites.find((issue) => issue.id === "known-projects").remediationCommands,
+    [setupCommandWithSelectedPaths("simbroker doctor", resolvedPaths)],
+  );
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "fresh-over-catalog",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+
+  writeJson(resolvedPaths.knownProjectsPath, {
+    projects: {},
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    version: 1,
+  });
+  const validCatalog = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-catalog",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(validCatalog.status, "changes_required");
+  assert.equal(validCatalog.confirmation.required, true);
+  assert.equal(validCatalog.host.configured, false);
 });
 
 test("setup blocks an existing host whose registry marks an alias for repair", () => {

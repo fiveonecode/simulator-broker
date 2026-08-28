@@ -1,7 +1,7 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.14`
+> **Version:** `1.0.15`
 > **Last Updated:** `2026-08-28`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
@@ -91,9 +91,11 @@ Before planning, setup performs bounded, read-only checks:
 6. `simctl list --json runtimes`, `devices`, and `devicetypes` are valid.
 7. One available iOS runtime supports both starter families.
 8. Nearest existing host-config/state-root ancestors are searchable, writable
-   directories. An existing state root must itself be a directory. An existing
-   host-config path must be a readable regular file; a directory, FIFO, or other
-   non-file is a host-config path blocker, not a Simulator inventory failure.
+   directories. Occupancy is the directory entry itself (`lstat`), so a dangling
+   symlink is occupied rather than treated as missing. An existing state root
+   must itself be a directory. An existing host-config path must be a readable
+   regular file; a directory, FIFO, dangling symlink, or other non-file is a
+   host-config path blocker, not a Simulator inventory failure.
 9. Disk availability is reported as bytes and formatted GiB when supported.
 
 Setup never executes the remediation commands. Blockers provide exact manual
@@ -117,8 +119,10 @@ supports both iPhone and iPad starter types. `--ios-version 26` chooses newest
 compatible 26.x; `26.4` chooses exactly 26.4. Ignore unavailable and non-iOS
 runtimes, and ignore runtime records that omit a non-empty `version` string
 even when `--ios-version` is unset. An incomplete selected runtime is not a
-confirmable plan. Sort numeric version, build version, then identifier
-deterministically.
+confirmable plan. Ignore device-type records that omit a non-empty `identifier`
+or `name` even when they still report a product family. An incomplete selected
+device type is not a confirmable plan. Sort numeric version, build version, then
+identifier deterministically.
 When a runtime record omits `supportedDeviceTypes` or the array is empty, derive
 family compatibility and preferred starter types from the separately collected
 `devicetypes` inventory, matching capacity planning. No qualifying runtime
@@ -220,8 +224,9 @@ Apply performs, in order:
   `ready` host. A known-projects catalog key that disagrees with that record's
   `projectId` is the same class of invalid existing-host state. Setup does not
   treat a missing host-config as a confirmable fresh plan when the selected
-  state root already contains a registry path of any type, or a JSON-named
-  lease/pin directory entry of any type. Blocked-preview doctor, repair, and
+  state root already contains a registry path of any type, a JSON-named
+  lease/pin directory entry of any type, or an existing known-projects catalog
+  that cannot be loaded as a valid catalog. Blocked-preview doctor, repair, and
   setup remediation commands include the selected `--host-config`,
   `--state-root`, and `--service-socket` paths.
 - Preview probes the requested service socket even when no host is configured
@@ -462,6 +467,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.15 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on incomplete setup device-type records, dangling host-config occupancy, and an invalid known-projects catalog during fresh provisioning |
 | 1.0.14 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on version-less selected runtimes and `ownerPid` values outside the safe integer range |
 | 1.0.13 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on unrecognized registry `powerState` and string `ownerPid`, remediating the actual failing host-config path, revalidating service identity before provisioning, and omitting app `--host-id` for already configured hosts |
 | 1.0.12 | 2026-08-28 | `spec-steward`, `ios-dev` | Fail closed on mistyped optional lease/pin snapshot fields, require catalog-backed project-ID set equality for snapshot freshness, and display doctor `remediationCommands` in app setup failures |

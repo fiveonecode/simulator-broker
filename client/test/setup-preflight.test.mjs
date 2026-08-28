@@ -206,6 +206,45 @@ test("setup preflight remediates a non-writable host-config parent directory", (
   assert.deepEqual(hostConfig.remediationCommands, [`chmod u+wx '${parent}'`]);
 });
 
+test("setup preflight blocks a dangling host-config symlink as occupied non-file", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-host-dangling-"));
+  const hostConfigPath = path.join(root, "host.json");
+  fs.symlinkSync(path.join(root, "missing-host.json"), hostConfigPath);
+  const paths = {
+    hostConfigPath,
+    stateRoot: path.join(root, "state"),
+  };
+  const prerequisites = evaluateSetupPrerequisites(paths, {
+    commandRunner: readyCommandRunner,
+    env: {},
+    nodeVersion: "20.0.0",
+    platform: "darwin",
+  });
+  const hostConfig = prerequisites.find((prerequisite) => prerequisite.id === "host-config-path");
+  assert.equal(hostConfig.status, "blocked");
+  assert.match(hostConfig.summary, /readable regular file/);
+});
+
+test("setup preflight still accepts a host-config symlink to a regular file", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-host-symlink-"));
+  const targetPath = path.join(root, "target-host.json");
+  const hostConfigPath = path.join(root, "host.json");
+  fs.writeFileSync(targetPath, "{}\n");
+  fs.symlinkSync(targetPath, hostConfigPath);
+  const paths = {
+    hostConfigPath,
+    stateRoot: path.join(root, "state"),
+  };
+  const prerequisites = evaluateSetupPrerequisites(paths, {
+    commandRunner: readyCommandRunner,
+    env: {},
+    nodeVersion: "20.0.0",
+    platform: "darwin",
+  });
+  const hostConfig = prerequisites.find((prerequisite) => prerequisite.id === "host-config-path");
+  assert.equal(hostConfig.status, "ready");
+});
+
 test("setup preflight blocks an existing host-config that is a directory", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-setup-preflight-host-dir-"));
   const hostConfigPath = path.join(root, "host.json");

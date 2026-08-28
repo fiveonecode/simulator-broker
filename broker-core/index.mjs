@@ -1096,9 +1096,29 @@ function selectRuntimeForAlias(simctl, iosVersion) {
   return runtimes[0];
 }
 
+function setupDeviceTypeRecordIsComplete(deviceType) {
+  return typeof deviceType?.identifier === "string" && deviceType.identifier.length > 0
+    && typeof deviceType?.name === "string" && deviceType.name.length > 0;
+}
+
+function isCompleteSetupDeviceType(deviceType, deviceFamily) {
+  return deviceType?.productFamily === deviceFamily && setupDeviceTypeRecordIsComplete(deviceType);
+}
+
+function requireCompleteSetupDeviceType(deviceType, deviceFamily, runtime) {
+  if (!isCompleteSetupDeviceType(deviceType, deviceFamily)) {
+    throw new BrokerError(`No available ${deviceFamily} simulator type matched runtime ${runtime.version}.`, {
+      deviceFamily,
+      reasonCode: "device-type-not-found",
+      runtimeId: runtime.identifier,
+    });
+  }
+  return deviceType;
+}
+
 function selectPreferredDeviceType(runtime, deviceFamily) {
   const supportedDeviceTypes = Array.isArray(runtime.supportedDeviceTypes)
-    ? runtime.supportedDeviceTypes.filter((deviceType) => deviceType.productFamily === deviceFamily)
+    ? runtime.supportedDeviceTypes.filter((deviceType) => isCompleteSetupDeviceType(deviceType, deviceFamily))
     : [];
 
   if (supportedDeviceTypes.length === 0) {
@@ -1400,8 +1420,8 @@ function runtimeSupportedDeviceTypes(runtime, inventory) {
 function compatibleSetupDeviceTypes(runtime, inventory) {
   const supportedDeviceTypes = runtimeSupportedDeviceTypes(runtime, inventory);
   return {
-    iPad: supportedDeviceTypes.some((deviceType) => deviceType.productFamily === "iPad"),
-    iPhone: supportedDeviceTypes.some((deviceType) => deviceType.productFamily === "iPhone"),
+    iPad: supportedDeviceTypes.some((deviceType) => isCompleteSetupDeviceType(deviceType, "iPad")),
+    iPhone: supportedDeviceTypes.some((deviceType) => isCompleteSetupDeviceType(deviceType, "iPhone")),
   };
 }
 
@@ -1453,8 +1473,16 @@ function setupDevicePlan(inventory, hostId, runtime) {
     iosVersion: runtime.version,
   });
   const deviceTypes = {
-    iPad: selectPreferredDeviceTypeForSetup(runtime, inventory, "iPad"),
-    iPhone: selectPreferredDeviceTypeForSetup(runtime, inventory, "iPhone"),
+    iPad: requireCompleteSetupDeviceType(
+      selectPreferredDeviceTypeForSetup(runtime, inventory, "iPad"),
+      "iPad",
+      runtime,
+    ),
+    iPhone: requireCompleteSetupDeviceType(
+      selectPreferredDeviceTypeForSetup(runtime, inventory, "iPhone"),
+      "iPhone",
+      runtime,
+    ),
   };
   const deviceIndex = createDeviceIndex({
     deviceTypesJson: inventory.deviceTypesJson,
@@ -1824,7 +1852,7 @@ function setupExistingHostState(paths, inventory, options = {}) {
   };
 }
 
-function blockedSetupExistingStateWithoutHost(paths, options = {}) {
+function blockedUnconfiguredSetupPreview(paths, options = {}, prerequisite) {
   const hostId = requestedSetupHostId(options)
     ?? slugifyIdentifier(options.hostId ?? defaultHostId(), defaultHostId());
   const planId = setupPlanFingerprint({
@@ -1842,21 +1870,35 @@ function blockedSetupExistingStateWithoutHost(paths, options = {}) {
       devices: [],
       host: { action: "keep", configured: false, hostId },
       mode: "preview",
-      nextSteps: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+      nextSteps: prerequisite.remediationCommands ?? [],
       ok: true,
       planId,
-      prerequisites: [{
-        id: "state-root",
-        remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
-        status: "blocked",
-        summary: "The selected state root already contains broker state and setup will not create a new host over it.",
-      }],
+      prerequisites: [prerequisite],
       runtime: null,
       schemaVersion: SETUP_SCHEMA_VERSION,
       service: { action: "blocked", running: false },
       status: "blocked",
     },
   };
+}
+
+function blockedSetupExistingStateWithoutHost(paths, options = {}) {
+  return blockedUnconfiguredSetupPreview(paths, options, {
+    id: "state-root",
+    remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    status: "blocked",
+    summary: "The selected state root already contains broker state and setup will not create a new host over it.",
+  });
+}
+
+function blockedSetupInvalidKnownProjectsWithoutHost(paths, options, error) {
+  return blockedUnconfiguredSetupPreview(paths, options, {
+    details: error instanceof BrokerError ? error.payload : { message: error.message },
+    id: "known-projects",
+    remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    status: "blocked",
+    summary: "The existing known-projects catalog is invalid and setup will not replace it automatically.",
+  });
 }
 
 function buildSetupPlan(paths, options = {}) {
@@ -1866,6 +1908,13 @@ function buildSetupPlan(paths, options = {}) {
   }
   if (setupStateContainsExistingBrokerArtifacts(paths)) {
     return blockedSetupExistingStateWithoutHost(paths, options);
+  }
+  if (fs.existsSync(paths.knownProjectsPath)) {
+    try {
+      normalizeKnownProjects(readJsonIfExists(paths.knownProjectsPath), nowIso(options.now));
+    } catch (error) {
+      return blockedSetupInvalidKnownProjectsWithoutHost(paths, options, error);
+    }
   }
 
   const runtime = selectRuntimeForSetup(inventory, options.iosVersion);
