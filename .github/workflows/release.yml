@@ -57,7 +57,7 @@ jobs:
           fi
           gh release create "${GITHUB_REF_NAME}" \
             --title "Simulator Broker ${GITHUB_REF_NAME}" \
-            --notes "Alpha CLI. Install with \`brew install fiveonecode/simulator-broker/simbroker\` or \`npm install -g\` the attached \`simbroker-${version}.tgz\`. Node.js 20 or newer is required. macOS and Xcode are still required to create and run iOS Simulators. A signed, notarized operator app is not attached. See CHANGELOG.md." \
+            --notes "Alpha CLI and npm package. Install the CLI with \`brew install fiveonecode/simulator-broker/simbroker\` or \`npm install -g\` the attached \`simbroker-${version}.tgz\`. Install the operator app with \`brew install --cask fiveonecode/simulator-broker/simulator-broker\`. Node.js 20 or newer is required. macOS and Xcode are still required to create and run iOS Simulators. This workflow attaches the CLI tarball and npm package; the signed, notarized operator app zip is attached to the same GitHub Release by the operator. See CHANGELOG.md." \
             "${prerelease_args[@]}" \
             "$asset" \
             "$checksum" \

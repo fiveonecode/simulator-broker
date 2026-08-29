@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-08-29
+
+This tag is the first Homebrew CLI tarball, npm tarball, and notarized
+app zip that include guided `simbroker setup`. Published
+`0.1.0-alpha.2` artifacts predate that command. Newcomer docs no longer
+warn that the current tagged install lacks setup.
+
 ### Added
+
 
 - Guided, deterministic `simbroker setup` preview and confirmed apply for
   prerequisite checks, newest-compatible runtime selection, the six-device

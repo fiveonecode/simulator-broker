@@ -114,15 +114,20 @@ test("newcomer docs enforce one guided machine setup and version-agnostic projec
   for (const body of [readme, gettingStarted, packageReadme]) {
     assert.ok(body.includes("simbroker setup"));
   }
-  assert.match(packageReadme, /published `0\.1\.0-alpha\.2` package predates\s*> guided setup/);
-  assert.match(packageReadme, /available from `main` and source\s*> installs/);
-  assert.match(
-    gettingStarted,
-    /Next Alpha availability:[\s\S]*guided `simbroker setup` is currently available/,
+  assert.equal(
+    /Next Alpha availability/i.test(readme),
+    false,
+    "README must not keep the pre-alpha.3 setup-unavailable warning",
   );
-  assert.match(
-    gettingStarted,
-    /published `0\.1\.0-alpha\.2` Homebrew, npm,\s*> and cask artifacts predate this command/,
+  assert.equal(
+    /predates/i.test(packageReadme),
+    false,
+    "package README must not claim the current tagged package predates setup",
+  );
+  assert.equal(
+    /Next Alpha availability/i.test(gettingStarted),
+    false,
+    "getting started must not keep the pre-alpha.3 setup-unavailable warning",
   );
   for (const body of [readme, gettingStarted]) {
     assert.equal(
@@ -290,6 +295,12 @@ test("release workflow packages the CLI tarball on version tags", () => {
     false,
     "future release notes must not deny Homebrew and npm",
   );
+  assert.equal(
+    release.includes("operator app is not attached"),
+    false,
+    "tag release notes must not claim the notarized app zip is absent",
+  );
+  assert.ok(release.includes("brew install --cask fiveonecode/simulator-broker/simulator-broker"));
 });
 
 test("issue forms cover install failure, bug, and feature and state Alpha limits", () => {
@@ -309,6 +320,8 @@ test("issue forms cover install failure, bug, and feature and state Alpha limits
   assert.ok(install.includes(`simbroker-${version}.tgz`));
   assert.ok(install.includes("brew install --cask fiveonecode/simulator-broker/simulator-broker"));
   assert.equal(install.includes("operator app zip is not attached"), false);
+  assert.equal(feature.includes("operator app zip is not attached"), false);
+  assert.ok(feature.includes("Homebrew cask"));
   assert.ok(bug.includes("labels:"));
   assert.ok(feature.includes("enhancement"));
   for (const body of [install, bug, feature, config]) {

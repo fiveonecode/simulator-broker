@@ -95,12 +95,15 @@ A first extracted implementation slice now exists:
   fixtures inject `processController.currentPid` so hardcoded fixture
   PIDs cannot match the GitHub Actions test-runner pid. Containment still
   skips the live `process.pid` when `currentPid` is omitted.
-- tagged versions such as `v0.1.0-alpha.2` attach the CLI tarball, the
+- tagged versions such as `v0.1.0-alpha.3` attach the CLI tarball, the
   packable `simbroker-<version>.tgz`, and the notarized
-  `Simulator-Broker-<version>.zip` to a GitHub Release. The CLI and npm
-  tarballs come from `.github/workflows/release.yml`; the app zip is an
-  operator-signed notarized attach for this Alpha. The Homebrew formula
-  and cask pin the current tagged artifacts.
+  `Simulator-Broker-<version>.zip` to a GitHub Release. The Homebrew
+  formula and cask pin the operator-packed checksums of those tagged
+  assets. `.github/workflows/release.yml` may rebuild the CLI and npm
+  tarballs on the tag, but Ubuntu `test:client` is expected to miss the
+  30-minute budget (issue `#9`); do not replace a pinned operator archive
+  with a workflow rebuild that has a different hash. The app zip is an
+  operator-signed notarized attach for this Alpha.
 - local-debug portable bundle support through a zip bundle plus package-smoke verification of the bundled install path and installed-app launch proof
 - a separate Release distribution packaging path that requires operator-supplied signing inputs, runs `codesign` plus `spctl`, optionally notarizes with `notarytool`, and writes a readiness summary JSON
 - executable `agent-harness/` changes now route through the implementation
