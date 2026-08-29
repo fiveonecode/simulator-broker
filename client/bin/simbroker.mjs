@@ -5,9 +5,16 @@ import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createInterface } from "node:readline/promises";
 
 import { BROKER_EXIT_CODES, INTERNAL_ERROR_REASON_CODE, resolveBrokerExitCode } from "../../broker-core/error-contract.mjs";
-import { BrokerError, HOST_BOOTSTRAP_DEVICE_WARNING, idlePolicyConfiguredBroker, resolveBrokerPaths } from "../../broker-core/index.mjs";
+import {
+  BrokerError,
+  HOST_BOOTSTRAP_DEVICE_WARNING,
+  idlePolicyConfiguredBroker,
+  previewSetupBroker,
+  resolveBrokerPaths,
+} from "../../broker-core/index.mjs";
 import {
   createCommandRequest,
   executeBrokerCommand,
@@ -26,6 +33,13 @@ import {
   serviceStartupTimeoutMs,
   streamServiceEvents,
 } from "../service/service-client.mjs";
+import {
+  blockedSetupPreview,
+  completeSetupPreview,
+  evaluateSetupPrerequisites,
+  inspectSetupPostDoctorSnapshot,
+} from "../setup-preflight.mjs";
+import { applySetupBrokerInWorker } from "../setup-provisioning.mjs";
 
 const BROKERD_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "brokerd.mjs");
 const SERVICE_CONTROL_FLAGS = new Set([
@@ -44,12 +58,122 @@ const BROKER_PATH_FLAGS = new Set([
   "service-socket",
   "state-root",
 ]);
+const SETUP_FLAGS = new Set([
+  "apply",
+  "confirm",
+  "help",
+  "host-config",
+  "host-id",
+  "ios-version",
+  "json",
+  "service-socket",
+  "state-root",
+]);
 
 function readJsonIfExists(filePath) {
   if (!fs.existsSync(filePath)) {
     return null;
   }
+  try {
+    if (fs.statSync(filePath).isFile() !== true) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function pathOccupied(candidate) {
+  try {
+    fs.lstatSync(candidate);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+      return false;
+    }
+    return true;
+  }
+}
+
+function setupOccupiedPathNotRegularFile(filePath) {
+  if (!pathOccupied(filePath)) {
+    return false;
+  }
+  try {
+    return fs.statSync(filePath).isFile() !== true;
+  } catch {
+    return true;
+  }
+}
+
+function setupOccupiedPathNotWritableRegularFile(filePath) {
+  if (!pathOccupied(filePath)) {
+    return false;
+  }
+  try {
+    if (fs.statSync(filePath).isFile() !== true) {
+      return true;
+    }
+    fs.accessSync(filePath, fs.constants.W_OK);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function nearestExistingAncestor(destination) {
+  let candidate = path.resolve(destination);
+  while (!pathOccupied(candidate)) {
+    const parent = path.dirname(candidate);
+    if (parent === candidate) {
+      return null;
+    }
+    candidate = parent;
+  }
+  return candidate;
+}
+
+function setupOccupiedSocketUnusable(socketPath) {
+  if (!pathOccupied(socketPath)) {
+    return false;
+  }
+  try {
+    const stats = fs.lstatSync(socketPath);
+    if (stats.isSocket()) {
+      return false;
+    }
+    if (stats.isSymbolicLink()) {
+      try {
+        return fs.statSync(socketPath).isSocket() !== true;
+      } catch {
+        return true;
+      }
+    }
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+function setupServiceSocketParentUnusable(socketPath) {
+  const resolvedSocketPath = path.resolve(socketPath);
+  const ancestor = nearestExistingAncestor(resolvedSocketPath);
+  const checkedPath = ancestor === resolvedSocketPath
+    ? path.dirname(resolvedSocketPath)
+    : ancestor;
+  if (checkedPath == null) {
+    return { checkedPath: null, unusable: true };
+  }
+  try {
+    if (fs.statSync(checkedPath).isDirectory() !== true) {
+      return { checkedPath, unusable: true };
+    }
+    fs.accessSync(checkedPath, fs.constants.W_OK | fs.constants.X_OK);
+    return { checkedPath, unusable: false };
+  } catch {
+    return { checkedPath, unusable: true };
+  }
 }
 
 function removeIfExists(filePath) {
@@ -69,10 +193,6 @@ function ensurePrivateFile(filePath) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function serviceStartupLockHeld(paths) {
-  return fs.existsSync(paths.serviceLockDir);
 }
 
 function appendTransport(payload, transport) {
@@ -248,27 +368,44 @@ function observeChildExit(child) {
   });
 }
 
-async function waitForSpawnedService(paths, child, { timeoutMs = 5000 } = {}) {
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("Operation was aborted.");
+  }
+}
+
+function abortOutcome(signal) {
+  if (!signal) {
+    return new Promise(() => {});
+  }
+  if (signal.aborted) {
+    return Promise.resolve({ aborted: true });
+  }
+  return new Promise((resolve) => {
+    signal.addEventListener("abort", () => resolve({ aborted: true }), { once: true });
+  });
+}
+async function waitForSpawnedService(paths, child, { signal, timeoutMs = 5000 } = {}) {
   const startedAt = Date.now();
   const childExit = observeChildExit(child);
+  const aborted = abortOutcome(signal);
   let lastExit = null;
   while (Date.now() - startedAt < timeoutMs) {
+    throwIfAborted(signal);
     const outcome = await Promise.race([
-      probeService(paths, { timeoutMs: 250 }).then((probe) => ({ probe })),
+      probeService(paths, { signal, timeoutMs: 250 }).then((probe) => ({ probe })),
       childExit.then((exit) => ({ exit })),
+      aborted,
     ]);
+    throwIfAborted(signal);
     if (outcome.exit) {
       lastExit = outcome.exit;
-      const probe = await probeService(paths, { timeoutMs: 250 });
+      const probe = await probeService(paths, { signal, timeoutMs: 250 });
       if (probe) {
         return {
           childExit: null,
           probe,
         };
-      }
-      if (serviceStartupLockHeld(paths)) {
-        await sleep(100);
-        continue;
       }
       return {
         childExit: lastExit,
@@ -284,19 +421,17 @@ async function waitForSpawnedService(paths, child, { timeoutMs = 5000 } = {}) {
     const delay = await Promise.race([
       sleep(100).then(() => null),
       childExit.then((exit) => exit),
+      aborted,
     ]);
+    throwIfAborted(signal);
     if (delay) {
       lastExit = delay;
-      const probe = await probeService(paths, { timeoutMs: 250 });
+      const probe = await probeService(paths, { signal, timeoutMs: 250 });
       if (probe) {
         return {
           childExit: null,
           probe,
         };
-      }
-      if (serviceStartupLockHeld(paths)) {
-        await sleep(100);
-        continue;
       }
       return {
         childExit: lastExit,
@@ -339,8 +474,9 @@ function terminateSpawnedService(child) {
   }
 }
 
-async function startService(paths) {
-  const running = await probeService(paths);
+async function startService(paths, { signal } = {}) {
+  throwIfAborted(signal);
+  const running = await probeService(paths, { signal });
   if (running) {
     assertServiceMatchesPaths(paths, running);
     return {
@@ -352,6 +488,13 @@ async function startService(paths) {
   }
 
   ensurePrivateDir(paths.stateRoot);
+  throwIfAborted(signal);
+  if (setupOccupiedPathNotWritableRegularFile(paths.serviceLogPath)) {
+    throw new BrokerError("The existing service log is not a writable regular file.", {
+      logPath: paths.serviceLogPath,
+      reasonCode: "invalid-config",
+    });
+  }
   const logFd = fs.openSync(paths.serviceLogPath, "a", 0o600);
   ensurePrivateFile(paths.serviceLogPath);
   const child = spawn(process.execPath, [
@@ -367,7 +510,20 @@ async function startService(paths) {
   child.unref();
   fs.closeSync(logFd);
 
-  const { childExit, probe } = await waitForSpawnedService(paths, child, { timeoutMs: serviceStartupTimeoutMs({ paths }) });
+  let startupOutcome;
+  try {
+    startupOutcome = await waitForSpawnedService(paths, child, {
+      signal,
+      timeoutMs: serviceStartupTimeoutMs({ paths }),
+    });
+  } catch (error) {
+    if (signal?.aborted) {
+      terminateSpawnedService(child);
+    }
+    throw error;
+  }
+  const { childExit, probe } = startupOutcome;
+  throwIfAborted(signal);
   if (childExit) {
     throw new BrokerError("Broker service exited before it became available.", {
       exitStatus: childExit.code,
@@ -561,6 +717,1030 @@ async function runServiceAwareRequest(paths, request) {
   return payload;
 }
 
+function rejectUnknownSetupFlags(flags) {
+  for (const key of flags.keys()) {
+    if (!SETUP_FLAGS.has(key)) {
+      throw new BrokerError(`Flag --${key} is not valid for setup.`, {
+        flag: key,
+        reasonCode: "invalid-flag",
+      });
+    }
+  }
+}
+
+function setupBooleanFlag(flags, key) {
+  if (!flags.has(key)) {
+    return false;
+  }
+  const value = flags.get(key);
+  if (value === true || value === "true") {
+    return true;
+  }
+  if (value === "false") {
+    return false;
+  }
+  throw new BrokerError(`Flag --${key} must be passed without a value or with true/false.`, {
+    flag: key,
+    reasonCode: "invalid-flag",
+  });
+}
+
+function setupValueFlag(flags, key) {
+  if (!flags.has(key)) {
+    return null;
+  }
+  const value = flagValue(flags, key);
+  if (value === null || String(value).trim() === "") {
+    throw new BrokerError(`Missing required flag --${key}.`, {
+      flag: key,
+      reasonCode: "missing-flag",
+    });
+  }
+  return value;
+}
+
+function setupOptions(flags) {
+  rejectUnknownSetupFlags(flags);
+  const apply = setupBooleanFlag(flags, "apply");
+  const confirmPlanId = setupValueFlag(flags, "confirm");
+  if (!apply && confirmPlanId !== null) {
+    throw new BrokerError("--confirm requires --apply for setup.", {
+      reasonCode: "invalid-flag",
+    });
+  }
+  const iosVersion = setupValueFlag(flags, "ios-version");
+  if (iosVersion !== null && !/^\d+(?:\.\d+)?$/.test(iosVersion)) {
+    throw new BrokerError("Flag --ios-version must be an iOS major or exact major.minor version.", {
+      flag: "ios-version",
+      reasonCode: "invalid-flag",
+    });
+  }
+  return {
+    apply,
+    confirmPlanId,
+    hostId: setupValueFlag(flags, "host-id"),
+    iosVersion,
+  };
+}
+
+function setupPrerequisiteFromError(error) {
+  const ioCode = error?.code ?? error?.payload?.code;
+  if (ioCode === "EACCES" || ioCode === "EISDIR" || ioCode === "ENOTDIR" || ioCode === "EPERM") {
+    return {
+      details: {
+        code: ioCode,
+        error: error?.message ?? String(error),
+      },
+      id: "host-config-path",
+      remediationCommands: [],
+      status: "blocked",
+      summary: "The host configuration or broker state could not be read as a regular file.",
+    };
+  }
+  const reasonCode = error?.payload?.reasonCode ?? error?.reasonCode ?? "simctl-inventory-invalid";
+  const runtimeProblem = reasonCode === "runtime-not-found" || reasonCode === "device-type-not-found";
+  return {
+    details: {
+      error: error?.message ?? String(error),
+      reasonCode,
+    },
+    id: runtimeProblem ? "ios-runtime" : "simctl-inventory",
+    remediationCommands: runtimeProblem
+      ? ["Open Xcode > Settings > Components", "xcodebuild -downloadPlatform iOS"]
+      : ["xcrun simctl list --json runtimes", "xcrun simctl list --json devices", "xcrun simctl list --json devicetypes"],
+    status: "blocked",
+    summary: runtimeProblem
+      ? "No installed iOS runtime supports both starter device families."
+      : "Simulator inventory could not be read as valid JSON.",
+  };
+}
+
+function serviceIdentityRecoveryCommands(error, paths, options = {}) {
+  const actual = error?.payload?.actual;
+  const retryCommand = setupRecoveryCommand(paths, options);
+  if ([actual?.hostConfigPath, actual?.stateRoot, actual?.socketPath]
+    .every((value) => typeof value === "string" && value.length > 0)) {
+    return [
+      [
+        "simbroker service stop",
+        "--host-config", shellQuoteArgument(actual.hostConfigPath),
+        "--state-root", shellQuoteArgument(actual.stateRoot),
+        "--service-socket", shellQuoteArgument(actual.socketPath),
+      ].join(" "),
+      retryCommand,
+    ];
+  }
+  return ["simbroker service status --json", retryCommand];
+}
+
+async function buildSetupPreview(paths, options) {
+  const prerequisites = evaluateSetupPrerequisites(paths);
+  if (prerequisites.some((prerequisite) => prerequisite.status === "blocked")) {
+    return blockedSetupPreview(paths, prerequisites, options);
+  }
+
+  let corePreview;
+  try {
+    corePreview = previewSetupBroker(paths, {
+      hostId: options.hostId ?? undefined,
+      iosVersion: options.iosVersion ?? undefined,
+    });
+    prerequisites.push({
+      id: "simctl-inventory",
+      remediationCommands: [],
+      status: "ready",
+      summary: "Installed Simulator runtimes, devices, and device types were read successfully.",
+    });
+  } catch (error) {
+    return blockedSetupPreview(paths, [...prerequisites, setupPrerequisiteFromError(error)], options);
+  }
+
+  let running = false;
+  if (corePreview.status !== "blocked") {
+    const serviceArtifactBlockers = setupServiceArtifactBlockers(paths);
+    if (serviceArtifactBlockers.length > 0) {
+      corePreview = {
+        ...corePreview,
+        prerequisites: [...corePreview.prerequisites, ...serviceArtifactBlockers],
+        status: "blocked",
+      };
+    } else {
+      try {
+        running = (await serviceStatus(paths)).running;
+      } catch (error) {
+        corePreview = {
+          ...corePreview,
+          prerequisites: [...corePreview.prerequisites, {
+            details: error?.payload ?? { error: error?.message ?? String(error) },
+            id: "service-identity",
+            remediationCommands: serviceIdentityRecoveryCommands(error, paths, options),
+            status: "blocked",
+            summary: error?.message ?? "The running broker service uses different paths.",
+          }],
+          status: "blocked",
+        };
+      }
+    }
+  }
+  return completeSetupPreview(corePreview, prerequisites, {
+    serviceRunning: running,
+    snapshotReady: setupSnapshotReady(paths, corePreview),
+  });
+}
+
+function setupDashboardObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function setupDashboardOptionalString(value) {
+  return value == null || typeof value === "string";
+}
+
+function setupDashboardInteger(value) {
+  return Number.isSafeInteger(value);
+}
+
+function setupDashboardOptionalInteger(value) {
+  return value == null || Number.isSafeInteger(value);
+}
+
+function setupDashboardUniqueStringValues(values) {
+  const seen = new Set();
+  for (const value of values) {
+    if (typeof value !== "string" || seen.has(value)) {
+      return false;
+    }
+    seen.add(value);
+  }
+  return true;
+}
+
+function setupDashboardStringArray(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function setupDashboardRecordArray(value, matches) {
+  return Array.isArray(value) && value.every((item) => matches(item));
+}
+
+function setupDashboardOptionalRecord(value, matches) {
+  return value == null || matches(value);
+}
+
+function setupDashboardLeaseSummaryRecord(record) {
+  return setupDashboardObject(record)
+    && typeof record.actorId === "string"
+    && typeof record.actorType === "string"
+    && setupDashboardOptionalString(record.jobId)
+    && typeof record.leaseId === "string"
+    && typeof record.projectId === "string"
+    && typeof record.purposeId === "string";
+}
+
+function setupDashboardPinSummaryRecord(record) {
+  return setupDashboardObject(record)
+    && typeof record.pinId === "string"
+    && typeof record.projectId === "string"
+    && setupDashboardOptionalString(record.purposeId);
+}
+
+function setupDashboardSimulatorRecord(record) {
+  return setupDashboardObject(record)
+    && setupDashboardOptionalString(record.activeLeaseId)
+    && setupDashboardOptionalRecord(record.activeLeaseSummary, setupDashboardLeaseSummaryRecord)
+    && typeof record.alias === "string"
+    && setupDashboardStringArray(record.capabilities)
+    && typeof record.deviceFamily === "string"
+    && typeof record.displayName === "string"
+    && setupDashboardOptionalString(record.driftReason)
+    && typeof record.health === "string"
+    && typeof record.iosVersion === "string"
+    && setupDashboardOptionalString(record.lastBootedAt)
+    && setupDashboardOptionalString(record.lastErasedAt)
+    && setupDashboardOptionalString(record.lastLeaseReleasedAt)
+    && setupDashboardOptionalString(record.lastLeaseStartedAt)
+    && setupDashboardOptionalString(record.lastRepairedAt)
+    && setupDashboardOptionalString(record.lastShutdownAt)
+    && setupDashboardOptionalRecord(record.pin, setupDashboardPinSummaryRecord)
+    && typeof record.powerState === "string"
+    && setupDashboardOptionalString(record.resetPolicy)
+    && typeof record.simulatorId === "string";
+}
+
+function setupDashboardLeaseRecord(record) {
+  return setupDashboardObject(record)
+    && typeof record.actorId === "string"
+    && typeof record.actorType === "string"
+    && typeof record.alias === "string"
+    && setupDashboardOptionalString(record.artifactPath)
+    && typeof record.displayName === "string"
+    && setupDashboardOptionalString(record.expiresAt)
+    && setupDashboardOptionalString(record.jobId)
+    && setupDashboardOptionalString(record.jobKind)
+    && typeof record.leaseId === "string"
+    && typeof record.leaseKind === "string"
+    && setupDashboardInteger(record.ownerPid)
+    && setupDashboardOptionalString(record.pinId)
+    && typeof record.projectId === "string"
+    && typeof record.projectName === "string"
+    && typeof record.purposeId === "string"
+    && typeof record.repoRoot === "string"
+    && setupDashboardOptionalString(record.resetPolicy)
+    && setupDashboardOptionalString(record.sessionDir)
+    && typeof record.simulatorId === "string"
+    && typeof record.startedAt === "string";
+}
+
+function setupDashboardPinRecord(record) {
+  return setupDashboardObject(record)
+    && typeof record.actorId === "string"
+    && typeof record.actorType === "string"
+    && typeof record.alias === "string"
+    && typeof record.createdAt === "string"
+    && setupDashboardOptionalString(record.note)
+    && typeof record.pinId === "string"
+    && typeof record.projectId === "string"
+    && typeof record.projectName === "string"
+    && setupDashboardOptionalString(record.purposeId)
+    && typeof record.repoRoot === "string";
+}
+
+function setupDashboardPurposeRequiresRecord(record) {
+  return setupDashboardObject(record)
+    && setupDashboardOptionalString(record.deviceFamily)
+    && setupDashboardOptionalString(record.iosVersion);
+}
+
+function setupDashboardProjectPurposeRecord(record) {
+  return setupDashboardObject(record)
+    && setupDashboardInteger(record.activeLeaseCount)
+    && setupDashboardOptionalString(record.capability)
+    && setupDashboardOptionalString(record.defaultActorType)
+    && typeof record.displayName === "string"
+    && setupDashboardInteger(record.pinnedAliasCount)
+    && typeof record.purposeId === "string"
+    && setupDashboardOptionalRecord(record.requires, setupDashboardPurposeRequiresRecord);
+}
+
+function setupDashboardProjectRecord(record) {
+  return setupDashboardObject(record)
+    && setupDashboardStringArray(record.activeAliases)
+    && setupDashboardInteger(record.activeLeaseCount)
+    && setupDashboardOptionalString(record.lastEventAt)
+    && setupDashboardInteger(record.pinnedAliasCount)
+    && setupDashboardOptionalString(record.projectFilePath)
+    && typeof record.projectId === "string"
+    && typeof record.projectName === "string"
+    && setupDashboardRecordArray(record.purposes, setupDashboardProjectPurposeRecord)
+    && setupDashboardUniqueStringValues(record.purposes.map((purpose) => purpose.purposeId))
+    && setupDashboardOptionalString(record.repoRoot);
+}
+
+function setupDashboardEventRecord(record) {
+  return setupDashboardObject(record)
+    && setupDashboardOptionalString(record.actorId)
+    && setupDashboardOptionalString(record.actorType)
+    && setupDashboardOptionalString(record.alias)
+    && typeof record.eventId === "string"
+    && setupDashboardOptionalString(record.jobId)
+    && setupDashboardOptionalString(record.leaseId)
+    && setupDashboardOptionalRecord(record.payload, (payload) => (
+      setupDashboardObject(payload) && setupDashboardOptionalString(payload.actorId)
+    ))
+    && setupDashboardOptionalString(record.projectId)
+    && setupDashboardOptionalString(record.purposeId)
+    && typeof record.timestamp === "string"
+    && typeof record.type === "string";
+}
+
+function setupDashboardIdleCleanupResultRecord(record) {
+  return setupDashboardObject(record)
+    && typeof record.completedAt === "string"
+    && setupDashboardInteger(record.eligibleCount)
+    && setupDashboardInteger(record.failureCount)
+    && setupDashboardInteger(record.shutdownCount)
+    && typeof record.source === "string"
+    && typeof record.status === "string";
+}
+
+function setupDashboardIdleRecord(record) {
+  return setupDashboardObject(record)
+    && typeof record.configured === "boolean"
+    && setupDashboardInteger(record.eligibleCount)
+    && setupDashboardOptionalInteger(record.graceSeconds)
+    && setupDashboardOptionalRecord(record.lastCleanupResult, setupDashboardIdleCleanupResultRecord)
+    && setupDashboardOptionalString(record.nextScheduledCleanupAt);
+}
+
+function setupSnapshotMatchesDashboardContract(snapshot) {
+  if (!setupDashboardObject(snapshot)) {
+    return false;
+  }
+  if (typeof snapshot.generatedAt !== "string" || snapshot.generatedAt.trim() === "") {
+    return false;
+  }
+  if (typeof snapshot.hostId !== "string" || snapshot.hostId.trim() === "") {
+    return false;
+  }
+  if (typeof snapshot.ok !== "boolean") {
+    return false;
+  }
+  if (typeof snapshot.stateRoot !== "string" || snapshot.stateRoot.trim() === "") {
+    return false;
+  }
+  if (snapshot.hostConfigPath != null && typeof snapshot.hostConfigPath !== "string") {
+    return false;
+  }
+  const overview = snapshot.overview;
+  if (!setupDashboardObject(overview)) {
+    return false;
+  }
+  if (typeof overview.leaseSaturation !== "number" || !Number.isFinite(overview.leaseSaturation)
+    || overview.leaseSaturation < 0 || overview.leaseSaturation > 1
+    || !setupDashboardInteger(overview.leasedAliases)
+    || !setupDashboardInteger(overview.pinnedAliases)
+    || !setupDashboardInteger(overview.totalAliases)
+    || !setupDashboardInteger(overview.unhealthyAliases)) {
+    return false;
+  }
+  return setupDashboardOptionalRecord(snapshot.idle, setupDashboardIdleRecord)
+    && setupDashboardRecordArray(snapshot.activeLeases, setupDashboardLeaseRecord)
+    && setupDashboardUniqueStringValues(snapshot.activeLeases.map((lease) => lease.leaseId))
+    && setupDashboardRecordArray(snapshot.pins, setupDashboardPinRecord)
+    && setupDashboardUniqueStringValues(snapshot.pins.map((pin) => pin.alias))
+    && setupDashboardRecordArray(snapshot.projects, setupDashboardProjectRecord)
+    && setupDashboardUniqueStringValues(snapshot.projects.map((project) => project.projectId))
+    && setupDashboardRecordArray(snapshot.recentEvents, setupDashboardEventRecord)
+    && setupDashboardUniqueStringValues(snapshot.recentEvents.map((event) => event.eventId))
+    && setupDashboardRecordArray(snapshot.simulators, setupDashboardSimulatorRecord)
+    && setupDashboardUniqueStringValues(snapshot.simulators.map((simulator) => simulator.alias));
+}
+
+function setupSnapshotReady(paths, corePreview) {
+  if (!corePreview.host.configured) {
+    return false;
+  }
+  try {
+    if (fs.statSync(paths.appSnapshotPath).isFile() !== true) {
+      return false;
+    }
+    const snapshot = JSON.parse(fs.readFileSync(paths.appSnapshotPath, "utf8"));
+    if (!setupSnapshotMatchesDashboardContract(snapshot)) {
+      return false;
+    }
+    if (path.resolve(snapshot.hostConfigPath ?? "") !== path.resolve(paths.hostConfigPath)
+      || path.resolve(snapshot.stateRoot ?? "") !== path.resolve(paths.stateRoot)
+      || snapshot.hostId !== corePreview.host.hostId) {
+      return false;
+    }
+    const snapshotAliases = new Map(
+      (Array.isArray(snapshot.simulators) ? snapshot.simulators : [])
+        .map((simulator) => [simulator.alias, simulator]),
+    );
+    const hostAliasSet = new Set(corePreview.devices.map((device) => device.alias));
+    if (!setupSameStringSet(hostAliasSet, new Set(snapshotAliases.keys()))) {
+      return false;
+    }
+    if (!corePreview.devices.every((device) => {
+      const snapshotDevice = snapshotAliases.get(device.alias);
+      return snapshotDevice
+        && snapshotDevice.simulatorId === device.simulatorId
+        && snapshotDevice.health !== "repair-needed"
+        && snapshotDevice.health !== "repairing";
+    })) {
+      return false;
+    }
+    const snapshotMtime = fs.statSync(paths.appSnapshotPath).mtimeMs;
+    const relevantStateMtime = setupDoctorStateMtime(paths);
+    return snapshotMtime >= relevantStateMtime
+      && setupDoctorStateReadable(paths)
+      && setupDoctorRecordsMatchSnapshot(paths, snapshot);
+  } catch {
+    return false;
+  }
+}
+
+function setupDoctorStateFiles(paths) {
+  const files = [];
+  if (fs.existsSync(paths.knownProjectsPath)) {
+    files.push(paths.knownProjectsPath);
+  }
+  for (const directoryPath of [paths.leasesDir, paths.pinsDir]) {
+    if (!fs.existsSync(directoryPath)) {
+      continue;
+    }
+    for (const entry of fs.readdirSync(directoryPath, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) {
+        continue;
+      }
+      files.push(path.join(directoryPath, entry.name));
+    }
+  }
+  return files;
+}
+
+function setupDoctorStateMtime(paths) {
+  return [
+    paths.hostConfigPath,
+    paths.registryPath,
+    paths.leasesDir,
+    paths.pinsDir,
+    ...setupDoctorStateFiles(paths),
+  ]
+    .filter((filePath) => fs.existsSync(filePath))
+    .reduce((latest, filePath) => Math.max(latest, fs.statSync(filePath).mtimeMs), 0);
+}
+
+function setupJsonRecordIds(directoryPath, idField) {
+  const ids = new Set();
+  if (!fs.existsSync(directoryPath)) {
+    return ids;
+  }
+  for (const entry of fs.readdirSync(directoryPath, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) {
+      continue;
+    }
+    const record = JSON.parse(fs.readFileSync(path.join(directoryPath, entry.name), "utf8"));
+    if (typeof record?.[idField] === "string" && record[idField].trim() !== "") {
+      ids.add(record[idField]);
+    } else {
+      ids.add(entry.name);
+    }
+  }
+  return ids;
+}
+
+function setupSameStringSet(left, right) {
+  if (left.size !== right.size) {
+    return false;
+  }
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function setupDoctorRecordsMatchSnapshot(paths, snapshot) {
+  const snapshotLeaseIds = new Set(
+    (Array.isArray(snapshot.activeLeases) ? snapshot.activeLeases : [])
+      .map((lease) => lease?.leaseId)
+      .filter((leaseId) => typeof leaseId === "string" && leaseId.trim() !== ""),
+  );
+  const snapshotPinIds = new Set(
+    (Array.isArray(snapshot.pins) ? snapshot.pins : [])
+      .map((pin) => pin?.pinId)
+      .filter((pinId) => typeof pinId === "string" && pinId.trim() !== ""),
+  );
+  if (!setupSameStringSet(snapshotLeaseIds, setupJsonRecordIds(paths.leasesDir, "leaseId"))) {
+    return false;
+  }
+  if (!setupSameStringSet(snapshotPinIds, setupJsonRecordIds(paths.pinsDir, "pinId"))) {
+    return false;
+  }
+  const catalogProjectIds = new Set(
+    (Array.isArray(snapshot.projects) ? snapshot.projects : [])
+      .filter((project) => typeof project?.projectFilePath === "string" && project.projectFilePath.length > 0)
+      .map((project) => project.projectId)
+      .filter((projectId) => typeof projectId === "string" && projectId.length > 0),
+  );
+  if (!fs.existsSync(paths.knownProjectsPath)) {
+    return false;
+  }
+  const knownProjects = JSON.parse(fs.readFileSync(paths.knownProjectsPath, "utf8"));
+  const currentProjectIds = new Set(Object.keys(knownProjects?.projects ?? {}));
+  return setupSameStringSet(catalogProjectIds, currentProjectIds);
+}
+
+function assertReadableLeaseRecord(record) {
+  if (record === null || typeof record !== "object" || Array.isArray(record)) {
+    throw new Error("lease record must be an object");
+  }
+  if (typeof record.leaseId !== "string" || record.leaseId.trim() === "") {
+    throw new Error("lease.leaseId must be a non-empty string");
+  }
+  if (typeof record.alias !== "string" || record.alias.trim() === "") {
+    throw new Error("lease.alias must be a non-empty string");
+  }
+}
+
+function assertReadablePinRecord(record) {
+  if (record === null || typeof record !== "object" || Array.isArray(record)) {
+    throw new Error("pin record must be an object");
+  }
+  if (typeof record.pinId !== "string" || record.pinId.trim() === "") {
+    throw new Error("pin.pinId must be a non-empty string");
+  }
+  if (typeof record.alias !== "string" || record.alias.trim() === "") {
+    throw new Error("pin.alias must be a non-empty string");
+  }
+}
+
+function setupDoctorStateReadable(paths) {
+  try {
+    for (const filePath of setupDoctorStateFiles(paths)) {
+      const record = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      if (path.dirname(filePath) === paths.leasesDir) {
+        assertReadableLeaseRecord(record);
+      } else if (path.dirname(filePath) === paths.pinsDir) {
+        assertReadablePinRecord(record);
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function shellQuoteArgument(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function setupCliCommandWithSelectedPaths(command, paths) {
+  return [
+    command,
+    "--host-config",
+    shellQuoteArgument(paths.hostConfigPath),
+    "--state-root",
+    shellQuoteArgument(paths.stateRoot),
+    "--service-socket",
+    shellQuoteArgument(paths.serviceSocketPath),
+  ].join(" ");
+}
+
+function setupServiceArtifactBlockers(paths) {
+  const blockers = [];
+  if (setupOccupiedPathNotRegularFile(paths.serviceMetadataPath)) {
+    blockers.push({
+      details: { path: paths.serviceMetadataPath },
+      id: "service-metadata",
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+      status: "blocked",
+      summary: "The existing service metadata is not a regular file and setup will not probe it.",
+    });
+  }
+  if (setupOccupiedPathNotWritableRegularFile(paths.serviceLogPath)) {
+    blockers.push({
+      details: { path: paths.serviceLogPath },
+      id: "service-log",
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+      status: "blocked",
+      summary: "The existing service log is not a writable regular file and setup will not start a service over it.",
+    });
+  }
+  if (setupOccupiedSocketUnusable(paths.serviceSocketPath)) {
+    blockers.push({
+      details: { path: paths.serviceSocketPath },
+      id: "service-socket",
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+      status: "blocked",
+      summary: "The existing service socket path is occupied and setup will not bind over it.",
+    });
+  }
+  const socketParent = setupServiceSocketParentUnusable(paths.serviceSocketPath);
+  if (socketParent.unusable) {
+    blockers.push({
+      details: {
+        checkedPath: socketParent.checkedPath,
+        destination: paths.serviceSocketPath,
+      },
+      id: "service-socket-parent",
+      remediationCommands: socketParent.checkedPath
+        ? [`chmod u+wx ${shellQuoteArgument(socketParent.checkedPath)}`]
+        : [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+      status: "blocked",
+      summary: "The service socket destination is not under a searchable, writable directory.",
+    });
+  }
+  return blockers;
+}
+
+function qualifySetupDoctorIssues(issues, paths) {
+  return issues.map((issue) => {
+    if (issue == null || typeof issue !== "object") {
+      return issue;
+    }
+    if (Array.isArray(issue.remediationCommands) && issue.remediationCommands.length > 0) {
+      return issue;
+    }
+    if (typeof issue.alias === "string" && issue.alias.trim() !== "") {
+      return {
+        ...issue,
+        remediationCommands: [
+          setupCliCommandWithSelectedPaths("simbroker host status", paths),
+          setupCliCommandWithSelectedPaths(
+            `simbroker simulators repair --alias ${shellQuoteArgument(issue.alias)}`,
+            paths,
+          ),
+        ],
+      };
+    }
+    return {
+      ...issue,
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    };
+  });
+}
+
+function setupRecoveryCommand(paths, options = {}) {
+  const parts = [
+    "simbroker",
+    "setup",
+    "--host-config",
+    shellQuoteArgument(paths.hostConfigPath),
+    "--state-root",
+    shellQuoteArgument(paths.stateRoot),
+    "--service-socket",
+    shellQuoteArgument(paths.serviceSocketPath),
+  ];
+  if (options.iosVersion) {
+    parts.push("--ios-version", shellQuoteArgument(options.iosVersion));
+  }
+  if (options.hostId) {
+    parts.push("--host-id", shellQuoteArgument(options.hostId));
+  }
+  return parts.join(" ");
+}
+
+function setupApplyCommand(preview, paths, options) {
+  const parts = [
+    "simbroker",
+    "setup",
+    "--apply",
+    "--confirm",
+    shellQuoteArgument(preview.planId),
+    "--host-config",
+    shellQuoteArgument(paths.hostConfigPath),
+    "--state-root",
+    shellQuoteArgument(paths.stateRoot),
+    "--service-socket",
+    shellQuoteArgument(paths.serviceSocketPath),
+  ];
+  if (options.iosVersion) {
+    parts.push("--ios-version", shellQuoteArgument(options.iosVersion));
+  }
+  if (options.hostId) {
+    parts.push("--host-id", shellQuoteArgument(options.hostId));
+  }
+  return parts.join(" ");
+}
+
+function setupInterruptedError(signalName, completedStages, hostCommitted, failedStage, recoveryCommand) {
+  return new BrokerError("Setup was interrupted.", {
+    command: "setup",
+    completedStages,
+    exitCode: signalName === "SIGTERM" ? 143 : 130,
+    failedStage,
+    hostCommitted,
+    reasonCode: "setup-interrupted",
+    recoveryCommand,
+  });
+}
+
+function assertSetupCommittedHostIdentity(snapshot, expectedHostIdentity) {
+  const expectedSimulatorIds = new Map(
+    (expectedHostIdentity?.simulators ?? []).map(({ alias, simulatorId }) => [alias, simulatorId]),
+  );
+  const actualSimulatorIds = new Map(
+    (snapshot.simulators ?? []).map(({ alias, simulatorId }) => [alias, simulatorId]),
+  );
+  const mismatchedSimulatorAliases = [...new Set([
+    ...expectedSimulatorIds.keys(),
+    ...actualSimulatorIds.keys(),
+  ])]
+    .filter((alias) => actualSimulatorIds.get(alias) !== expectedSimulatorIds.get(alias))
+    .sort();
+  if (snapshot.hostId !== expectedHostIdentity?.hostId || mismatchedSimulatorAliases.length > 0) {
+    throw new BrokerError("The refreshed snapshot no longer matches the host committed by setup.", {
+      actualHostId: snapshot.hostId ?? null,
+      expectedHostId: expectedHostIdentity?.hostId ?? null,
+      mismatchedSimulatorAliases,
+      reasonCode: "setup-committed-host-mismatch",
+    });
+  }
+}
+
+function decorateSetupFailure(error, stage, completedStages, hostCommitted, serviceRunning, recoveryCommand) {
+  if (error instanceof BrokerError) {
+    error.payload.command = "setup";
+    error.payload.completedStages ??= completedStages;
+    error.payload.failedStage ??= stage;
+    error.payload.hostCommitted ??= hostCommitted;
+    error.payload.recoveryCommand = recoveryCommand;
+    error.payload.serviceRunning ??= serviceRunning;
+    return error;
+  }
+  return new BrokerError(error?.message ?? String(error), {
+    command: "setup",
+    completedStages,
+    failedStage: stage,
+    hostCommitted,
+    reasonCode: INTERNAL_ERROR_REASON_CODE,
+    recoveryCommand,
+    serviceRunning,
+  });
+}
+
+async function applySetup(paths, options, cancellation) {
+  const completedStages = ["preflight", "confirmation"];
+  const recoveryCommand = setupRecoveryCommand(paths, options);
+  let activeStage = "provisioning";
+  let hostCommitted = fs.existsSync(paths.hostConfigPath);
+  let serviceRunning = false;
+  const checkCancellation = () => {
+    if (cancellation.signalName !== null) {
+      throw setupInterruptedError(
+        cancellation.signalName,
+        completedStages,
+        hostCommitted,
+        activeStage,
+        recoveryCommand,
+      );
+    }
+  };
+
+  const serviceArtifactBlockers = setupServiceArtifactBlockers(paths);
+  if (serviceArtifactBlockers.length > 0) {
+    const blocker = serviceArtifactBlockers[0];
+    throw new BrokerError("Setup prerequisites are not ready.", {
+      blockerReasonCode: blocker.id,
+      command: "setup",
+      failedStage: "preflight",
+      hostCommitted,
+      prerequisites: serviceArtifactBlockers,
+      reasonCode: "setup-prerequisite-failed",
+      recoveryCommand,
+      serviceRunning,
+    });
+  }
+
+  let coreResult;
+  try {
+    checkCancellation();
+    await serviceStatus(paths);
+    coreResult = await applySetupBrokerInWorker(paths, {
+      confirmPlanId: options.confirmPlanId,
+      hostId: options.hostId ?? undefined,
+      iosVersion: options.iosVersion ?? undefined,
+    }, cancellation);
+    hostCommitted = true;
+    completedStages.push("host", "devices", "registry");
+  } catch (error) {
+    throw decorateSetupFailure(error, "provisioning", completedStages, fs.existsSync(paths.hostConfigPath), false, recoveryCommand);
+  }
+
+  let serviceResult;
+  activeStage = "service-start";
+  try {
+    checkCancellation();
+    serviceResult = await startService(paths, { signal: cancellation.signal });
+    checkCancellation();
+    serviceRunning = true;
+    completedStages.push("service");
+  } catch (error) {
+    checkCancellation();
+    throw decorateSetupFailure(error, "service-start", completedStages, hostCommitted, false, recoveryCommand);
+  }
+
+  let snapshot;
+  activeStage = "snapshot-refresh";
+  try {
+    checkCancellation();
+    snapshot = await executeServiceCommand(paths, {
+      command: "snapshot",
+      group: "app",
+      options: { eventLimit: 50 },
+      type: "command",
+    }, {
+      expectedServiceIdentity: serviceResult.service,
+      signal: cancellation.signal,
+    });
+    checkCancellation();
+    if (path.resolve(snapshot.hostConfigPath) !== path.resolve(paths.hostConfigPath)
+      || path.resolve(snapshot.stateRoot) !== path.resolve(paths.stateRoot)) {
+      throw new BrokerError("The refreshed snapshot belongs to different broker paths.", {
+        reasonCode: "service-identity-mismatch",
+      });
+    }
+    const expectedHostIdentity = coreResult.setupCommittedHostIdentity;
+    assertSetupCommittedHostIdentity(snapshot, expectedHostIdentity);
+    completedStages.push("snapshot");
+  } catch (error) {
+    checkCancellation();
+    throw decorateSetupFailure(error, "snapshot-refresh", completedStages, hostCommitted, serviceRunning, recoveryCommand);
+  }
+
+  let health;
+  activeStage = "health";
+  try {
+    checkCancellation();
+    health = await executeServiceCommand(paths, {
+      command: "status",
+      group: "doctor",
+      options: {},
+      type: "command",
+    }, {
+      expectedServiceIdentity: serviceResult.service,
+      signal: cancellation.signal,
+    });
+    checkCancellation();
+    if (fs.statSync(paths.appSnapshotPath).isFile() !== true) {
+      throw new BrokerError("The post-doctor snapshot could not be read as a regular file.", {
+        path: paths.appSnapshotPath,
+        reasonCode: "invalid-config",
+      });
+    }
+    const postDoctorSnapshot = JSON.parse(fs.readFileSync(paths.appSnapshotPath, "utf8"));
+    if (path.resolve(postDoctorSnapshot.hostConfigPath) !== path.resolve(paths.hostConfigPath)
+      || path.resolve(postDoctorSnapshot.stateRoot) !== path.resolve(paths.stateRoot)) {
+      throw new BrokerError("The post-doctor snapshot belongs to different broker paths.", {
+        reasonCode: "service-identity-mismatch",
+      });
+    }
+    assertSetupCommittedHostIdentity(postDoctorSnapshot, coreResult.setupCommittedHostIdentity);
+    const postDoctorHealth = inspectSetupPostDoctorSnapshot(postDoctorSnapshot, {
+      requireStarterAliases: coreResult.host.created === true,
+    });
+    if (!health.ok || !postDoctorHealth.ok) {
+      const snapshotIssues = postDoctorHealth.unhealthyAliases.map((simulator) => ({
+        alias: simulator.alias,
+        health: simulator.health ?? "repair-needed",
+        reasonCode: "alias-unhealthy",
+      }));
+      const doctorIssues = (health.issues ?? []).length > 0 ? health.issues : snapshotIssues;
+      const unhealthyIssue = doctorIssues.some((issue) => issue.alias);
+      throw new BrokerError("Broker health verification failed after setup.", {
+        doctorIssues: qualifySetupDoctorIssues(doctorIssues, paths),
+        exitCode: unhealthyIssue ? BROKER_EXIT_CODES.repairNeeded : BROKER_EXIT_CODES.unavailable,
+        missingExpectedAliases: postDoctorHealth.missingExpectedAliases,
+        reasonCode: "setup-health-check-failed",
+      });
+    }
+    completedStages.push("health");
+  } catch (error) {
+    checkCancellation();
+    throw decorateSetupFailure(error, "health", completedStages, hostCommitted, serviceRunning, recoveryCommand);
+  }
+
+  const { setupCommittedHostIdentity: _setupCommittedHostIdentity, ...publicCoreResult } = coreResult;
+  return {
+    ...publicCoreResult,
+    health: { issueCount: 0, ok: true },
+    nextSteps: [],
+    service: {
+      identityVerified: true,
+      running: true,
+      started: serviceResult.started === true,
+    },
+    snapshot: { ready: true },
+  };
+}
+
+async function promptForSetupConfirmation() {
+  const readline = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await readline.question("Create or adopt these 6 Simulator devices and finish setup? [y/N] ");
+    return /^y(?:es)?$/i.test(answer.trim());
+  } catch {
+    return false;
+  } finally {
+    readline.close();
+  }
+}
+
+async function runSetup(paths, flags) {
+  const options = setupOptions(flags);
+  const preview = await buildSetupPreview(paths, options);
+  const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true && !wantsJson();
+  const recoveryCommand = setupRecoveryCommand(paths, options);
+
+  if (options.apply && !options.confirmPlanId) {
+    throw new BrokerError("Setup apply requires the current plan confirmation.", {
+      command: "setup",
+      currentPlanId: preview.planId,
+      failedStage: "confirmation",
+      reasonCode: "setup-confirmation-required",
+      recoveryCommand,
+    });
+  }
+
+  if (preview.status === "blocked") {
+    if (options.apply) {
+      const blocker = preview.prerequisites.find((prerequisite) => prerequisite.status === "blocked");
+      throw new BrokerError("Setup prerequisites are not ready.", {
+        blockerReasonCode: blocker?.details?.reasonCode ?? blocker?.id ?? null,
+        command: "setup",
+        failedStage: "preflight",
+        prerequisites: preview.prerequisites,
+        reasonCode: "setup-prerequisite-failed",
+        recoveryCommand,
+      });
+    }
+    return preview;
+  }
+
+  if (!options.apply) {
+    if (wantsJson()) {
+      return preview;
+    }
+    if (!interactive) {
+      return {
+        ...preview,
+        confirmation: {
+          ...preview.confirmation,
+          applyCommand: setupApplyCommand(preview, paths, options),
+        },
+      };
+    }
+    if (!preview.confirmation.required) {
+      if (preview.status === "ready") {
+        return preview;
+      }
+      options.apply = true;
+      options.confirmPlanId = preview.planId;
+    } else {
+      process.stdout.write(format(preview, { json: false }));
+      if (!await promptForSetupConfirmation()) {
+        return {
+          command: "setup",
+          mode: "preview",
+          ok: true,
+          schemaVersion: 1,
+          status: "cancelled",
+        };
+      }
+      options.apply = true;
+      options.confirmPlanId = preview.planId;
+    }
+  }
+
+  const cancellationController = new AbortController();
+  const cancellation = {
+    requestProvisioningCancellation: null,
+    signal: cancellationController.signal,
+    signalName: null,
+  };
+  const recordSignal = (signalName) => {
+    if (cancellation.signalName !== null) {
+      return;
+    }
+    cancellation.signalName = signalName;
+    cancellationController.abort(new Error(`Setup received ${signalName}.`));
+    cancellation.requestProvisioningCancellation?.(signalName);
+  };
+  const handleSigint = () => recordSignal("SIGINT");
+  const handleSigterm = () => recordSignal("SIGTERM");
+  process.once("SIGINT", handleSigint);
+  process.once("SIGTERM", handleSigterm);
+  try {
+    return await applySetup(paths, options, cancellation);
+  } finally {
+    process.removeListener("SIGINT", handleSigint);
+    process.removeListener("SIGTERM", handleSigterm);
+  }
+}
+
 const invocation = parseArgs(process.argv.slice(2));
 
 function wantsJson() {
@@ -571,6 +1751,9 @@ async function main() {
   const { flags, positionals } = invocation;
   rejectExtraPositionals(positionals);
   const [group, command] = positionals;
+  if (group === "setup" && command === undefined && !flags.has("help")) {
+    rejectUnknownSetupFlags(flags);
+  }
   const paths = buildPaths(flags);
 
   if (flags.has("help") || group === "help" || command === "help") {
@@ -586,6 +1769,10 @@ async function main() {
         process.stderr.write(`${HOST_BOOTSTRAP_DEVICE_WARNING}\n`);
       }
     }
+  }
+
+  if (group === "setup" && command === undefined) {
+    return runSetup(paths, flags);
   }
 
   switch (`${group ?? ""}:${command ?? ""}`) {
@@ -617,7 +1804,27 @@ main()
   })
   .catch((error) => {
     if (error instanceof BrokerError) {
-      process.stdout.write(format(error.payload, { json: true }));
+      const setupInvocation = invocation.positionals[0] === "setup";
+      let recoveryCommand = "simbroker setup";
+      if (setupInvocation) {
+        try {
+          recoveryCommand = setupRecoveryCommand(buildPaths(invocation.flags), {
+            hostId: flagValue(invocation.flags, "host-id"),
+            iosVersion: flagValue(invocation.flags, "ios-version"),
+          });
+        } catch {
+          recoveryCommand = "simbroker setup";
+        }
+      }
+      const payload = setupInvocation
+        ? {
+            command: "setup",
+            failedStage: "arguments",
+            recoveryCommand,
+            ...error.payload,
+          }
+        : error.payload;
+      process.stdout.write(format(payload, { json: wantsJson() || !setupInvocation }));
       process.exit(error.exitCode);
       return;
     }

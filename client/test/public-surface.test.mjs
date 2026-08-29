@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-import { scanPublicSurface } from "../public-surface.mjs";
+import { dirtyWorktreeFiles, scanPublicSurface } from "../public-surface.mjs";
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-public-surface-test-"));
@@ -567,6 +567,36 @@ test("default public surface scan inspects staged blobs when the worktree file i
     rule: "local-home-path",
   }]);
   assert.equal(JSON.stringify(report).includes(localHome), false);
+});
+
+test("dirty worktree files treats git diff-files exit 1 as the dirty name list", () => {
+  const root = makeTempDir();
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  fs.writeFileSync(path.join(root, "clean.md"), "public docs\n");
+  fs.writeFileSync(path.join(root, "dirty.md"), "public docs\n");
+  execFileSync("git", ["add", "clean.md", "dirty.md"], { cwd: root, stdio: "ignore" });
+  fs.writeFileSync(path.join(root, "dirty.md"), "worktree edit\n");
+
+  const dirty = dirtyWorktreeFiles(root);
+
+  assert.deepEqual([...dirty], ["dirty.md"]);
+});
+
+test("dirty worktree files is empty for a clean tracked worktree", () => {
+  const root = makeTempDir();
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  fs.writeFileSync(path.join(root, "README.md"), "public docs\n");
+  execFileSync("git", ["add", "README.md"], { cwd: root, stdio: "ignore" });
+
+  const dirty = dirtyWorktreeFiles(root);
+
+  assert.equal(dirty.size, 0);
+});
+
+test("dirty worktree files fails closed when git is unavailable", () => {
+  const root = makeTempDir();
+
+  assert.throws(() => dirtyWorktreeFiles(root), /not a git repository/i);
 });
 
 test("default public surface scan inspects staged blobs even after worktree cleanup", () => {

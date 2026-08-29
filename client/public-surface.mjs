@@ -79,9 +79,21 @@ function defaultCandidateFiles(root) {
   return output.split("\0").filter(Boolean);
 }
 
+function gitStdout(result) {
+  if (typeof result === "string") {
+    return result;
+  }
+  if (Buffer.isBuffer(result)) {
+    return result.toString("utf8");
+  }
+  return "";
+}
+
 // Clean checkouts match the index, so skip per-file `git cat-file`. A prior
 // Ubuntu CI run spent 17 minutes spawning one process per tracked file.
-function dirtyWorktreeFiles(root) {
+// `git diff-files` exits 1 when tracked files are dirty; that is a dirty-name
+// list, not an unknown worktree. Only a real git failure scans every blob.
+export function dirtyWorktreeFiles(root) {
   try {
     const output = execGit([
       "diff-files",
@@ -90,10 +102,14 @@ function dirtyWorktreeFiles(root) {
     ], {
       cwd: root,
       encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    return new Set(output.split("\0").filter(Boolean));
-  } catch {
-    return null;
+    return new Set(gitStdout(output).split("\0").filter(Boolean));
+  } catch (error) {
+    if (error?.status === 1) {
+      return new Set(gitStdout(error.stdout).split("\0").filter(Boolean));
+    }
+    throw error;
   }
 }
 

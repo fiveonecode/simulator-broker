@@ -38,9 +38,12 @@ npm run test:harness-adoption
 Run `npm run test:docs` for doc, README, or template changes; it runs the `docs/test` front-door checks.
 
 App work also needs XcodeGen and `npm run test:app`. The full suite is
-`npm test`. GitHub-hosted Ubuntu CI runs public-surface, `test:broker-core`,
-`test:client`, and `test:harness-adoption`. That job does not run
-`npm run test:app` or `npm run test:docs`.
+`npm test`, which starts with `verify:public-surface` on the operator
+machine so the home-path leak scan sees the real home directory.
+GitHub-hosted Ubuntu CI runs `test:broker-core` and
+`test:harness-adoption`. GitHub-hosted macOS CI runs `test:client`.
+Public GitHub CI does not run `npm run test:app` or `npm run test:docs`,
+and it does not run `verify:public-surface`.
 
 You do not need to run `agent:context`, `agent:verify`, or `agent:complete`,
 and you do not need to create a task session directory.

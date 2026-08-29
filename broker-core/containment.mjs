@@ -960,6 +960,14 @@ function defaultProcessController() {
   };
 }
 
+function currentBrokerPid(processController) {
+  const injected = processController?.currentPid;
+  if (Number.isInteger(injected) && injected > 0) {
+    return injected;
+  }
+  return process.pid;
+}
+
 function killPid(processController, pid, signal) {
   if (typeof processController.killPid === "function") {
     return processController.killPid(pid, signal);
@@ -1004,6 +1012,7 @@ function terminateOwnedProcesses({
   const actions = [];
   const ownedByPid = new Map(discovery.owned.map((processRecord) => [processRecord.pid, processRecord]));
   const ownerPid = discovery.owned.find((processRecord) => processRecord.reasons.includes("owner-pid"))?.pid ?? null;
+  const brokerPid = currentBrokerPid(processController);
   const skippedRequesterPid = normalizePositiveInteger(requesterPid);
   const requesterInCommandGroup = Boolean(
     skippedRequesterPid
@@ -1039,7 +1048,7 @@ function terminateOwnedProcesses({
     .map((processRecord) => processRecord.pid);
 
   for (const pid of sortedPids) {
-    if (pid === process.pid) {
+    if (pid === brokerPid) {
       actions.push({
         ok: true,
         pid,
@@ -1095,7 +1104,7 @@ function terminateOwnedProcesses({
   }
 
   for (const pid of sortedPids) {
-    if (pid === process.pid || pid === skippedRequesterPid || (pid === ownerPid && !killOwner)) {
+    if (pid === brokerPid || pid === skippedRequesterPid || (pid === ownerPid && !killOwner)) {
       continue;
     }
     if (revalidatedOwnedPids && revalidatedOwnedPids.has(pid) === false) {

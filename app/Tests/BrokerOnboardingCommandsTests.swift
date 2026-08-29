@@ -2,6 +2,32 @@ import XCTest
 @testable import SimulatorBrokerApp
 
 final class BrokerOnboardingCommandsTests: XCTestCase {
+  func testSetupCommandPreservesEveryBrokerPathOverride() {
+    let formatter = BrokerCLIInvocationFormatter(executablePath: "/tmp/custom broker/simbroker")
+
+    XCTAssertEqual(
+      formatter.setupCommand(
+        hostConfigPath: "/tmp/config dir/host's config.json",
+        stateRootPath: "/tmp/state root",
+        serviceSocketPath: "/tmp/socket dir/broker.sock"
+      ),
+      "'/tmp/custom broker/simbroker' setup --host-config '/tmp/config dir/host'\\''s config.json' --state-root '/tmp/state root' --service-socket '/tmp/socket dir/broker.sock'"
+    )
+  }
+
+  func testSetupCommandOmitsAnUnconfiguredServiceSocketOverride() {
+    let formatter = BrokerCLIInvocationFormatter(executablePath: nil)
+
+    XCTAssertEqual(
+      formatter.setupCommand(
+        hostConfigPath: "/tmp/host.json",
+        stateRootPath: "/tmp/state",
+        serviceSocketPath: nil
+      ),
+      "simbroker setup --host-config '/tmp/host.json' --state-root '/tmp/state'"
+    )
+  }
+
   func testMissingCLICopyLeadsWithHomebrewFormulaAndRefresh() {
     XCTAssertEqual(
       BrokerMissingCLISetupCopy.brewInstallCommand,

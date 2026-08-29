@@ -85,6 +85,83 @@ final class BrokerLocalCommandClientTests: XCTestCase {
     }
   }
 
+  func testSetupApplyCancellationAllowsCooperativeRollbackBeforeEscalation() async throws {
+    let tempRoot = try makeTempRoot()
+    let scriptURL = tempRoot.appending(path: "cooperative-setup-command.sh")
+    let markerURL = tempRoot.appending(path: "rollback-complete.txt")
+    let readyURL = tempRoot.appending(path: "setup-ready.txt")
+    try [
+      "#!/bin/sh",
+      "set -eu",
+      "marker_path=\"$5\"",
+      "ready_path=\"$6\"",
+      "trap 'sleep 2; printf rollback-complete > \"$marker_path\"; exit 0' TERM",
+      "printf ready > \"$ready_path\"",
+      "while true; do",
+      "  sleep 1",
+      "done",
+      "",
+    ].joined(separator: "\n").write(to: scriptURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+    let task = Task {
+      try await ProcessBrokerLocalCommandRunner().run(cliPath: scriptURL, arguments: [
+        "setup", "--apply", "--confirm", "sha256:test", markerURL.path, readyURL.path,
+      ])
+    }
+    try await waitUntil {
+      FileManager.default.fileExists(atPath: readyURL.path)
+    }
+    task.cancel()
+
+    do {
+      _ = try await withTimeout(seconds: 5) {
+        try await task.value
+      }
+      XCTFail("Expected cancellation to throw.")
+    } catch is CancellationError {
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: markerURL.path))
+  }
+
+  func testSetupApplyTimeoutAllowsCooperativeRollbackBeforeEscalation() async throws {
+    let tempRoot = try makeTempRoot()
+    let scriptURL = tempRoot.appending(path: "cooperative-setup-timeout-command.sh")
+    let markerURL = tempRoot.appending(path: "rollback-complete.txt")
+    let readyURL = tempRoot.appending(path: "setup-ready.txt")
+    try [
+      "#!/bin/sh",
+      "set -eu",
+      "marker_path=\"$5\"",
+      "ready_path=\"$6\"",
+      "trap 'sleep 2; printf rollback-complete > \"$marker_path\"; exit 0' TERM",
+      "printf ready > \"$ready_path\"",
+      "while true; do",
+      "  sleep 1",
+      "done",
+      "",
+    ].joined(separator: "\n").write(to: scriptURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+    do {
+      _ = try await withTimeout(seconds: 5) {
+        try await ProcessBrokerLocalCommandRunner(timeoutNanoseconds: 500_000_000).run(
+          cliPath: scriptURL,
+          arguments: [
+            "setup", "--apply", "--confirm", "sha256:test", markerURL.path, readyURL.path,
+          ]
+        )
+      }
+      XCTFail("Expected timeout to throw.")
+    } catch let BrokerCLICommandError.processTimedOut(url) {
+      XCTAssertEqual(url, scriptURL)
+    }
+
+    try await waitUntil {
+      FileManager.default.fileExists(atPath: markerURL.path)
+    }
+  }
+
   func testProcessRunnerTerminatesLongRunningCommandAfterTimeout() async throws {
     let tempRoot = try makeTempRoot()
     let scriptURL = try writeLongRunningCommand(in: tempRoot)
@@ -125,6 +202,22 @@ final class BrokerLocalCommandClientTests: XCTestCase {
     XCTAssertEqual(
       runner.resolvedTimeoutNanoseconds(for: ["capacity", "check"]),
       925 * 1_000_000_000
+    )
+    XCTAssertEqual(
+      runner.resolvedTimeoutNanoseconds(for: ["setup", "--json"]),
+      600 * 1_000_000_000
+    )
+    XCTAssertEqual(
+      runner.resolvedTimeoutNanoseconds(for: ["setup", "--apply", "--confirm", "sha256:test", "--json"]),
+      10_765 * 1_000_000_000
+    )
+    XCTAssertEqual(
+      runner.resolvedCancellationEscalationNanoseconds(for: ["setup", "--json"]),
+      1 * 1_000_000_000
+    )
+    XCTAssertEqual(
+      runner.resolvedCancellationEscalationNanoseconds(for: ["setup", "--apply", "--confirm", "sha256:test", "--json"]),
+      1_620 * 1_000_000_000
     )
     let tempRoot = try makeTempRoot()
     let stateRoot = tempRoot.appending(path: "state")
@@ -173,6 +266,39 @@ final class BrokerLocalCommandClientTests: XCTestCase {
         .resolvedTimeoutNanoseconds(for: ["host", "init", "--bootstrap-config"]),
       500_000_000
     )
+  }
+
+  func testSetupFailureMessageIncludesServiceLogAndDoctorIssues() throws {
+    let envelope = try JSONDecoder().decode(BrokerCLICommandEnvelope.self, from: Data("""
+    {
+      "ok": false,
+      "error": "Broker health verification failed after setup.",
+      "failedStage": "health",
+      "completedStages": ["preflight", "confirmation", "host"],
+      "logPath": "/tmp/simbroker-state/brokerd.log",
+      "rollbackFailureCount": 1,
+      "doctorIssues": [
+        {
+          "alias": "ui-1",
+          "health": "repair-needed",
+          "reasonCode": "alias-unhealthy",
+          "remediationCommands": [
+            "simbroker host status --host-config '/tmp/host.json'",
+            "simbroker simulators repair --alias ui-1 --host-config '/tmp/host.json'"
+          ]
+        }
+      ],
+      "recoveryCommand": "simbroker setup --host-config '/tmp/host.json'"
+    }
+    """.utf8))
+
+    let message = envelope.failureDisplayMessage()
+    XCTAssertTrue(message.contains("Failed stage: health."))
+    XCTAssertTrue(message.contains("Completed: preflight, confirmation, host."))
+    XCTAssertTrue(message.contains("Rollback cleanup was incomplete for 1 Simulator operation(s)."))
+    XCTAssertTrue(message.contains("Service log: /tmp/simbroker-state/brokerd.log."))
+    XCTAssertTrue(message.contains("Doctor issues: ui-1 (repair-needed); repair: simbroker host status --host-config '/tmp/host.json'; simbroker simulators repair --alias ui-1 --host-config '/tmp/host.json'."))
+    XCTAssertTrue(message.contains("Recovery: simbroker setup --host-config '/tmp/host.json'"))
   }
 
   private func makeTempRoot() throws -> URL {

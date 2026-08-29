@@ -244,6 +244,38 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     XCTAssertEqual(loadedState.service?.pid, 12345)
   }
 
+  func testLoaderIgnoresServiceMetadataThatDoesNotMatchConfiguredSocket() async throws {
+    let tempRoot = try makeTempRoot()
+    let configuredSocketURL = tempRoot.appending(path: "configured.sock")
+    let metadataSocketURL = tempRoot.appending(path: "metadata.sock")
+    let paths = BrokerRuntimePaths(
+      stateRoot: tempRoot.appending(path: "state"),
+      hostConfigURL: tempRoot.appending(path: "host-config.json"),
+      serviceSocketURL: configuredSocketURL
+    )
+    try FileManager.default.createDirectory(at: paths.stateRoot, withIntermediateDirectories: true)
+    try Data().write(to: metadataSocketURL)
+    try writeJson(
+      [
+        "hostConfigPath": paths.hostConfigURL.path,
+        "pid": 12345,
+        "socketPath": metadataSocketURL.path,
+        "startedAt": "2026-04-10T00:00:00Z",
+        "stateRoot": paths.stateRoot.path,
+        "transport": "unix-http",
+      ],
+      to: paths.serviceMetadataURL
+    )
+
+    let loadedState = try await FileBrokerSnapshotLoader(
+      paths: paths,
+      processIdentifierExists: { _ in true },
+      serviceStatusProbe: { service in service }
+    ).load()
+
+    XCTAssertNil(loadedState.service)
+  }
+
   private func makeTempRoot() throws -> URL {
     let url = URL(fileURLWithPath: NSTemporaryDirectory())
       .appending(path: "simbroker-app-tests-\(UUID().uuidString)")

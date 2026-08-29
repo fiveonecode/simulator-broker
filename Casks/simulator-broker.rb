@@ -7,7 +7,7 @@ cask "simulator-broker" do
   desc "macOS operator app for the local iOS Simulator control plane"
   homepage "https://github.com/fiveonecode/simulator-broker"
 
-  depends_on macos: :ventura
+  depends_on macos: :sonoma
 
   app "Simulator Broker.app"
 

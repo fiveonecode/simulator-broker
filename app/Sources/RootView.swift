@@ -16,6 +16,16 @@ struct RootView: View {
     .focusedSceneValue(\.brokerSelectedPane, $store.selectedPane)
     .focusedSceneValue(\.brokerSelectedSimulatorAlias, $store.inspectedSimulatorAlias)
     .focusedSceneValue(\.brokerCommandAvailability, store.commandAvailability)
+    .sheet(item: $store.setupPlan, onDismiss: store.cancelGuidedSetup) { plan in
+      SetupPlanSheet(
+        errorMessage: store.lastErrorMessage,
+        onCancel: store.cancelGuidedSetup,
+        onConfirm: store.confirmGuidedSetup,
+        onStop: store.stopGuidedSetup,
+        phase: store.setupPhase,
+        plan: plan
+      )
+    }
   }
 
   private var navigationList: some View {
@@ -48,6 +58,7 @@ struct RootView: View {
     store.lastActionMessage != nil
       || (store.lastErrorMessage != nil && store.snapshot != nil)
       || store.startupState == .readOnlySnapshot
+      || store.isAutomaticSetupInProgress
   }
 
   @ViewBuilder
@@ -126,21 +137,29 @@ struct RootView: View {
     }
   }
 
-  private func startBrokerService() {
-    Task { @MainActor in
-      do {
-        try await store.startBrokerService()
-      } catch {
-        store.lastErrorMessage = error.localizedDescription
-      }
-    }
+  private func resumeGuidedSetup() {
+    store.requestGuidedSetup()
   }
 
   @ViewBuilder
   private var statusMessages: some View {
+    automaticSetupProgressCard
     actionMessageCard
     errorMessageCard
     readOnlySnapshotMessageCard
+  }
+
+  @ViewBuilder
+  private var automaticSetupProgressCard: some View {
+    if store.isAutomaticSetupInProgress {
+      StatusMessageCard(
+        color: .blue,
+        message: "Finishing setup: starting brokerd, refreshing the snapshot, and verifying Simulator health.",
+        symbolName: "gearshape.2",
+        actionTitle: store.setupPhase == .applying ? "Stop" : nil,
+        onAction: store.setupPhase == .applying ? { store.stopGuidedSetup() } : nil
+      )
+    }
   }
 
   @ViewBuilder
@@ -170,13 +189,13 @@ struct RootView: View {
   @ViewBuilder
   private var readOnlySnapshotMessageCard: some View {
     if store.startupState == .readOnlySnapshot {
-      if store.canStartBrokerService {
+      if store.canOfferReadOnlyFinishSetup {
         StatusMessageCard(
           color: .orange,
           message: "Broker commands are disabled because brokerd is not running. Start the service to enable pinning, release, and lifecycle actions.",
           symbolName: "bolt.slash.fill",
-          actionTitle: "Start brokerd",
-          onAction: startBrokerService,
+          actionTitle: "Finish setup",
+          onAction: resumeGuidedSetup,
           onDismiss: nil
         )
       } else {

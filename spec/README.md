@@ -1,5 +1,5 @@
 # Spec Index
-Related: `spec/architecture.md`, `spec/global-simulator-broker.md`, `spec/implementation-plan.md`, `spec/harness-integration.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/agents.md`, `spec/tasks/README.md`, `references/README.md`, `docs/getting-started.md`, `docs/concepts.md`
+Related: `spec/architecture.md`, `spec/global-simulator-broker.md`, `spec/implementation-plan.md`, `spec/harness-integration.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/agents.md`, `spec/tasks/README.md`, `spec/tasks/guided-simbroker-setup.md`, `references/README.md`, `docs/getting-started.md`, `docs/concepts.md`
 
 ## Purpose
 
@@ -23,6 +23,7 @@ This repo exists to develop a reusable local simulator broker:
 | `spec/agents.md` | Agent workflow and skill routing rules |
 | `spec/tasks/README.md` | Worker-ready cross-layer and macOS audit implementation tasks |
 | `spec/tasks/public-safe-on-demand-simulator-lifecycle.md` | Cross-layer contract for deterministic warm reuse and public-safe idle shutdown |
+| `spec/tasks/guided-simbroker-setup.md` | Shared CLI/app machine setup, deterministic confirmation, recovery, and acceptance contract |
 | `references/README.md` | Public-safe reference and example policy |
 | `README.md`, `docs/getting-started.md`, `docs/concepts.md` | Public newcomer front door; not a substitute for these specs |
 
@@ -55,7 +56,7 @@ This repo exists to develop a reusable local simulator broker:
 - local install, local-debug portable packaging, Release distribution packaging, and onboarding flows now exist through `install_local.sh`, `install_local.sh --cli-only`, `package_local.sh`, `package_distribution.sh`, `test:install-smoke`, `test:package-smoke`, `host init --bootstrap-config`, and `project init`
 - the published onboarding docs now distinguish CLI-only install, repo-local contributor app+CLI install, local-debug portable bundling, and signed distribution packaging; a new login shell should resolve `simbroker` after install without sourcing `env.sh`
 - `CONTRIBUTING.md` publishes a public-patch track (Node.js 20 and the Node test suites, no harness session) and a labeled maintainer/agent harness track; `agent:complete` enforcement is unchanged
-- tagged Alpha `0.1.0-alpha.2` publishes a CLI tarball from `scripts/package_cli.sh`, the packable npm CLI, and a notarized operator app zip, and runs the Node test surface on GitHub-hosted Ubuntu CI; the macOS app suite is not on that job
+- tagged Alpha `0.1.0-alpha.2` publishes a CLI tarball from `scripts/package_cli.sh`, the packable npm CLI, and a notarized operator app zip, and runs broker-core plus harness-adoption on GitHub-hosted Ubuntu and client tests on GitHub-hosted macOS; the macOS app suite and home-path public-surface scan are not on those jobs
 - GitHub issue forms cover install failure, bug, and feature; the pull-request
   template is a public-patch checklist and does not require a harness session
 - Homebrew formula `Formula/simbroker.rb` and packable npm CLI
@@ -80,6 +81,9 @@ This repo exists to develop a reusable local simulator broker:
 - optional machine-local idle policy, scheduled reconciliation, confirmed cleanup,
   app controls, and the `verify:public-surface` gate are implemented without a
   shipped duration preference
+- guided `simbroker setup` now previews prerequisites, newest-compatible runtime,
+  and the six-device starter pool before confirmed atomic apply, service startup,
+  snapshot refresh, and health verification; the app consumes the same contract
 
 ## Lower-priority roadmap
 

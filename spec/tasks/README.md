@@ -4,7 +4,9 @@ Related: `spec/README.md`, `spec/agents.md`, `spec/build-and-test.md`, `app/READ
 ## Purpose
 
 This directory contains worker-ready implementation tasks for cross-layer broker work and the April 11, 2026 macOS app audit.
-The nine audit tasks and the public-safe on-demand lifecycle task are implemented; keep them as source-of-truth contracts plus completion history.
+The nine audit tasks, public-safe on-demand lifecycle task, and guided setup
+contract are implemented; keep them as source-of-truth contracts plus
+completion history.
 
 Each task spec is written so a worker can take ownership of one issue or one tightly related issue cluster and execute it end to end without opening a clarification loop first.
 
@@ -35,6 +37,7 @@ Each task document must be treated as a full worker contract:
 | Feature | Task spec |
 |---|---|
 | Deterministic warm reuse, boot-on-acquire, local idle shutdown, operator controls, and public-surface safety | `spec/tasks/public-safe-on-demand-simulator-lifecycle.md` |
+| Guided CLI/app machine setup with deterministic six-device confirmation and recovery | `spec/tasks/guided-simbroker-setup.md` |
 
 ## Not included here
 

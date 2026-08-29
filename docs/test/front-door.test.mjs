@@ -60,7 +60,7 @@ test("README separates use-versus-develop install guidance and includes a hello-
   assert.ok(readme.includes("simbroker lease acquire"));
 });
 
-test("README Use it orders Homebrew CLI, cask, host setup, then hello world", () => {
+test("README Use it orders Homebrew CLI, cask, guided setup, then hello world", () => {
   const readme = readRepoFile("README.md");
   const useIt = headingSection(readme, "Use it");
   const hello = headingSection(readme, "Five-minute hello world");
@@ -72,16 +72,16 @@ test("README Use it orders Homebrew CLI, cask, host setup, then hello world", ()
     useIt.includes("Set Up This Mac") || useIt.includes("Complete first-time setup"),
     "Use it must name the app first-run surface",
   );
-  assert.ok(useIt.includes("host init --bootstrap-config"));
-  assert.ok(useIt.includes("simbroker service start"));
+  assert.ok(useIt.includes("simbroker setup"));
+  assert.ok(useIt.includes("--apply --confirm <plan-id> --json"));
+  assert.equal(useIt.includes("simbroker host init --bootstrap-config\nsimbroker service start"), false);
   assert.ok(
     /Homebrew\s+does not create/i.test(useIt),
     "Use it must not claim Homebrew creates simulators",
   );
   assert.ok(
-    /hello world is only after a host config exists/i.test(useIt)
-      || /only after a host config exists/i.test(useIt),
-    "Use it must place hello world after host config",
+    /after `simbroker setup` reports ready/i.test(hello),
+    "Use it must place hello world after guided setup reports ready",
   );
 
   assert.ok(hello.includes("simbroker capacity check --purpose agent-ui-session --json"));
@@ -94,11 +94,6 @@ test("README Use it orders Homebrew CLI, cask, host setup, then hello world", ()
   assert.ok(hello.includes("simbroker simulators repair --alias <alias>"));
   assert.equal(hello.includes("simbroker simulators repair\n"), false);
   assert.ok(hello.includes("simbroker lease acquire"));
-  assert.ok(
-    /host config/i.test(hello) && (/first-run/i.test(hello) || /after/i.test(hello)),
-    "hello world must require a host config",
-  );
-
   const gettingHello = headingSection(gettingStarted, "Hello world");
   assert.ok(gettingHello.includes("simbroker capacity check --purpose agent-ui-session --json"));
   assert.ok(gettingHello.includes("purposes[].status"));
@@ -107,6 +102,50 @@ test("README Use it orders Homebrew CLI, cask, host setup, then hello world", ()
   assert.ok(gettingHello.includes("simbroker simulators repair --alias <alias>"));
   assert.ok(/unavailable/.test(gettingHello));
   assert.ok(/repair_needed/.test(gettingHello));
+});
+
+test("newcomer docs enforce one guided machine setup and version-agnostic project defaults", () => {
+  const readme = readRepoFile("README.md");
+  const gettingStarted = readRepoFile("docs/getting-started.md");
+  const packageReadme = readRepoFile("packages/simbroker/README.md");
+  const brokerCore = readRepoFile("broker-core/index.mjs");
+  const installSmoke = readRepoFile("scripts/install_smoke.sh");
+
+  for (const body of [readme, gettingStarted, packageReadme]) {
+    assert.ok(body.includes("simbroker setup"));
+  }
+  assert.match(packageReadme, /published `0\.1\.0-alpha\.2` package predates\s*> guided setup/);
+  assert.match(packageReadme, /available from `main` and source\s*> installs/);
+  assert.match(
+    gettingStarted,
+    /Next Alpha availability:[\s\S]*guided `simbroker setup` is currently available/,
+  );
+  assert.match(
+    gettingStarted,
+    /published `0\.1\.0-alpha\.2` Homebrew, npm,\s*> and cask artifacts predate this command/,
+  );
+  for (const body of [readme, gettingStarted]) {
+    assert.equal(
+      body.includes("simbroker host init --bootstrap-config\nsimbroker service start"),
+      false,
+      "newcomer docs must not restore the old two-command machine setup path",
+    );
+  }
+  assert.match(brokerCore, /const normalizedIosVersion = iosVersion === undefined \|\| iosVersion === null/);
+  assert.equal(
+    /function buildStarterProjectConfig\([\s\S]{0,160}iosVersion = ["']18["']/.test(brokerCore),
+    false,
+    "new project scaffolds must not restore a hardcoded iOS version",
+  );
+  assert.equal(
+    installSmoke.includes("service_started"),
+    false,
+    "install smoke cleanup must attempt an idempotent service stop even when setup apply fails",
+  );
+  assert.match(
+    installSmoke,
+    /if \[\[ "\$service_stopped" -eq 0 && -x "\$cli_path" \]\]; then[\s\S]*?service stop/,
+  );
 });
 
 function headingSection(markdown, heading) {
@@ -213,17 +252,25 @@ test("CHANGELOG and package.json name the Alpha version", () => {
   assert.ok(changelog.includes("scripts/package_cli.sh"));
 });
 
-test("public CI runs the Node suites on Ubuntu and skips the macOS app suite", () => {
+test("public CI splits Ubuntu core suites from macOS client tests and skips the app suite", () => {
   const ci = readRepoFile(".github/workflows/ci.yml");
 
   assert.ok(ci.includes("runs-on: ubuntu-latest"));
-  assert.match(ci, /timeout-minutes:\s*([3-9]\d|\d{3,})/);
-  assert.ok(ci.includes("npm run verify:public-surface"));
+  assert.ok(ci.includes("runs-on: macos-latest"));
+  assert.match(ci, /timeout-minutes:\s*10/);
+  assert.match(ci, /timeout-minutes:\s*15/);
+  assert.equal(ci.includes("npm run verify:public-surface"), false);
   assert.ok(ci.includes("npm run test:broker-core"));
-  assert.ok(ci.includes("npm run test:client"));
+  const clientTestRun = ci
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("run:") && line.includes("client/test/*.test.mjs")) ?? "";
+  assert.equal(
+    clientTestRun,
+    "run: node --test --test-concurrency=1 --test-timeout=120000 client/test/*.test.mjs",
+  );
   assert.ok(ci.includes("npm run test:harness-adoption"));
   assert.equal(ci.includes("test:app"), false);
-  assert.equal(ci.includes("macos-latest"), false);
   assert.equal(/\n\s+run:\s*npm install\b/.test(ci), false);
   assert.equal(/\n\s+run:\s*npm ci\b/.test(ci), false);
 });
@@ -363,12 +410,14 @@ test("Homebrew formula points at the Alpha CLI tarball and the cask names a nota
   assert.ok(checksum, "formula must pin a sha256");
   assert.match(checksum[1], /^[a-f0-9]{64}$/);
   assert.ok(formula.includes('shell_output("#{bin}/simbroker --help")'));
+  assert.ok(formula.includes("depends_on macos: :sonoma"));
   assert.equal(formula.includes("package:local"), false);
 
   assert.ok(cask.includes('cask "simulator-broker"'));
   assert.ok(cask.includes(`version "${version}"`));
   assert.ok(cask.includes("releases/download/v#{version}/Simulator-Broker-#{version}.zip"));
   assert.ok(cask.includes('app "Simulator Broker.app"'));
+  assert.ok(cask.includes("depends_on macos: :sonoma"));
   const caskChecksum = cask.match(/sha256 "([a-f0-9]{64})"/);
   assert.ok(caskChecksum, "cask must pin a sha256");
   assert.match(caskChecksum[1], /^[a-f0-9]{64}$/);

@@ -294,6 +294,9 @@ export function format(payload, options = {}) {
   if (isHelpPayload(payload)) {
     return formatHelpText(payload);
   }
+  if (isSetupPayload(payload)) {
+    return formatSetupText(payload);
+  }
   return formatDoctorText(payload);
 }
 
@@ -313,7 +316,14 @@ function isDoctorPayload(payload) {
 }
 
 function shouldFormatAsText(payload) {
-  return isHelpPayload(payload) || isDoctorPayload(payload);
+  return isHelpPayload(payload) || isDoctorPayload(payload) || isSetupPayload(payload);
+}
+
+function isSetupPayload(payload) {
+  return payload != null
+    && (payload.command === "setup"
+      || String(payload.reasonCode ?? "").startsWith("setup-")
+      || typeof payload.failedStage === "string");
 }
 
 function formatHelpText(payload) {
@@ -364,6 +374,121 @@ function formatHelpText(payload) {
   return `${lines.join("\n")}`;
 }
 
+function setupStatusIcon(status) {
+  if (status === "ready") {
+    return "✓";
+  }
+  if (status === "blocked") {
+    return "✗";
+  }
+  return "•";
+}
+
+function formatSetupPreviewText(payload) {
+  const lines = ["Simulator Broker setup", ""];
+  if (payload.prerequisites.length > 0) {
+    lines.push("Prerequisites");
+    for (const prerequisite of payload.prerequisites) {
+      lines.push(`  ${setupStatusIcon(prerequisite.status)} ${prerequisite.summary}`);
+    }
+    lines.push("");
+  }
+  if (payload.runtime) {
+    const build = payload.runtime.buildVersion ? ` (build ${payload.runtime.buildVersion})` : "";
+    lines.push(`Runtime: iOS ${payload.runtime.version}${build}`);
+  }
+  lines.push(`Host: ${payload.host.action === "create" ? "create" : "keep"} ${payload.host.hostId ?? "existing configuration"}`);
+  if (payload.devices.length > 0) {
+    lines.push("", `Simulator pool (${payload.devices.length})`);
+    for (const device of payload.devices) {
+      const reset = device.resetPolicy === "erase-on-acquire" ? "erased before each resettable lease" : "keeps its data";
+      lines.push(`  ${device.action === "create" ? "+" : "="} ${device.alias} — ${device.deviceTypeName}, ${device.action}, ${reset}`);
+    }
+  }
+  lines.push("", `Service: ${payload.service.action}`);
+  if (payload.status === "blocked") {
+    lines.push("", "Setup is blocked. No changes have been made.");
+    if (payload.nextSteps.length > 0) {
+      lines.push("", "Recovery:", ...payload.nextSteps.map((step) => `  ${step}`));
+    }
+  } else if (payload.status === "ready") {
+    lines.push("", "This machine is ready.", "", "Next, from a repository:", "  simbroker project init", "  simbroker project validate");
+  } else {
+    lines.push("", "No changes have been made yet.", `Plan ID: ${payload.planId}`);
+    if (payload.confirmation.applyCommand) {
+      lines.push("", "To apply this exact plan:", `  ${payload.confirmation.applyCommand}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function formatSetupApplyText(payload) {
+  const lines = [
+    "Setup complete — brokerd is running and all managed simulators are healthy.",
+    "",
+    `Simulators: ${payload.devices.total} total (${payload.devices.created} created, ${payload.devices.reused} reused)`,
+    `Service: ${payload.service.started ? "started" : "already running"}; identity verified`,
+    "Snapshot: ready",
+    "Health: healthy",
+    "",
+    "Next, from a repository:",
+    "  simbroker project init",
+    "  simbroker project validate",
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+function formatSetupErrorText(payload) {
+  const lines = [
+    `Setup failed${payload.failedStage ? ` during ${payload.failedStage}` : ""}: ${payload.error ?? "Unknown setup error."}`,
+  ];
+  if (Array.isArray(payload.completedStages) && payload.completedStages.length > 0) {
+    lines.push(`Completed: ${payload.completedStages.join(", ")}`);
+  }
+  if (payload.hostCommitted === true) {
+    lines.push("The host configuration was committed and has been preserved.");
+  }
+  if (Number.isInteger(payload.rollbackFailureCount) && payload.rollbackFailureCount > 0) {
+    lines.push(`Rollback cleanup was incomplete for ${payload.rollbackFailureCount} Simulator operation(s).`);
+  }
+  if (payload.logPath) {
+    lines.push(`Service log: ${payload.logPath}`);
+  }
+  if (Array.isArray(payload.doctorIssues) && payload.doctorIssues.length > 0) {
+    lines.push("", "Doctor issues:", ...payload.doctorIssues.map(formatDoctorIssue));
+  }
+  if (payload.recoveryCommand) {
+    lines.push("", "Recovery:", `  ${payload.recoveryCommand}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function formatSetupText(payload) {
+  if (payload.ok === false) {
+    return formatSetupErrorText(payload);
+  }
+  if (payload.status === "cancelled") {
+    return "Setup cancelled. No changes have been made.\n";
+  }
+  if (payload.mode === "preview") {
+    return formatSetupPreviewText(payload);
+  }
+  return formatSetupApplyText(payload);
+}
+
+function shellQuoteArgument(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function formatDoctorIssueNextSteps(issue, fallbackLines) {
+  const remediationLines = Array.isArray(issue.remediationCommands)
+    ? issue.remediationCommands
+      .filter((command) => typeof command === "string" && command.trim() !== "")
+      .map((command) => `  Next: \`${command}\`.`)
+    : [];
+  return remediationLines.length > 0 ? remediationLines : fallbackLines;
+}
+
 function formatDoctorIssue(issue) {
   if (issue == null || typeof issue !== "object") {
     return "- Unexpected doctor issue. Re-run with --json for details.";
@@ -372,7 +497,9 @@ function formatDoctorIssue(issue) {
   if (issue.reasonCode === "missing-registry") {
     return [
       "- Registry: missing.",
-      "  Next: run `simbroker host init --bootstrap-config` if this Mac is not set up yet.",
+      ...formatDoctorIssueNextSteps(issue, [
+        "  Next: run `simbroker host init --bootstrap-config` if this Mac is not set up yet.",
+      ]),
     ].join("\n");
   }
 
@@ -381,7 +508,9 @@ function formatDoctorIssue(issue) {
     const health = typeof issue.health === "string" ? issue.health : "unhealthy";
     return [
       `- Alias ${alias}: ${health}.`,
-      `  Next: inspect with \`simbroker host status\`, then repair with \`simbroker simulators repair --alias ${alias}\` if needed.`,
+      ...formatDoctorIssueNextSteps(issue, [
+        `  Next: inspect with \`simbroker host status\`, then repair with \`simbroker simulators repair --alias ${shellQuoteArgument(alias)}\` if needed.`,
+      ]),
     ].join("\n");
   }
 
@@ -589,6 +718,18 @@ function sleep(ms) {
 
 function helpPayload(group) {
   const help = {
+    setup: {
+      commands: [
+        "setup [--ios-version <major|exact>] [--host-id <id>] [--json]",
+        "setup --apply --confirm <plan-id> [--ios-version <major|exact>] [--host-id <id>] [--json]",
+      ],
+      notes: [
+        "Preview is read-only. Applying requires the exact displayed plan ID.",
+        "Setup selects the newest installed iOS runtime that supports both iPhone and iPad unless --ios-version is provided.",
+      ],
+      group: "setup",
+      usage: "simbroker setup [flags]",
+    },
     capacity: {
       commands: [
         "capacity check --repo-root <repo> [--purpose <purpose>] [--json]",
@@ -692,6 +833,7 @@ function helpPayload(group) {
     ok: true,
     ...(help[group] ?? {
       commands: [
+        "setup",
         "host",
         "project",
         "lease",

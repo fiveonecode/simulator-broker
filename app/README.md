@@ -82,6 +82,13 @@ You can also deep-link the initial operator surface for deterministic QA or hand
 ./script/build_and_run.sh -- --state-root /tmp/simbroker-fixture/state --pane simulators --simulator-alias ui-2
 ```
 
+An explicitly isolated broker socket can travel with the same launch context;
+the app forwards it unchanged to guided setup preview and apply:
+
+```bash
+./script/build_and_run.sh -- --state-root /tmp/simbroker-fixture/state --service-socket /tmp/simbroker-fixture/brokerd.sock
+```
+
 You can also launch the app binary directly with an environment override:
 
 ```bash

@@ -212,8 +212,11 @@ export function createSystemSimctlAdapter({ commandRunner = defaultCommandRunner
   };
 }
 
-export function createFixtureSimctlAdapter({ statePath }) {
+export function createFixtureSimctlAdapter({ createDelayMs = 0, statePath }) {
   const resolvedStatePath = path.resolve(statePath);
+  const resolvedCreateDelayMs = Number.isFinite(Number(createDelayMs))
+    ? Math.max(0, Number(createDelayMs))
+    : 0;
 
   function mutateState(mutator) {
     const state = readFixtureState(resolvedStatePath);
@@ -242,7 +245,7 @@ export function createFixtureSimctlAdapter({ statePath }) {
       findDeviceOrThrow(readFixtureState(resolvedStatePath), simulatorId);
     },
     createDevice(name, deviceTypeId, runtimeId) {
-      return mutateState((state) => {
+      const simulatorId = mutateState((state) => {
         const runtime = state.runtimes.find((candidate) => candidate.identifier === runtimeId);
         if (!runtime) {
           throw new Error(`Unknown runtime ${runtimeId}`);
@@ -264,6 +267,10 @@ export function createFixtureSimctlAdapter({ statePath }) {
         });
         return udid;
       });
+      if (resolvedCreateDelayMs > 0) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)), 0, 0, resolvedCreateDelayMs);
+      }
+      return simulatorId;
     },
     deleteDevice(simulatorId) {
       mutateState((state) => {
@@ -310,6 +317,7 @@ export function resolveSimctlAdapter({ env = process.env, simctlAdapter } = {}) 
   }
   if (env.SIMBROKER_SIMCTL_FIXTURE_STATE) {
     return createFixtureSimctlAdapter({
+      createDelayMs: env.SIMBROKER_SIMCTL_FIXTURE_CREATE_DELAY_MS,
       statePath: env.SIMBROKER_SIMCTL_FIXTURE_STATE,
     });
   }

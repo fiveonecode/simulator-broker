@@ -162,10 +162,8 @@ done
 
 validate_archive_name "$archive_name"
 
-(
-  cd "$repo_root"
-  npm run verify:public-surface
-)
+# Full-repo `npm run verify:public-surface` belongs to local `npm test`.
+# This script scans the staged payload and archive name only, after copy.
 
 if [[ -z "$signing_identity" ]]; then
   echo "package_distribution.sh requires --signing-identity or SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY." >&2

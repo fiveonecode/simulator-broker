@@ -305,6 +305,35 @@ final class BrokerServiceClientTests: XCTestCase {
     XCTAssertEqual(requests.map(\.requestPath), ["/v1/service/status"])
   }
 
+  func testCommandClientRejectsMetadataThatDoesNotMatchConfiguredSocketBeforeProbe() async throws {
+    let fixture = try makeServiceFixture()
+    let configuredSocketPath = fixture.root.appending(path: "configured.sock").path
+    try writeServiceMetadata(paths: fixture.paths, socketPath: fixture.socketPath)
+    let transport = StubBrokerServiceTransport(responses: [])
+    let client = BrokerServiceCommandClient(
+      paths: BrokerRuntimePaths(
+        stateRoot: fixture.paths.stateRoot,
+        hostConfigURL: fixture.paths.hostConfigURL,
+        serviceSocketURL: URL(fileURLWithPath: configuredSocketPath)
+      ),
+      transport: transport
+    )
+
+    do {
+      _ = try await client.send(BrokerCommandRequest(command: "release", group: "lease", options: [:]))
+      XCTFail("Expected service identity mismatch")
+    } catch let error as BrokerServiceCommandClientError {
+      guard case let .serviceIdentityMismatch(_, _, mismatchedFields) = error else {
+        XCTFail("Unexpected error \(error)")
+        return
+      }
+      XCTAssertEqual(mismatchedFields, ["socketPath"])
+    }
+
+    let requests = await transport.requests()
+    XCTAssertTrue(requests.isEmpty)
+  }
+
   func testCommandClientProbesIdentityAndUsesMutationTimeout() async throws {
     let fixture = try makeServiceFixture()
     try writeServiceMetadata(paths: fixture.paths, socketPath: fixture.socketPath)

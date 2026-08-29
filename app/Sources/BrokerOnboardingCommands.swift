@@ -19,6 +19,22 @@ struct BrokerCLIInvocationFormatter {
     "\(invocationPrefix) \(subcommand)"
   }
 
+  func setupCommand(
+    hostConfigPath: String,
+    stateRootPath: String,
+    serviceSocketPath: String?
+  ) -> String {
+    var arguments = [
+      "setup",
+      "--host-config", Self.shellQuote(hostConfigPath),
+      "--state-root", Self.shellQuote(stateRootPath),
+    ]
+    if let serviceSocketPath {
+      arguments += ["--service-socket", Self.shellQuote(serviceSocketPath)]
+    }
+    return command(arguments.joined(separator: " "))
+  }
+
   private var invocationPrefix: String {
     if let executablePath {
       return Self.shellQuote(executablePath)

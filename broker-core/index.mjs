@@ -13,7 +13,7 @@ import {
   mergeLeaseRuntimeMetadata,
 } from "./containment.mjs";
 import { resolveBrokerExitCode } from "./error-contract.mjs";
-import { createDeviceIndex, resolveSimctlAdapter } from "./simctl.mjs";
+import { SIMCTL_COMMAND_TIMEOUT_MS, createDeviceIndex, resolveSimctlAdapter } from "./simctl.mjs";
 
 export const DEFAULT_HOST_CONFIG_PATH = path.join(os.homedir(), "Library/Application Support/SimulatorBroker/host-config.json");
 export const DEFAULT_STATE_ROOT = path.join(os.homedir(), "Library/Application Support/SimulatorBroker/state");
@@ -39,6 +39,13 @@ const DEFAULT_LOCK_POLL_MS = 150;
 const LOCK_OWNER_PID_IDENTITY_TOLERANCE_MS = 15_000;
 const DEFAULT_RESET_SETTLE_MS = 250;
 const CAPACITY_SCHEMA_VERSION = 1;
+const SETUP_SCHEMA_VERSION = 1;
+// Covers fresh-plan inventory, six create/rename pairs, post-commit state load,
+// and the largest late-failure attribution/delete rollback while the lock is held.
+const SETUP_MAX_SIMCTL_COMMANDS_UNDER_CAPACITY_LOCK = 30;
+const SETUP_CAPACITY_LOCK_TIMEOUT_MS =
+  (SETUP_MAX_SIMCTL_COMMANDS_UNDER_CAPACITY_LOCK * SIMCTL_COMMAND_TIMEOUT_MS)
+  + DEFAULT_LOCK_TIMEOUT_MS;
 const CAPACITY_RESET_POLICY_BY_CAPABILITY = Object.freeze({
   "automation-resettable": "erase-on-acquire",
   "build-clean": "erase-on-acquire",
@@ -650,6 +657,10 @@ function compareVersions(left, right) {
   return compareVersionParts(parseVersionParts(left), parseVersionParts(right));
 }
 
+function isHostSchemaIosVersion(version) {
+  return /^\d+(\.\d+)?$/.test(String(version ?? ""));
+}
+
 function isMajorOnlyVersion(version) {
   return /^\d+$/.test(String(version ?? ""));
 }
@@ -745,7 +756,7 @@ function validateDeviceFamily(value, field) {
 
 function validateIosVersion(value, field) {
   const iosVersion = requireString(value, field);
-  if (/^\d+(\.\d+)?$/.test(iosVersion) === false) {
+  if (isHostSchemaIosVersion(iosVersion) === false) {
     throw new BrokerError(`${field} must match <major> or <major.minor>.`, {
       reasonCode: "invalid-config",
       field,
@@ -894,12 +905,27 @@ function missingHostConfigError(paths) {
 }
 
 function readHostConfigOrThrow(paths) {
-  if (fs.existsSync(paths.hostConfigPath) === false) {
+  if (!pathOccupied(paths.hostConfigPath)) {
     throw missingHostConfigError(paths);
+  }
+  let stats;
+  try {
+    stats = fs.statSync(paths.hostConfigPath);
+  } catch {
+    stats = null;
+  }
+  if (stats?.isFile() !== true) {
+    throw new BrokerError("Host config could not be read as a regular file.", {
+      hostConfigPath: paths.hostConfigPath,
+      reasonCode: "invalid-config",
+    });
   }
   try {
     return validateHostConfig(readJson(paths.hostConfigPath));
   } catch (error) {
+    if (error instanceof BrokerError) {
+      throw error;
+    }
     if (error instanceof SyntaxError) {
       throw new BrokerError("Host config contains invalid JSON.", {
         reasonCode: "invalid-config",
@@ -992,9 +1018,15 @@ function buildStarterAliasTemplates({
 function buildStarterProjectConfig({
   projectId,
   projectName,
-  iosVersion = "18",
+  iosVersion,
 } = {}) {
-  const normalizedIosVersion = validateIosVersion(iosVersion ?? "18", "starter-project-config.iosVersion");
+  const normalizedIosVersion = iosVersion === undefined || iosVersion === null
+    ? null
+    : validateIosVersion(iosVersion, "starter-project-config.iosVersion");
+  const uiRequirements = {
+    deviceFamily: "iPhone",
+    ...(normalizedIosVersion === null ? {} : { iosVersion: normalizedIosVersion }),
+  };
   return {
     projectId,
     projectName,
@@ -1010,10 +1042,7 @@ function buildStarterProjectConfig({
         displayName: "Agent UI Session",
         capability: "interactive-resettable",
         defaultActorType: "agent",
-        requires: {
-          deviceFamily: "iPhone",
-          iosVersion: normalizedIosVersion,
-        },
+        requires: uiRequirements,
       },
       {
         id: "agent-build-test",
@@ -1026,10 +1055,7 @@ function buildStarterProjectConfig({
         displayName: "CI UI Test",
         capability: "automation-resettable",
         defaultActorType: "ci",
-        requires: {
-          deviceFamily: "iPhone",
-          iosVersion: normalizedIosVersion,
-        },
+        requires: uiRequirements,
       },
       {
         id: "ci-build-test",
@@ -1044,14 +1070,21 @@ function buildStarterProjectConfig({
 
 function isAvailableIosRuntime(runtime) {
   return runtime?.isAvailable !== false
-    && String(runtime?.identifier ?? "").includes(".iOS-");
+    && typeof runtime?.identifier === "string"
+    && runtime.identifier.includes(".iOS-");
 }
 
 function runtimeMatchesRequestedVersion(runtime, requestedVersion) {
+  if (typeof runtime?.version !== "string" || runtime.version.length === 0) {
+    return false;
+  }
+  if (!isHostSchemaIosVersion(runtime.version)) {
+    return false;
+  }
   if (!requestedVersion) {
     return true;
   }
-  const runtimeVersion = String(runtime.version ?? "");
+  const runtimeVersion = runtime.version;
   return isMajorOnlyVersion(requestedVersion)
     ? runtimeVersion.split(".")[0] === String(requestedVersion)
     : runtimeVersion === String(requestedVersion);
@@ -1076,9 +1109,29 @@ function selectRuntimeForAlias(simctl, iosVersion) {
   return runtimes[0];
 }
 
+function setupDeviceTypeRecordIsComplete(deviceType) {
+  return typeof deviceType?.identifier === "string" && deviceType.identifier.length > 0
+    && typeof deviceType?.name === "string" && deviceType.name.length > 0;
+}
+
+function isCompleteSetupDeviceType(deviceType, deviceFamily) {
+  return deviceType?.productFamily === deviceFamily && setupDeviceTypeRecordIsComplete(deviceType);
+}
+
+function requireCompleteSetupDeviceType(deviceType, deviceFamily, runtime) {
+  if (!isCompleteSetupDeviceType(deviceType, deviceFamily)) {
+    throw new BrokerError(`No available ${deviceFamily} simulator type matched runtime ${runtime.version}.`, {
+      deviceFamily,
+      reasonCode: "device-type-not-found",
+      runtimeId: runtime.identifier,
+    });
+  }
+  return deviceType;
+}
+
 function selectPreferredDeviceType(runtime, deviceFamily) {
   const supportedDeviceTypes = Array.isArray(runtime.supportedDeviceTypes)
-    ? runtime.supportedDeviceTypes.filter((deviceType) => deviceType.productFamily === deviceFamily)
+    ? runtime.supportedDeviceTypes.filter((deviceType) => isCompleteSetupDeviceType(deviceType, deviceFamily))
     : [];
 
   if (supportedDeviceTypes.length === 0) {
@@ -1092,9 +1145,27 @@ function selectPreferredDeviceType(runtime, deviceFamily) {
   const exactNamePattern = deviceFamily === "iPhone" ? /^iPhone \d+$/ : /^iPad \(/;
   const preferred = supportedDeviceTypes
     .filter((deviceType) => exactNamePattern.test(deviceType.name))
-    .sort((left, right) => compareVersions(right.name, left.name));
+    .sort((left, right) => {
+      const versionComparison = compareVersions(right.name, left.name);
+      if (versionComparison !== 0) {
+        return versionComparison;
+      }
+      return compareSetupDeviceTypes(left, right);
+    });
 
-  return preferred[0] ?? supportedDeviceTypes[0];
+  if (preferred[0]) {
+    return preferred[0];
+  }
+
+  return [...supportedDeviceTypes].sort(compareSetupDeviceTypes)[0];
+}
+
+function compareSetupDeviceTypes(left, right) {
+  const identifierComparison = String(left?.identifier ?? "").localeCompare(String(right?.identifier ?? ""));
+  if (identifierComparison !== 0) {
+    return identifierComparison;
+  }
+  return String(left?.name ?? "").localeCompare(String(right?.name ?? ""));
 }
 
 function deleteAliasSimulator(simctl, simulatorId) {
@@ -1221,18 +1292,48 @@ function readSimulatorDeviceIndex(simctl) {
 
 function rollbackCreatedSimulators(simctl, createdSimulatorIds, options = {}) {
   const rollbackIds = new Set(createdSimulatorIds);
+  const failures = [];
   if (options.baselineDeviceIds && options.plannedSimulatorNames) {
-    const currentIndex = readSimulatorDeviceIndex(simctl);
-    for (const device of currentIndex.values()) {
-      if (!options.baselineDeviceIds.has(device.udid) && options.plannedSimulatorNames.has(device.name)) {
-        rollbackIds.add(device.udid);
+    try {
+      const currentIndex = readSimulatorDeviceIndex(simctl);
+      for (const device of currentIndex.values()) {
+        if (!options.baselineDeviceIds.has(device.udid) && options.plannedSimulatorNames.has(device.name)) {
+          rollbackIds.add(device.udid);
+        }
       }
+    } catch (error) {
+      failures.push({ error, operation: "inventory", simulatorId: null });
     }
   }
 
   for (const simulatorId of [...rollbackIds].reverse()) {
-    simctl.deleteDevice(simulatorId);
+    try {
+      simctl.deleteDevice(simulatorId);
+    } catch (error) {
+      failures.push({ error, operation: "delete", simulatorId });
+    }
   }
+  return failures;
+}
+
+function attachRollbackFailures(error, failures) {
+  if (failures.length === 0) {
+    return error;
+  }
+  const payload = error?.payload && typeof error.payload === "object"
+    ? error.payload
+    : { reasonCode: error?.reasonCode ?? "internal-error" };
+  payload.rollbackFailureCount = failures.length;
+  payload.rollbackFailures = failures.map((failure) => ({
+    error: failure.error?.message ?? String(failure.error),
+    operation: failure.operation,
+    simulatorId: failure.simulatorId,
+  }));
+  if (error && (typeof error === "object" || typeof error === "function")) {
+    error.payload = payload;
+    return error;
+  }
+  return new BrokerError(String(error), payload);
 }
 
 function buildProvisionedStarterHostConfig(options = {}) {
@@ -1267,11 +1368,11 @@ function buildProvisionedStarterHostConfig(options = {}) {
       hostConfig,
     };
   } catch (error) {
-    rollbackCreatedSimulators(simctl, createdSimulatorIds, {
+    const rollbackFailures = rollbackCreatedSimulators(simctl, createdSimulatorIds, {
       baselineDeviceIds,
       plannedSimulatorNames,
     });
-    throw error;
+    throw attachRollbackFailures(error, rollbackFailures);
   }
 }
 
@@ -1304,6 +1405,1024 @@ function readSimctlInventory(options = {}) {
     runtimesJson: simctl.listRuntimes(),
     simctl,
   };
+}
+
+function setupRuntimeBuildVersion(runtime) {
+  const value = runtime?.buildversion ?? runtime?.buildVersion ?? null;
+  return typeof value === "string" ? value : null;
+}
+
+function setupRuntimeSupportedTypeKey(runtime) {
+  const types = Array.isArray(runtime?.supportedDeviceTypes) ? runtime.supportedDeviceTypes : [];
+  return types
+    .map((deviceType) => typeof deviceType?.identifier === "string" ? deviceType.identifier : "")
+    .sort()
+    .join("\n");
+}
+
+function compareSetupRuntimes(left, right) {
+  const versionComparison = compareVersions(right.version, left.version);
+  if (versionComparison !== 0) {
+    return versionComparison;
+  }
+  const buildComparison = String(setupRuntimeBuildVersion(right) ?? "")
+    .localeCompare(String(setupRuntimeBuildVersion(left) ?? ""), undefined, { numeric: true });
+  if (buildComparison !== 0) {
+    return buildComparison;
+  }
+  const identifierComparison = String(left.identifier ?? "").localeCompare(String(right.identifier ?? ""));
+  if (identifierComparison !== 0) {
+    return identifierComparison;
+  }
+  return setupRuntimeSupportedTypeKey(left).localeCompare(setupRuntimeSupportedTypeKey(right));
+}
+
+function runtimeSupportedDeviceTypes(runtime, inventory) {
+  const runtimeDeviceTypes = Array.isArray(runtime?.supportedDeviceTypes)
+    ? runtime.supportedDeviceTypes
+    : [];
+  if (runtimeDeviceTypes.length > 0) {
+    return runtimeDeviceTypes;
+  }
+  return Array.isArray(inventory?.deviceTypesJson?.devicetypes)
+    ? inventory.deviceTypesJson.devicetypes
+    : [];
+}
+
+function compatibleSetupDeviceTypes(runtime, inventory) {
+  const supportedDeviceTypes = runtimeSupportedDeviceTypes(runtime, inventory);
+  return {
+    iPad: supportedDeviceTypes.some((deviceType) => isCompleteSetupDeviceType(deviceType, "iPad")),
+    iPhone: supportedDeviceTypes.some((deviceType) => isCompleteSetupDeviceType(deviceType, "iPhone")),
+  };
+}
+
+function selectPreferredDeviceTypeForSetup(runtime, inventory, deviceFamily) {
+  return selectPreferredDeviceType({
+    ...runtime,
+    supportedDeviceTypes: runtimeSupportedDeviceTypes(runtime, inventory),
+  }, deviceFamily);
+}
+
+function selectRuntimeForSetup(inventory, requestedVersion) {
+  const runtimesByIdentifier = new Map();
+  for (const runtime of inventory.runtimesJson?.runtimes ?? []) {
+    if (!isAvailableIosRuntime(runtime) || !runtimeMatchesRequestedVersion(runtime, requestedVersion)) {
+      continue;
+    }
+    const families = compatibleSetupDeviceTypes(runtime, inventory);
+    if (!families.iPhone || !families.iPad) {
+      continue;
+    }
+    const existing = runtimesByIdentifier.get(runtime.identifier);
+    if (!existing || compareSetupRuntimes(runtime, existing) < 0) {
+      runtimesByIdentifier.set(runtime.identifier, runtime);
+    }
+  }
+  const runtimes = [...runtimesByIdentifier.values()].sort(compareSetupRuntimes);
+  if (runtimes.length === 0) {
+    const qualifier = requestedVersion ? ` matching ${requestedVersion}` : "";
+    throw new BrokerError(`No available iOS runtime${qualifier} supports both iPhone and iPad setup devices.`, {
+      iosVersion: requestedVersion ?? null,
+      reasonCode: "runtime-not-found",
+    });
+  }
+  return runtimes[0];
+}
+
+function setupRuntimeSummary(runtime, requestedVersion) {
+  return {
+    buildVersion: setupRuntimeBuildVersion(runtime),
+    identifier: runtime.identifier,
+    selectionSource: requestedVersion ? "explicit" : "automatic",
+    version: runtime.version,
+  };
+}
+
+function setupDevicePlan(inventory, hostId, runtime) {
+  const { templates } = buildStarterAliasTemplates({
+    hostId,
+    iosVersion: runtime.version,
+  });
+  const deviceTypes = {
+    iPad: requireCompleteSetupDeviceType(
+      selectPreferredDeviceTypeForSetup(runtime, inventory, "iPad"),
+      "iPad",
+      runtime,
+    ),
+    iPhone: requireCompleteSetupDeviceType(
+      selectPreferredDeviceTypeForSetup(runtime, inventory, "iPhone"),
+      "iPhone",
+      runtime,
+    ),
+  };
+  const deviceIndex = createDeviceIndex({
+    deviceTypesJson: inventory.deviceTypesJson,
+    devicesJson: inventory.devicesJson,
+    runtimesJson: inventory.runtimesJson,
+  });
+  const devices = templates.map((template) => {
+    const deviceType = deviceTypes[template.deviceFamily];
+    const reusable = [...deviceIndex.values()]
+      .filter((device) => typeof device.udid === "string" && device.udid.length > 0
+        && device.isAvailable
+        && device.name === template.simulatorName
+        && device.runtimeIdentifier === runtime.identifier
+        && device.deviceTypeIdentifier === deviceType.identifier)
+      .sort((left, right) => left.udid.localeCompare(right.udid))[0] ?? null;
+    return {
+      action: reusable ? "reuse" : "create",
+      alias: template.alias,
+      capabilities: template.capabilities,
+      deviceFamily: template.deviceFamily,
+      deviceTypeIdentifier: deviceType.identifier,
+      deviceTypeName: deviceType.name,
+      displayName: template.displayName,
+      resetPolicy: template.resetPolicy,
+      runtimeIdentifier: runtime.identifier,
+      runtimeVersion: runtime.version,
+      simulatorId: reusable?.udid ?? null,
+      simulatorName: template.simulatorName,
+    };
+  });
+  return {
+    devices,
+    deviceTypes,
+  };
+}
+
+function requestedSetupHostId(options) {
+  return typeof options.hostId === "string" && options.hostId.trim() !== ""
+    ? slugifyIdentifier(options.hostId, defaultHostId())
+    : null;
+}
+
+function setupHostConfigDigest(hostConfig) {
+  return hostConfig ? sha256Digest(hostConfig) : null;
+}
+
+function setupPlanFingerprint({ configured, devices, hostConfig, hostId, runtime }) {
+  return sha256Digest({
+    devices: devices.map((device) => ({
+      action: device.action,
+      alias: device.alias,
+      capabilities: device.capabilities,
+      deviceFamily: device.deviceFamily,
+      deviceTypeIdentifier: device.deviceTypeIdentifier,
+      displayName: device.displayName,
+      resetPolicy: device.resetPolicy,
+      reusableSimulatorId: device.action === "reuse" ? device.simulatorId : null,
+      runtimeIdentifier: device.runtimeIdentifier,
+      runtimeVersion: device.runtimeVersion,
+      simulatorName: device.simulatorName,
+    })),
+    host: {
+      configured,
+      digest: setupHostConfigDigest(hostConfig),
+      hostId,
+    },
+    runtime: runtime ? {
+      buildVersion: runtime.buildVersion,
+      identifier: runtime.identifier,
+      version: runtime.version,
+    } : null,
+    schemaVersion: SETUP_SCHEMA_VERSION,
+  });
+}
+
+function sameStringArray(left, right) {
+  return Array.isArray(left)
+    && Array.isArray(right)
+    && left.length === right.length
+    && left.every((value, index) => value === right[index]);
+}
+
+function setupHostMatchesCommittedStarterPlan(hostConfig, devices, inventory) {
+  if (hostConfig.pendingRetirements.length > 0 || hostConfig.aliases.length !== 6) {
+    return false;
+  }
+  const iosVersion = hostConfig.aliases[0]?.iosVersion;
+  if (!iosVersion || hostConfig.aliases.some((alias) => alias.iosVersion !== iosVersion)) {
+    return false;
+  }
+  const runtimeIdentifiers = new Set(devices.map((device) => device.runtimeIdentifier));
+  if (runtimeIdentifiers.size !== 1) {
+    return false;
+  }
+  const runtimeIdentifier = [...runtimeIdentifiers][0];
+  let runtime;
+  let setupDeviceTypes;
+  try {
+    runtime = selectRuntimeForSetup(inventory, iosVersion);
+    if (runtime.identifier !== runtimeIdentifier || runtime.version !== iosVersion) {
+      return false;
+    }
+    setupDeviceTypes = {
+      iPad: selectPreferredDeviceTypeForSetup(runtime, inventory, "iPad").identifier,
+      iPhone: selectPreferredDeviceTypeForSetup(runtime, inventory, "iPhone").identifier,
+    };
+  } catch {
+    return false;
+  }
+  const { templates } = buildStarterAliasTemplates({ hostId: hostConfig.hostId, iosVersion });
+  const aliasesById = new Map(hostConfig.aliases.map((alias) => [alias.alias, alias]));
+  const devicesByAlias = new Map(devices.map((device) => [device.alias, device]));
+  return templates.every((template) => {
+    const alias = aliasesById.get(template.alias);
+    const device = devicesByAlias.get(template.alias);
+    return alias
+      && device
+      && alias.deviceFamily === template.deviceFamily
+      && alias.displayName === template.displayName
+      && alias.resetPolicy === template.resetPolicy
+      && sameStringArray(alias.capabilities, template.capabilities)
+      && device.simulatorId === alias.simulatorId
+      && device.simulatorName === template.simulatorName
+      && device.runtimeIdentifier === runtime.identifier
+      && device.runtimeVersion === runtime.version
+      && device.deviceTypeIdentifier === setupDeviceTypes[template.deviceFamily];
+  });
+}
+
+function pathOccupied(candidate) {
+  try {
+    fs.lstatSync(candidate);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+      return false;
+    }
+    return true;
+  }
+}
+
+function setupOccupiedDirectoryInvalid(directoryPath) {
+  if (!pathOccupied(directoryPath)) {
+    return false;
+  }
+  try {
+    return fs.statSync(directoryPath).isDirectory() !== true;
+  } catch {
+    return true;
+  }
+}
+
+function setupOwnedStateDirectoriesInvalid(paths) {
+  return setupOccupiedDirectoryInvalid(paths.capacityTransactionsDir)
+    || setupOccupiedDirectoryInvalid(paths.evidenceDir);
+}
+
+function setupOccupiedAuditLogInvalid(paths) {
+  if (!pathOccupied(paths.eventsPath)) {
+    return false;
+  }
+  try {
+    if (fs.statSync(paths.eventsPath).isFile() !== true) {
+      return true;
+    }
+    fs.accessSync(paths.eventsPath, fs.constants.W_OK);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function readOccupiedJsonFile(filePath, message) {
+  if (!pathOccupied(filePath)) {
+    return null;
+  }
+  let stats;
+  try {
+    stats = fs.statSync(filePath);
+  } catch {
+    stats = null;
+  }
+  if (stats?.isFile() !== true) {
+    throw new BrokerError(message, {
+      path: filePath,
+      reasonCode: "invalid-config",
+    });
+  }
+  const payload = readJsonIfExists(filePath);
+  if (payload === null) {
+    throw new BrokerError(message, {
+      path: filePath,
+      reasonCode: "invalid-config",
+    });
+  }
+  return payload;
+}
+
+function readOccupiedKnownProjects(filePath) {
+  return readOccupiedJsonFile(
+    filePath,
+    "The existing known-projects catalog could not be read as a regular file.",
+  );
+}
+
+function readOccupiedRegistry(filePath) {
+  return readOccupiedJsonFile(
+    filePath,
+    "The existing broker registry could not be read as a regular file.",
+  );
+}
+
+function readOccupiedIdlePolicy(paths) {
+  if (!pathOccupied(paths.idlePolicyPath)) {
+    return null;
+  }
+  let stats;
+  try {
+    stats = fs.statSync(paths.idlePolicyPath);
+  } catch {
+    stats = null;
+  }
+  if (stats?.isFile() !== true) {
+    throw new BrokerError("The existing idle policy could not be read as a regular file.", {
+      path: paths.idlePolicyPath,
+      reasonCode: "invalid-config",
+    });
+  }
+  return readIdlePolicy(paths);
+}
+
+function setupStateContainsLeaseOrPinRecords(paths) {
+  try {
+    return [paths.leasesDir, paths.pinsDir].some((directoryPath) => {
+      if (setupOccupiedDirectoryInvalid(directoryPath)) {
+        return true;
+      }
+      return fs.existsSync(directoryPath)
+        && fs.readdirSync(directoryPath, { withFileTypes: true })
+          .some((entry) => entry.name.endsWith(".json"));
+    });
+  } catch {
+    // Unreadable mutation state is not safe to reinterpret as an untouched setup.
+    return true;
+  }
+}
+
+function setupStateContainsExistingBrokerArtifacts(paths) {
+  try {
+    if (pathOccupied(paths.registryPath)) {
+      return true;
+    }
+    if (setupOwnedStateDirectoriesInvalid(paths)) {
+      return true;
+    }
+    return setupStateContainsLeaseOrPinRecords(paths);
+  } catch {
+    return true;
+  }
+}
+
+function shellQuoteArgument(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function setupCliCommandWithSelectedPaths(command, paths) {
+  return [
+    command,
+    "--host-config",
+    shellQuoteArgument(paths.hostConfigPath),
+    "--state-root",
+    shellQuoteArgument(paths.stateRoot),
+    "--service-socket",
+    shellQuoteArgument(paths.serviceSocketPath),
+  ].join(" ");
+}
+
+function setupExistingHostState(paths, inventory, options = {}) {
+  let hostConfig;
+  try {
+    hostConfig = readHostConfigOrThrow(paths);
+  } catch (error) {
+    if (!(error instanceof BrokerError)) {
+      throw error;
+    }
+    const hostId = requestedSetupHostId(options);
+    const planId = setupPlanFingerprint({
+      configured: true,
+      devices: [],
+      hostConfig: null,
+      hostId,
+      runtime: null,
+    });
+    return {
+      hostConfig: null,
+      preview: {
+        command: "setup",
+        confirmation: { createCount: 0, required: false, reuseCount: 0 },
+        devices: [],
+        host: { action: "keep", configured: true, hostId },
+        mode: "preview",
+        nextSteps: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+        ok: true,
+        planId,
+        prerequisites: [{
+          details: error.payload,
+          id: "host-config",
+          status: "blocked",
+          summary: error.message,
+          remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+        }],
+        runtime: null,
+        schemaVersion: SETUP_SCHEMA_VERSION,
+        service: { action: "blocked", running: false },
+        status: "blocked",
+      },
+    };
+  }
+
+  const deviceIndex = createDeviceIndex({
+    deviceTypesJson: inventory.deviceTypesJson,
+    devicesJson: inventory.devicesJson,
+    runtimesJson: inventory.runtimesJson,
+  });
+  const deviceTypes = new Map((inventory.deviceTypesJson?.devicetypes ?? [])
+    .map((deviceType) => [deviceType.identifier, deviceType]));
+  const issues = [];
+  const requestedHostId = requestedSetupHostId(options);
+  if (requestedHostId !== null && requestedHostId !== hostConfig.hostId) {
+    issues.push({
+      id: "host-id",
+      status: "blocked",
+      summary: `Requested host ID ${requestedHostId} does not match the existing host ${hostConfig.hostId}.`,
+      details: {
+        configuredHostId: hostConfig.hostId,
+        requestedHostId,
+      },
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker setup", paths)],
+    });
+  }
+  try {
+    normalizeKnownProjects(readOccupiedKnownProjects(paths.knownProjectsPath), nowIso(options.now));
+  } catch (error) {
+    issues.push({
+      id: "known-projects",
+      status: "blocked",
+      summary: "The existing known-projects catalog is invalid and setup will not replace it automatically.",
+      details: error instanceof BrokerError ? error.payload : { message: error.message },
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    });
+  }
+  try {
+    readOccupiedIdlePolicy(paths);
+  } catch (error) {
+    issues.push({
+      id: "idle-policy",
+      status: "blocked",
+      summary: "The existing idle policy is invalid and setup will not replace it automatically.",
+      details: error instanceof BrokerError ? error.payload : { message: error.message },
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    });
+  }
+  try {
+    if (setupOwnedStateDirectoriesInvalid(paths)) {
+      throw new BrokerError("The existing capacity-transactions or evidence directory could not be used as a directory.", {
+        capacityTransactionsDir: paths.capacityTransactionsDir,
+        evidenceDir: paths.evidenceDir,
+        reasonCode: "invalid-config",
+      });
+    }
+  } catch (error) {
+    issues.push({
+      id: "state-root",
+      status: "blocked",
+      summary: "The existing capacity-transactions or evidence directory is invalid and setup will not replace it automatically.",
+      details: error instanceof BrokerError ? error.payload : { message: error.message },
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    });
+  }
+  try {
+    const hostAliasesById = new Map(hostConfig.aliases.map((alias) => [alias.alias, alias]));
+    if (setupOccupiedDirectoryInvalid(paths.leasesDir) || setupOccupiedDirectoryInvalid(paths.pinsDir)) {
+      throw new BrokerError("The existing lease or pin directory could not be used as a directory.", {
+        leasesDir: paths.leasesDir,
+        pinsDir: paths.pinsDir,
+        reasonCode: "invalid-config",
+      });
+    }
+    const seenLeaseAliases = new Set();
+    for (const { name, record } of listJsonFileEntries(paths.leasesDir)) {
+      assertValidLeaseRecord(record);
+      assertStoredRecordFileName(name, record.leaseId, "lease");
+      const hostAlias = hostAliasesById.get(record.alias);
+      if (!hostAlias) {
+        throw new BrokerError(`Lease ${record.leaseId} names unknown alias ${record.alias}.`, {
+          alias: record.alias,
+          leaseId: record.leaseId,
+          reasonCode: "invalid-config",
+        });
+      }
+      if (record.simulatorId !== hostAlias.simulatorId) {
+        throw new BrokerError(
+          `Lease ${record.leaseId} simulator ${record.simulatorId} does not match alias ${record.alias}.`,
+          {
+            alias: record.alias,
+            expectedSimulatorId: hostAlias.simulatorId,
+            leaseId: record.leaseId,
+            reasonCode: "invalid-config",
+            simulatorId: record.simulatorId,
+          },
+        );
+      }
+      if (seenLeaseAliases.has(record.alias)) {
+        throw new BrokerError(`Multiple lease records claim alias ${record.alias}.`, {
+          alias: record.alias,
+          reasonCode: "invalid-config",
+        });
+      }
+      seenLeaseAliases.add(record.alias);
+    }
+    const seenPinAliases = new Set();
+    for (const { name, record } of listJsonFileEntries(paths.pinsDir)) {
+      assertValidPinRecord(record);
+      assertStoredRecordFileName(name, record.pinId, "pin");
+      if (!hostAliasesById.has(record.alias)) {
+        throw new BrokerError(`Pin ${record.pinId} names unknown alias ${record.alias}.`, {
+          alias: record.alias,
+          pinId: record.pinId,
+          reasonCode: "invalid-config",
+        });
+      }
+      if (seenPinAliases.has(record.alias)) {
+        throw new BrokerError(`Multiple pin records claim alias ${record.alias}.`, {
+          alias: record.alias,
+          reasonCode: "invalid-config",
+        });
+      }
+      seenPinAliases.add(record.alias);
+    }
+  } catch (error) {
+    issues.push({
+      id: "leases",
+      status: "blocked",
+      summary: "Existing lease or pin records are invalid and setup will not replace them automatically.",
+      details: error instanceof BrokerError ? error.payload : { message: error.message },
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    });
+  }
+  let registry = null;
+  let registryInitializationRequired = false;
+  let registryMissing = false;
+  try {
+    const persistedRegistry = readOccupiedRegistry(paths.registryPath);
+    if (persistedRegistry === null) {
+      registryMissing = true;
+      registry = normalizeRegistry(null, hostConfig, nowIso(options.now));
+    } else {
+      assertValidPersistedRegistry(persistedRegistry, hostConfig);
+      registry = normalizeRegistry(persistedRegistry, hostConfig, nowIso(options.now));
+    }
+  } catch (error) {
+    issues.push({
+      id: "registry",
+      status: "blocked",
+      summary: "The existing broker registry is invalid and setup will not replace it automatically.",
+      details: error instanceof BrokerError ? error.payload : { message: error.message },
+      remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    });
+  }
+  const devices = hostConfig.aliases.map((alias) => {
+    const device = deviceIndex.get(alias.simulatorId) ?? null;
+    const deviceType = device ? deviceTypes.get(device.deviceTypeIdentifier) ?? null : null;
+    const registryHealth = registry?.aliases?.[alias.alias]?.health ?? "healthy";
+    const healthy = Boolean(device?.isAvailable)
+      && iosVersionSatisfies(device.runtimeVersion ?? "", alias.iosVersion)
+      && device.deviceFamily === alias.deviceFamily
+      && registryHealth !== "repair-needed"
+      && registryHealth !== "repairing";
+    if (!healthy) {
+      issues.push({
+        alias: alias.alias,
+        id: `alias-${alias.alias}`,
+        status: "blocked",
+        summary: registryHealth === "repair-needed" || registryHealth === "repairing"
+          ? `Managed alias ${alias.alias} requires repair before setup can continue.`
+          : `Managed alias ${alias.alias} does not resolve to its configured available Simulator.`,
+        remediationCommands: [
+          setupCliCommandWithSelectedPaths(
+            `simbroker simulators repair --alias ${shellQuoteArgument(alias.alias)}`,
+            paths,
+          ),
+        ],
+      });
+    }
+    return {
+      action: "reuse",
+      alias: alias.alias,
+      capabilities: alias.capabilities,
+      deviceFamily: alias.deviceFamily,
+      deviceTypeIdentifier: device?.deviceTypeIdentifier ?? null,
+      deviceTypeName: deviceType?.name ?? "Unavailable",
+      displayName: alias.displayName,
+      resetPolicy: alias.resetPolicy,
+      runtimeIdentifier: device?.runtimeIdentifier ?? null,
+      runtimeVersion: alias.iosVersion,
+      simulatorId: alias.simulatorId,
+      simulatorName: device?.name ?? alias.displayName,
+    };
+  });
+  if (registryMissing) {
+    const canResumeRegistryInitialization = issues.length === 0
+      && setupHostMatchesCommittedStarterPlan(hostConfig, devices, inventory)
+      && !setupStateContainsLeaseOrPinRecords(paths);
+    registryInitializationRequired = canResumeRegistryInitialization;
+    issues.push(canResumeRegistryInitialization
+      ? {
+        id: "registry",
+        status: "info",
+        summary: "The committed starter host registry will be initialized when setup resumes.",
+        remediationCommands: [],
+      }
+      : {
+        id: "registry",
+        status: "blocked",
+        summary: "The existing broker registry is missing and setup will not recreate it automatically.",
+        remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+      });
+  }
+  const planId = setupPlanFingerprint({
+    configured: true,
+    devices,
+    hostConfig,
+    hostId: requestedHostId ?? hostConfig.hostId,
+    runtime: null,
+  });
+  const blocked = issues.some((issue) => issue.status === "blocked");
+  return {
+    hostConfig,
+    preview: {
+      command: "setup",
+      confirmation: { createCount: 0, required: false, reuseCount: devices.length },
+      devices,
+      host: { action: "keep", configured: true, hostId: hostConfig.hostId },
+      mode: "preview",
+      nextSteps: blocked
+        ? issues.flatMap((issue) => issue.remediationCommands)
+        : (registryInitializationRequired ? [] : ["simbroker project init", "simbroker project validate"]),
+      ok: true,
+      planId,
+      prerequisites: issues,
+      runtime: null,
+      schemaVersion: SETUP_SCHEMA_VERSION,
+      service: { action: blocked ? "blocked" : "start", running: false },
+      status: blocked ? "blocked" : (registryInitializationRequired ? "changes_required" : "ready"),
+    },
+  };
+}
+
+function blockedUnconfiguredSetupPreview(paths, options = {}, prerequisite) {
+  const hostId = requestedSetupHostId(options)
+    ?? slugifyIdentifier(options.hostId ?? defaultHostId(), defaultHostId());
+  const planId = setupPlanFingerprint({
+    configured: false,
+    devices: [],
+    hostConfig: null,
+    hostId,
+    runtime: null,
+  });
+  return {
+    hostConfig: null,
+    preview: {
+      command: "setup",
+      confirmation: { createCount: 0, required: false, reuseCount: 0 },
+      devices: [],
+      host: { action: "keep", configured: false, hostId },
+      mode: "preview",
+      nextSteps: prerequisite.remediationCommands ?? [],
+      ok: true,
+      planId,
+      prerequisites: [prerequisite],
+      runtime: null,
+      schemaVersion: SETUP_SCHEMA_VERSION,
+      service: { action: "blocked", running: false },
+      status: "blocked",
+    },
+  };
+}
+
+function blockedSetupExistingStateWithoutHost(paths, options = {}) {
+  return blockedUnconfiguredSetupPreview(paths, options, {
+    id: "state-root",
+    remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    status: "blocked",
+    summary: "The selected state root already contains broker state and setup will not create a new host over it.",
+  });
+}
+
+function blockedSetupInvalidKnownProjectsWithoutHost(paths, options, error) {
+  return blockedUnconfiguredSetupPreview(paths, options, {
+    details: error instanceof BrokerError ? error.payload : { message: error.message },
+    id: "known-projects",
+    remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    status: "blocked",
+    summary: "The existing known-projects catalog is invalid and setup will not replace it automatically.",
+  });
+}
+
+function blockedSetupInvalidIdlePolicyWithoutHost(paths, options, error) {
+  return blockedUnconfiguredSetupPreview(paths, options, {
+    details: error instanceof BrokerError ? error.payload : { message: error.message },
+    id: "idle-policy",
+    remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    status: "blocked",
+    summary: "The existing idle policy is invalid and setup will not replace it automatically.",
+  });
+}
+
+function blockedSetupInvalidEventsWithoutHost(paths, options = {}) {
+  return blockedUnconfiguredSetupPreview(paths, options, {
+    details: { path: paths.eventsPath },
+    id: "events",
+    remediationCommands: [setupCliCommandWithSelectedPaths("simbroker doctor", paths)],
+    status: "blocked",
+    summary: "The existing audit log is not a writable regular file and setup will not create a new host over it.",
+  });
+}
+
+function buildSetupPlan(paths, options = {}) {
+  const inventory = readSimctlInventory(options);
+  if (pathOccupied(paths.hostConfigPath)) {
+    return setupExistingHostState(paths, inventory, options);
+  }
+  if (setupStateContainsExistingBrokerArtifacts(paths)) {
+    return blockedSetupExistingStateWithoutHost(paths, options);
+  }
+  if (pathOccupied(paths.knownProjectsPath)) {
+    try {
+      normalizeKnownProjects(readOccupiedKnownProjects(paths.knownProjectsPath), nowIso(options.now));
+    } catch (error) {
+      return blockedSetupInvalidKnownProjectsWithoutHost(paths, options, error);
+    }
+  }
+  if (pathOccupied(paths.idlePolicyPath)) {
+    try {
+      readOccupiedIdlePolicy(paths);
+    } catch (error) {
+      return blockedSetupInvalidIdlePolicyWithoutHost(paths, options, error);
+    }
+  }
+  if (setupOccupiedAuditLogInvalid(paths)) {
+    return blockedSetupInvalidEventsWithoutHost(paths, options);
+  }
+
+  const runtime = selectRuntimeForSetup(inventory, options.iosVersion);
+  const hostId = slugifyIdentifier(options.hostId ?? defaultHostId(), defaultHostId());
+  const { devices } = setupDevicePlan(inventory, hostId, runtime);
+  const runtimeSummary = setupRuntimeSummary(runtime, options.iosVersion);
+  const createCount = devices.filter((device) => device.action === "create").length;
+  const reuseCount = devices.length - createCount;
+  const planId = setupPlanFingerprint({
+    configured: false,
+    devices,
+    hostConfig: null,
+    hostId,
+    runtime: runtimeSummary,
+  });
+  return {
+    hostConfig: null,
+    inventory,
+    preview: {
+      command: "setup",
+      confirmation: { createCount, required: true, reuseCount },
+      devices,
+      host: { action: "create", configured: false, hostId },
+      mode: "preview",
+      nextSteps: [],
+      ok: true,
+      planId,
+      prerequisites: [],
+      runtime: runtimeSummary,
+      schemaVersion: SETUP_SCHEMA_VERSION,
+      service: { action: "start", running: false },
+      status: "changes_required",
+    },
+  };
+}
+
+export function previewSetupBroker(paths, options = {}) {
+  return buildSetupPlan(paths, options).preview;
+}
+
+function setupCancellationError(options) {
+  const signalName = options.getCancellationSignalName?.() ?? options.cancellationSignalName ?? "SIGINT";
+  return new BrokerError("Setup was interrupted.", {
+    completedStages: options.completedStages ?? [],
+    failedStage: options.failedStage ?? "provisioning",
+    hostCommitted: options.hostCommitted === true,
+    reasonCode: "setup-interrupted",
+    recoveryCommand: "simbroker setup",
+    serviceRunning: false,
+    exitCode: signalName === "SIGTERM" ? 143 : 130,
+  });
+}
+
+function throwIfSetupCancelled(options, state = {}) {
+  if (options.signal?.aborted || options.isCancelled?.() === true) {
+    throw setupCancellationError({
+      ...options,
+      ...state,
+    });
+  }
+}
+
+function setupHostConfigFromPlan(plan, simulatorIdsByAlias) {
+  return {
+    aliases: plan.devices.map((device) => ({
+      alias: device.alias,
+      capabilities: device.capabilities,
+      deviceFamily: device.deviceFamily,
+      displayName: device.displayName,
+      iosVersion: device.runtimeVersion,
+      resetPolicy: device.resetPolicy,
+      simulatorId: simulatorIdsByAlias.get(device.alias),
+    })),
+    hostId: plan.host.hostId,
+    version: HOST_CONFIG_VERSION,
+  };
+}
+
+function setupCommittedHostIdentity(hostConfig) {
+  return {
+    hostId: hostConfig.hostId,
+    simulators: hostConfig.aliases.map(({ alias, simulatorId }) => ({ alias, simulatorId })),
+  };
+}
+
+export function applySetupBroker(paths, options = {}) {
+  const lockTimestamp = nowIso(options.now);
+  return withCapacityLock(paths, () => withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
+    const { preview, inventory } = buildSetupPlan(paths, options);
+    if (!options.confirmPlanId) {
+      throw new BrokerError("Setup requires confirmation of the current plan.", {
+        currentPlanId: preview.planId,
+        failedStage: "confirmation",
+        reasonCode: "setup-confirmation-required",
+        recoveryCommand: "simbroker setup",
+      });
+    }
+    if (options.confirmPlanId !== preview.planId) {
+      throw new BrokerError("The setup plan changed. Preview it again before applying.", {
+        confirmedPlanId: options.confirmPlanId,
+        currentPlanId: preview.planId,
+        failedStage: "confirmation",
+        reasonCode: "setup-plan-stale",
+        recoveryCommand: "simbroker setup",
+      });
+    }
+    if (preview.status === "blocked") {
+      throw new BrokerError("Setup is blocked by the current host configuration.", {
+        failedStage: "planning",
+        prerequisites: preview.prerequisites,
+        reasonCode: "setup-prerequisite-failed",
+        recoveryCommand: "simbroker setup",
+      });
+    }
+
+    ensureStatePaths(paths);
+
+    if (preview.host.configured) {
+      const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+      return {
+        setupCommittedHostIdentity: setupCommittedHostIdentity(state.hostConfig),
+        command: "setup",
+        devices: { created: 0, reused: state.hostConfig.aliases.length, total: state.hostConfig.aliases.length },
+        host: { configured: true, created: false },
+        mode: "apply",
+        ok: true,
+        planId: preview.planId,
+        schemaVersion: SETUP_SCHEMA_VERSION,
+        status: "ready",
+      };
+    }
+
+    const simctl = inventory.simctl;
+    const baselineDeviceIds = new Set(readSimulatorDeviceIndex(simctl).keys());
+    const setupAttemptId = options.setupAttemptId ?? crypto.randomUUID();
+    const attributableSimulatorNames = new Set();
+    const createdSimulatorIds = [];
+    const simulatorIdsByAlias = new Map();
+    let hostCommitted = false;
+    try {
+      for (const device of preview.devices) {
+        throwIfSetupCancelled(options, {
+          completedStages: createdSimulatorIds.length === 0 ? [] : ["devices-partial"],
+          failedStage: "devices",
+          hostCommitted,
+        });
+        if (device.action === "reuse") {
+          simulatorIdsByAlias.set(device.alias, device.simulatorId);
+          continue;
+        }
+        const temporaryName = `${device.simulatorName} [setup ${setupAttemptId} ${device.alias}]`;
+        attributableSimulatorNames.add(temporaryName);
+        let simulatorId = null;
+        try {
+          simulatorId = simctl.createDevice(
+            temporaryName,
+            device.deviceTypeIdentifier,
+            device.runtimeIdentifier,
+          );
+          createdSimulatorIds.push(simulatorId);
+          simctl.renameDevice(simulatorId, device.simulatorName);
+          simulatorIdsByAlias.set(device.alias, simulatorId);
+        } catch (error) {
+          if (simulatorId === null) {
+            const currentIndex = readSimulatorDeviceIndex(simctl);
+            for (const candidate of currentIndex.values()) {
+              if (!baselineDeviceIds.has(candidate.udid)
+                && candidate.name === temporaryName
+                && candidate.runtimeIdentifier === device.runtimeIdentifier
+                && candidate.deviceTypeIdentifier === device.deviceTypeIdentifier) {
+                createdSimulatorIds.push(candidate.udid);
+              }
+            }
+          }
+          throw error;
+        }
+      }
+      throwIfSetupCancelled(options, {
+        completedStages: ["devices"],
+        failedStage: "host-config",
+        hostCommitted,
+      });
+      const hostConfig = setupHostConfigFromPlan(preview, simulatorIdsByAlias);
+      writeJsonAtomicDurable(paths.hostConfigPath, hostConfig, {
+        failStage: options.hostWriteFailStage,
+      });
+      fs.chmodSync(paths.hostConfigPath, 0o600);
+      hostCommitted = true;
+      const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+      appendEventRecord(paths, "host.initialized", {
+        alias: null,
+        leaseId: null,
+        payload: {
+          aliasCount: state.hostConfig.aliases.length,
+          bootstrapConfig: true,
+          hostId: state.hostConfig.hostId,
+          setupPlanId: preview.planId,
+        },
+        projectId: null,
+        purposeId: null,
+      }, timestamp);
+      return {
+        setupCommittedHostIdentity: setupCommittedHostIdentity(state.hostConfig),
+        command: "setup",
+        devices: {
+          created: createdSimulatorIds.length,
+          reused: preview.devices.length - createdSimulatorIds.length,
+          total: preview.devices.length,
+        },
+        host: { configured: true, created: true },
+        mode: "apply",
+        ok: true,
+        planId: preview.planId,
+        schemaVersion: SETUP_SCHEMA_VERSION,
+        status: "ready",
+      };
+    } catch (error) {
+      hostCommitted = hostCommitted || error?.hostConfigCommitted === true || fs.existsSync(paths.hostConfigPath);
+      let failure = error;
+      if (!hostCommitted) {
+        const rollbackFailures = rollbackCreatedSimulators(simctl, createdSimulatorIds, {
+          baselineDeviceIds,
+          plannedSimulatorNames: attributableSimulatorNames,
+        });
+        failure = attachRollbackFailures(failure, rollbackFailures);
+      }
+      if (failure instanceof BrokerError) {
+        failure.payload.hostCommitted = hostCommitted;
+        failure.payload.recoveryCommand ??= "simbroker setup";
+      }
+      throw failure;
+    }
+  }, {
+    checkCancellation: () => throwIfSetupCancelled(options, {
+      completedStages: [],
+      failedStage: "confirmation",
+      hostCommitted: false,
+    }),
+    initializePersistentState: false,
+    now: lockTimestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  }), {
+    checkCancellation: () => throwIfSetupCancelled(options, {
+      completedStages: [],
+      failedStage: "confirmation",
+      hostCommitted: false,
+    }),
+    initializePersistentState: false,
+    now: lockTimestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    reclaimTimeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
+    timeoutMs: options.capacityLockTimeoutMilliseconds ?? SETUP_CAPACITY_LOCK_TIMEOUT_MS,
+  });
 }
 
 function syncRegistryWithSimctl(hostConfig, registry, options = {}) {
@@ -1363,11 +2482,30 @@ function normalizeKnownProjects(rawKnownProjects, timestamp) {
     const project = requireObject(rawProject, fieldPrefix);
     const purposes = requireArray(project.purposes, `${fieldPrefix}.purposes`)
       .map((purpose, index) => validateProjectPurpose(purpose, `${fieldPrefix}.purposes[${index}]`));
+    const purposeIds = new Set();
+    for (const purpose of purposes) {
+      if (purposeIds.has(purpose.id)) {
+        throw new BrokerError(`Duplicate purpose ${purpose.id} in ${fieldPrefix}.purposes.`, {
+          field: `${fieldPrefix}.purposes`,
+          reasonCode: "invalid-config",
+        });
+      }
+      purposeIds.add(purpose.id);
+    }
 
+    const recordProjectId = requireString(project.projectId, `${fieldPrefix}.projectId`);
+    if (recordProjectId !== projectId) {
+      throw new BrokerError(`${fieldPrefix}.projectId must equal the catalog key.`, {
+        actualProjectId: recordProjectId,
+        catalogKey: projectId,
+        field: `${fieldPrefix}.projectId`,
+        reasonCode: "invalid-config",
+      });
+    }
     projects[projectId] = {
       lastObservedAt: typeof project.lastObservedAt === "string" ? project.lastObservedAt : timestamp,
       projectFilePath: requireString(project.projectFilePath, `${fieldPrefix}.projectFilePath`),
-      projectId: requireString(project.projectId, `${fieldPrefix}.projectId`),
+      projectId: recordProjectId,
       projectName: requireString(project.projectName, `${fieldPrefix}.projectName`),
       purposes,
       repoRoot: requireString(project.repoRoot, `${fieldPrefix}.repoRoot`),
@@ -1379,6 +2517,46 @@ function normalizeKnownProjects(rawKnownProjects, timestamp) {
     updatedAt: typeof rawKnownProjects.updatedAt === "string" ? rawKnownProjects.updatedAt : timestamp,
     version: KNOWN_PROJECTS_VERSION,
   };
+}
+
+function assertValidPersistedRegistry(rawRegistry, hostConfig) {
+  requireObject(rawRegistry, "registry");
+  const rawAliases = requireObject(rawRegistry.aliases, "registry.aliases");
+  if (
+    hostConfig.aliases.length > 0
+    && !hostConfig.aliases.some((hostAlias) => Object.hasOwn(rawAliases, hostAlias.alias))
+  ) {
+    throw new BrokerError("registry.aliases must include at least one configured host alias.", {
+      field: "registry.aliases",
+      reasonCode: "invalid-config",
+    });
+  }
+  for (const hostAlias of hostConfig.aliases) {
+    if (!Object.hasOwn(rawAliases, hostAlias.alias)) {
+      continue;
+    }
+    const fieldPrefix = `registry.aliases.${hostAlias.alias}`;
+    const entry = requireObject(rawAliases[hostAlias.alias], fieldPrefix);
+    if (Object.hasOwn(entry, "health") && !ALLOWED_HEALTH_STATES.has(entry.health)) {
+      throw new BrokerError(
+        `${fieldPrefix}.health must be one of ${[...ALLOWED_HEALTH_STATES].join(", ")}.`,
+        {
+          field: `${fieldPrefix}.health`,
+          reasonCode: "invalid-config",
+        },
+      );
+    }
+    if (Object.hasOwn(entry, "powerState") && !ALLOWED_POWER_STATES.has(entry.powerState)) {
+      throw new BrokerError(
+        `${fieldPrefix}.powerState must be one of ${[...ALLOWED_POWER_STATES].join(", ")}.`,
+        {
+          field: `${fieldPrefix}.powerState`,
+          reasonCode: "invalid-config",
+        },
+      );
+    }
+  }
+  return rawRegistry;
 }
 
 function normalizeRegistry(rawRegistry, hostConfig, timestamp) {
@@ -1608,15 +2786,98 @@ function idleCleanupPlan(state) {
   };
 }
 
-function listJsonFiles(dirPath) {
+function listJsonFileEntries(dirPath) {
   if (!fs.existsSync(dirPath)) {
     return [];
   }
   return fs.readdirSync(dirPath)
     .filter((name) => name.endsWith(".json"))
     .sort()
-    .map((name) => path.join(dirPath, name))
-    .map(readJson);
+    .map((name) => {
+      const filePath = path.join(dirPath, name);
+      let stats;
+      try {
+        stats = fs.statSync(filePath);
+      } catch {
+        throw new BrokerError(`Unable to read ${filePath}.`, {
+          path: filePath,
+          reasonCode: "invalid-config",
+        });
+      }
+      if (stats.isFile() !== true) {
+        throw new BrokerError(`${filePath} is not a regular JSON file.`, {
+          path: filePath,
+          reasonCode: "invalid-config",
+        });
+      }
+      return { name, record: readJson(filePath) };
+    });
+}
+
+function listJsonFiles(dirPath) {
+  return listJsonFileEntries(dirPath).map((entry) => entry.record);
+}
+
+function assertStoredRecordFileName(fileName, recordId, kind) {
+  const expectedFileName = `${recordId}.json`;
+  if (fileName !== expectedFileName) {
+    throw new BrokerError(`${kind} file ${fileName} does not match ${kind} ID ${recordId}.`, {
+      expectedFileName,
+      fileName,
+      reasonCode: "invalid-config",
+      recordId,
+    });
+  }
+}
+
+function requirePositiveIntegerField(value, name) {
+  if (typeof value !== "number" || Number.isSafeInteger(value) !== true || value <= 0) {
+    throw new BrokerError(`${name} must be a positive integer.`, {
+      field: name,
+      reasonCode: "invalid-config",
+    });
+  }
+  return value;
+}
+
+function assertValidLeaseRecord(record) {
+  requireObject(record, "lease");
+  requireString(record.leaseId, "lease.leaseId");
+  requireString(record.alias, "lease.alias");
+  requireString(record.simulatorId, "lease.simulatorId");
+  requireString(record.actorType, "lease.actorType");
+  requireString(record.actorId, "lease.actorId");
+  requireString(record.projectId, "lease.projectId");
+  requireString(record.projectName, "lease.projectName");
+  requireString(record.purposeId, "lease.purposeId");
+  requireString(record.displayName, "lease.displayName");
+  requireString(record.leaseKind, "lease.leaseKind");
+  requireString(record.repoRoot, "lease.repoRoot");
+  requireString(record.startedAt, "lease.startedAt");
+  requirePositiveIntegerField(record.ownerPid, "lease.ownerPid");
+  requireOptionalString(record.artifactPath, "lease.artifactPath");
+  requireOptionalString(record.expiresAt, "lease.expiresAt");
+  requireOptionalString(record.jobId, "lease.jobId");
+  requireOptionalString(record.jobKind, "lease.jobKind");
+  requireOptionalString(record.pinId, "lease.pinId");
+  requireOptionalString(record.resetPolicy, "lease.resetPolicy");
+  requireOptionalString(record.sessionDir, "lease.sessionDir");
+  return record;
+}
+
+function assertValidPinRecord(record) {
+  requireObject(record, "pin");
+  requireString(record.pinId, "pin.pinId");
+  requireString(record.alias, "pin.alias");
+  requireString(record.projectId, "pin.projectId");
+  requireString(record.projectName, "pin.projectName");
+  requireString(record.actorId, "pin.actorId");
+  requireString(record.actorType, "pin.actorType");
+  requireString(record.createdAt, "pin.createdAt");
+  requireString(record.repoRoot, "pin.repoRoot");
+  requireOptionalString(record.note, "pin.note");
+  requireOptionalString(record.purposeId, "pin.purposeId");
+  return record;
 }
 
 function leaseMatchesPin(leaseOrRequest, pin) {
@@ -2337,8 +3598,13 @@ function invokeLifecycleAdapter(action, adapter, context) {
   }
 }
 
-function ensureStatePaths(paths) {
+function ensureLockPaths(paths) {
   ensureRestrictedDir(paths.stateRoot);
+  ensureRestrictedDir(paths.locksDir);
+}
+
+function ensureStatePaths(paths) {
+  ensureLockPaths(paths);
   if (paths.evidenceDir) {
     ensureRestrictedDir(paths.evidenceDir);
   }
@@ -2346,8 +3612,15 @@ function ensureStatePaths(paths) {
     ensureRestrictedDir(paths.capacityTransactionsDir);
   }
   ensureRestrictedDir(paths.leasesDir);
-  ensureRestrictedDir(paths.locksDir);
   ensureRestrictedDir(paths.pinsDir);
+}
+
+function initializeLockScope(paths, initializePersistentState) {
+  if (initializePersistentState) {
+    ensureStatePaths(paths);
+  } else {
+    ensureLockPaths(paths);
+  }
 }
 
 function withResetLock(paths, work, {
@@ -2623,17 +3896,21 @@ function lockOwnerProcessIsLive(owner, { observedAt, processExists, processSampl
 }
 
 function withCapacityLock(paths, work, {
+  checkCancellation = null,
+  initializePersistentState = true,
   now = nowIso(),
   processExists = defaultProcessExists,
   processSampler = processExists === defaultProcessExists ? defaultProcessSampler : null,
   pollMs = DEFAULT_LOCK_POLL_MS,
   timeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
+  reclaimTimeoutMs = timeoutMs,
   wait = true,
 } = {}) {
-  ensureStatePaths(paths);
+  initializeLockScope(paths, initializePersistentState);
   const startedAt = Date.now();
 
   while (true) {
+    checkCancellation?.();
     try {
       fs.mkdirSync(paths.capacityLockDir);
       fs.chmodSync(paths.capacityLockDir, 0o700);
@@ -2656,14 +3933,14 @@ function withCapacityLock(paths, work, {
       const lockSnapshot = readLockSnapshot(paths.capacityLockDir, paths.capacityLockOwnerPath, {
         processExists,
         processSampler,
-        timeoutMs,
+        timeoutMs: reclaimTimeoutMs,
       });
       if (lockSnapshot.released
         || ((lockSnapshot.staleOwner || lockSnapshot.abandonedOwner)
           && reclaimStaleLock(paths.capacityLockDir, paths.capacityLockOwnerPath, lockSnapshot, {
             processExists,
             processSampler,
-            timeoutMs,
+            timeoutMs: reclaimTimeoutMs,
           }))) {
         continue;
       }
@@ -2674,6 +3951,7 @@ function withCapacityLock(paths, work, {
         });
       }
 
+      checkCancellation?.();
       sleepSync(pollMs);
     }
   }
@@ -2686,6 +3964,8 @@ function withCapacityLock(paths, work, {
 }
 
 function withLeaseMutationLock(paths, work, {
+  checkCancellation = null,
+  initializePersistentState = true,
   now = nowIso(),
   processExists = defaultProcessExists,
   processSampler = processExists === defaultProcessExists ? defaultProcessSampler : null,
@@ -2693,10 +3973,11 @@ function withLeaseMutationLock(paths, work, {
   timeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
   wait = true,
 } = {}) {
-  ensureStatePaths(paths);
+  initializeLockScope(paths, initializePersistentState);
   const startedAt = Date.now();
 
   while (true) {
+    checkCancellation?.();
     try {
       fs.mkdirSync(paths.leaseLockDir);
       fs.chmodSync(paths.leaseLockDir, 0o700);
@@ -2737,6 +4018,7 @@ function withLeaseMutationLock(paths, work, {
         });
       }
 
+      checkCancellation?.();
       sleepSync(pollMs);
     }
   }
@@ -3635,8 +4917,8 @@ export function initBroker(paths, options = {}) {
           hostConfigCreated = true;
         } catch (error) {
           const simctl = resolveSimctlAdapter(options);
-          rollbackCreatedSimulators(simctl, provisioned.createdSimulatorIds);
-          throw error;
+          const rollbackFailures = rollbackCreatedSimulators(simctl, provisioned.createdSimulatorIds);
+          throw attachRollbackFailures(error, rollbackFailures);
         }
         if (previousHostConfig !== null) {
           const simctl = resolveSimctlAdapter(options);
@@ -4572,13 +5854,8 @@ function selectRuntimeFromInventory(inventory, iosVersion) {
 }
 
 function selectDeviceTypeFromInventory(inventory, runtime, deviceFamily) {
-  const runtimeDeviceTypes = Array.isArray(runtime.supportedDeviceTypes)
-    ? runtime.supportedDeviceTypes
-    : [];
-  const deviceTypes = runtimeDeviceTypes.length > 0
-    ? runtimeDeviceTypes
-    : (inventory.deviceTypesJson?.devicetypes ?? []);
-  const supported = deviceTypes.filter((deviceType) => deviceType.productFamily === deviceFamily);
+  const supported = runtimeSupportedDeviceTypes(runtime, inventory)
+    .filter((deviceType) => deviceType.productFamily === deviceFamily);
   if (supported.length === 0) {
     return {
       blocker: {

@@ -1,7 +1,8 @@
-# Public Node test surface. Ubuntu, no npm install (the repo has no runtime
-# dependencies), and no macOS app suite. timeout-minutes is 30 because a
-# prior 20-minute budget was consumed by per-file git cat-file in
-# verify:public-surface on a clean checkout.
+# Public Node test surface. GitHub-hosted Ubuntu does not see the operator
+# home path and has no Simulator, so it only runs broker-core, skill
+# ownership, and harness-adoption. Client tests run on GitHub-hosted macOS.
+# Home-path public-surface scanning belongs to `npm test` on the operator
+# machine, not this workflow. Do not raise job budgets to hide hung waits.
 name: Node tests
 
 on:
@@ -17,10 +18,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  node:
-    name: broker-core client harness-adoption public-surface
+  node-ubuntu:
+    name: broker-core harness-adoption
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -28,17 +29,27 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Public-surface scan
-        run: npm run verify:public-surface
-
       - name: Managed skill ownership
         run: bash scripts/check_managed_skill_ownership.sh
 
       - name: broker-core tests
         run: npm run test:broker-core
 
-      - name: client tests
-        run: npm run test:client
-
       - name: harness-adoption tests
         run: npm run test:harness-adoption
+
+  node-macos:
+    name: client
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: client tests
+        # Do not add --test-force-exit. On Node 20 it exits the process while
+        # later describe() tests are still queued (cancelledByParent).
+        run: node --test --test-concurrency=1 --test-timeout=120000 client/test/*.test.mjs

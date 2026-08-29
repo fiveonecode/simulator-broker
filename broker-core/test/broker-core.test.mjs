@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,7 @@ import {
   acquireLeaseBroker,
   appSnapshotBroker,
   appSnapshotBrokerUnderMutationLock,
+  applySetupBroker,
   BrokerError,
   bootSimulatorBroker,
   checkCapacityBroker,
@@ -27,6 +29,7 @@ import {
   initProjectBroker,
   idleStatusBroker,
   readEventsBroker,
+  previewSetupBroker,
   reconcileIdleBroker,
   registerLeaseProcessBroker,
   reconcileCapacityBroker,
@@ -226,12 +229,48 @@ function brokerPaths(paths) {
   });
 }
 
+function committedAliasSimulatorId(resolvedPaths, alias) {
+  return readJson(resolvedPaths.hostConfigPath).aliases.find((entry) => entry.alias === alias).simulatorId;
+}
+
+function quotedSetupPath(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function makeFifo(filePath) {
+  const result = spawnSync("mkfifo", [filePath], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+}
+
+function setupCommandWithSelectedPaths(command, paths) {
+  return [
+    command,
+    "--host-config",
+    quotedSetupPath(paths.hostConfigPath),
+    "--state-root",
+    quotedSetupPath(paths.stateRoot),
+    "--service-socket",
+    quotedSetupPath(paths.serviceSocketPath),
+  ].join(" ");
+}
+
 function readCapacityTransactions(resolvedPaths) {
   if (!fs.existsSync(resolvedPaths.capacityTransactionsDir)) {
     return [];
   }
   return fs.readdirSync(resolvedPaths.capacityTransactionsDir)
     .map((entry) => readJson(path.join(resolvedPaths.capacityTransactionsDir, entry)));
+}
+
+const FIXTURE_CONTROLLER_PID = 2_147_483_646;
+
+function unusedFixturePid(preferred, taken = []) {
+  const blocked = new Set([process.pid, ...taken]);
+  let pid = preferred;
+  while (blocked.has(pid) || pid <= 1) {
+    pid += 1;
+  }
+  return pid;
 }
 
 function makeProcessFixture(records) {
@@ -250,6 +289,7 @@ function makeProcessFixture(records) {
   return {
     actions,
     controller: {
+      currentPid: FIXTURE_CONTROLLER_PID,
       killPid(pid, signal) {
         actions.push({ pid, signal, target: "pid" });
         const record = table.find((candidate) => candidate.pid === pid);
@@ -812,6 +852,2478 @@ test("host init can bootstrap a starter host config when none exists yet", () =>
   assert.ok(status.simulators.every((simulator) => /^[0-9A-F-]{36}$/.test(simulator.simulatorId)));
   const simctlState = readJson(paths.simctl.statePath);
   assert.ok(simctlState.devices.some((device) => device.name === "Simulator Broker bootstrap-host manual-1"));
+});
+
+test("setup selects the newest compatible iOS runtime and honors major and exact overrides", () => {
+  const root = makeTempDir();
+  const supportedDeviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+  ];
+  const runtimes = [
+    {
+      buildversion: "22F76",
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-18-5",
+      isAvailable: true,
+      supportedDeviceTypes,
+      version: "18.5",
+    },
+    {
+      buildversion: "23E214",
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-4",
+      isAvailable: true,
+      supportedDeviceTypes,
+      version: "26.4",
+    },
+    {
+      buildversion: "23F76",
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+      isAvailable: true,
+      supportedDeviceTypes,
+      version: "26.5",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+      isAvailable: false,
+      supportedDeviceTypes,
+      version: "27.0",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimRuntime.tvOS-99-0",
+      isAvailable: true,
+      supportedDeviceTypes,
+      version: "99.0",
+    },
+  ];
+  const simctl = createSimctlFixture(root, { runtimes });
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  const automatic = previewSetupBroker(resolvedPaths, {
+    hostId: "setup-runtime",
+    simctlAdapter: simctl.adapter,
+  });
+  const major = previewSetupBroker(resolvedPaths, {
+    hostId: "setup-runtime",
+    iosVersion: "26",
+    simctlAdapter: simctl.adapter,
+  });
+  const exact = previewSetupBroker(resolvedPaths, {
+    hostId: "setup-runtime",
+    iosVersion: "26.4",
+    simctlAdapter: simctl.adapter,
+  });
+
+  assert.equal(automatic.runtime.version, "26.5");
+  assert.equal(automatic.runtime.buildVersion, "23F76");
+  assert.equal(automatic.runtime.selectionSource, "automatic");
+  assert.equal(major.runtime.version, "26.5");
+  assert.equal(major.runtime.selectionSource, "explicit");
+  assert.equal(exact.runtime.version, "26.4");
+  assert.ok(exact.devices.every((device) => device.runtimeVersion === "26.4"));
+});
+
+test("setup omits a non-string runtime buildVersion from the confirmable preview", () => {
+  const root = makeTempDir();
+  const supportedDeviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+  ];
+  const numericBuildRuntime = {
+    buildversion: 23000,
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    isAvailable: true,
+    supportedDeviceTypes,
+    version: "26.5",
+  };
+  const simctl = createSimctlFixture(root, { runtimes: [numericBuildRuntime] });
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "numeric-build",
+    simctlAdapter: simctl.adapter,
+  });
+  assert.equal(preview.status, "changes_required");
+  assert.equal(preview.runtime.identifier, numericBuildRuntime.identifier);
+  assert.equal(preview.runtime.version, "26.5");
+  assert.equal(preview.runtime.buildVersion, null);
+});
+
+test("setup ignores available iOS runtimes whose identifier is not a string", () => {
+  const root = makeTempDir();
+  const supportedDeviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+  ];
+  const arrayIdentifierRuntime = {
+    buildversion: "23F76",
+    identifier: ["com.apple.CoreSimulator.SimRuntime.iOS-26-5"],
+    isAvailable: true,
+    supportedDeviceTypes,
+    version: "26.5",
+  };
+  const completeRuntime = {
+    buildversion: "23F76",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-18-2",
+    isAvailable: true,
+    supportedDeviceTypes,
+    version: "18.2",
+  };
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  const arrayOnly = createSimctlFixture(root, { runtimes: [arrayIdentifierRuntime] });
+  assert.throws(() => previewSetupBroker(resolvedPaths, {
+    simctlAdapter: arrayOnly.adapter,
+  }), (error) => error instanceof BrokerError && error.payload.reasonCode === "runtime-not-found");
+
+  const mixed = createSimctlFixture(root, { runtimes: [arrayIdentifierRuntime, completeRuntime] });
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "string-runtime-id",
+    simctlAdapter: mixed.adapter,
+  });
+  assert.equal(preview.status, "changes_required");
+  assert.equal(preview.runtime.identifier, completeRuntime.identifier);
+  assert.equal(typeof preview.runtime.identifier, "string");
+});
+
+test("setup picks a deterministic runtime when duplicate identifiers advertise different device types", () => {
+  const root = makeTempDir();
+  const iPad = {
+    identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+    name: "iPad (A16)",
+    productFamily: "iPad",
+  };
+  const iPhone15 = {
+    identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-15",
+    name: "iPhone 15",
+    productFamily: "iPhone",
+  };
+  const iPhone16 = {
+    identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+    name: "iPhone 16",
+    productFamily: "iPhone",
+  };
+  const shared = {
+    buildversion: "23F76",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    isAvailable: true,
+    version: "26.5",
+  };
+  const first = {
+    ...shared,
+    supportedDeviceTypes: [iPhone16, iPad],
+  };
+  const second = {
+    ...shared,
+    supportedDeviceTypes: [iPhone15, iPad],
+  };
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  const forward = createSimctlFixture(root, { runtimes: [first, second] });
+  const forwardPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "duplicate-runtime",
+    simctlAdapter: forward.adapter,
+  });
+  const reversed = createSimctlFixture(root, { runtimes: [second, first] });
+  const reversedPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "duplicate-runtime",
+    simctlAdapter: reversed.adapter,
+  });
+
+  assert.equal(forwardPreview.planId, reversedPreview.planId);
+  assert.equal(typeof forwardPreview.runtime.identifier, "string");
+  const forwardIphone = forwardPreview.devices.find((device) => device.deviceFamily === "iPhone");
+  const reversedIphone = reversedPreview.devices.find((device) => device.deviceFamily === "iPhone");
+  assert.equal(forwardIphone.deviceTypeIdentifier, reversedIphone.deviceTypeIdentifier);
+});
+
+test("setup ignores available iOS runtimes whose version is outside the host schema", () => {
+  const root = makeTempDir();
+  const supportedDeviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+  ];
+  const patchRuntime = {
+    buildversion: "22A123",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-18-0",
+    isAvailable: true,
+    supportedDeviceTypes,
+    version: "18.0.1",
+  };
+  const completeRuntime = {
+    buildversion: "23F76",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    isAvailable: true,
+    supportedDeviceTypes,
+    version: "26.5",
+  };
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  const patchOnly = createSimctlFixture(root, { runtimes: [patchRuntime] });
+  assert.throws(() => previewSetupBroker(resolvedPaths, {
+    simctlAdapter: patchOnly.adapter,
+  }), (error) => error instanceof BrokerError && error.payload.reasonCode === "runtime-not-found");
+
+  const mixed = createSimctlFixture(root, { runtimes: [patchRuntime, completeRuntime] });
+  const preview = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: mixed.adapter,
+  });
+  assert.equal(preview.status, "changes_required");
+  assert.equal(preview.runtime.version, "26.5");
+  assert.equal(preview.runtime.identifier, completeRuntime.identifier);
+  assert.ok(preview.devices.every((device) => device.runtimeVersion === "26.5"));
+});
+
+test("setup rejects an available iOS runtime that omits version before planning", () => {
+  const root = makeTempDir();
+  const supportedDeviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+  ];
+  const versionlessRuntime = {
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+    isAvailable: true,
+    supportedDeviceTypes,
+  };
+  const completeRuntime = {
+    buildversion: "23F76",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    isAvailable: true,
+    supportedDeviceTypes,
+    version: "26.5",
+  };
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  const versionlessOnly = createSimctlFixture(root, { runtimes: [versionlessRuntime] });
+  assert.throws(() => previewSetupBroker(resolvedPaths, {
+    simctlAdapter: versionlessOnly.adapter,
+  }), (error) => error instanceof BrokerError && error.payload.reasonCode === "runtime-not-found");
+
+  const mixed = createSimctlFixture(root, { runtimes: [versionlessRuntime, completeRuntime] });
+  const preview = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: mixed.adapter,
+  });
+  assert.equal(preview.runtime.version, "26.5");
+  assert.equal(preview.runtime.identifier, completeRuntime.identifier);
+  assert.ok(preview.devices.every((device) => device.runtimeVersion === "26.5"));
+});
+
+test("setup requires one runtime to support both starter device families", () => {
+  const root = makeTempDir();
+  const simctl = createSimctlFixture(root, {
+    runtimes: [{
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+      isAvailable: true,
+      supportedDeviceTypes: [{
+        identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        name: "iPhone 16",
+        productFamily: "iPhone",
+      }],
+      version: "26.5",
+    }],
+  });
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  assert.throws(() => previewSetupBroker(resolvedPaths, {
+    simctlAdapter: simctl.adapter,
+  }), (error) => error instanceof BrokerError && error.payload.reasonCode === "runtime-not-found");
+});
+
+test("setup uses the device-type inventory when a runtime omits supportedDeviceTypes", () => {
+  const root = makeTempDir();
+  const simctl = createSimctlFixture(root);
+  const state = readJson(simctl.statePath);
+  for (const runtime of state.runtimes) {
+    delete runtime.supportedDeviceTypes;
+  }
+  writeJson(simctl.statePath, state);
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "inventory-fallback",
+    simctlAdapter: simctl.adapter,
+  });
+
+  assert.equal(preview.status, "changes_required");
+  assert.equal(preview.devices.length, 6);
+  assert.equal(preview.devices.filter((device) => device.deviceFamily === "iPhone").length, 5);
+  assert.equal(preview.devices.filter((device) => device.deviceFamily === "iPad").length, 1);
+  assert.ok(preview.devices.every((device) => device.deviceTypeIdentifier));
+
+  for (const runtime of state.runtimes) {
+    runtime.supportedDeviceTypes = [];
+  }
+  writeJson(simctl.statePath, state);
+  const emptyArrayPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "inventory-fallback",
+    simctlAdapter: simctl.adapter,
+  });
+  assert.equal(emptyArrayPreview.status, "changes_required");
+  assert.equal(emptyArrayPreview.devices.length, 6);
+});
+
+test("setup rejects device types that omit identifier or name before planning", () => {
+  const root = makeTempDir();
+  const incompleteDeviceTypes = [
+    {
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      productFamily: "iPad",
+    },
+  ];
+  const completeDeviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-SE",
+      name: "iPhone SE",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Air",
+      name: "iPad Air",
+      productFamily: "iPad",
+    },
+  ];
+  const runtime = {
+    buildversion: "23F76",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    isAvailable: true,
+    version: "26.5",
+  };
+  const incompleteOnly = createSimctlFixture(root, {
+    runtimes: [{ ...runtime, supportedDeviceTypes: incompleteDeviceTypes }],
+  });
+  const incompleteState = readJson(incompleteOnly.statePath);
+  incompleteState.devicetypes = incompleteDeviceTypes;
+  writeJson(incompleteOnly.statePath, incompleteState);
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+
+  assert.throws(() => previewSetupBroker(resolvedPaths, {
+    simctlAdapter: incompleteOnly.adapter,
+  }), (error) => error instanceof BrokerError && error.payload.reasonCode === "runtime-not-found");
+
+  const mixedRoot = makeTempDir();
+  const mixed = createSimctlFixture(mixedRoot, {
+    runtimes: [{
+      ...runtime,
+      supportedDeviceTypes: [...incompleteDeviceTypes, ...completeDeviceTypes],
+    }],
+  });
+  const mixedState = readJson(mixed.statePath);
+  mixedState.devicetypes = [...incompleteDeviceTypes, ...completeDeviceTypes];
+  writeJson(mixed.statePath, mixedState);
+  const mixedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(mixedRoot, "host-config.json"),
+    stateRoot: path.join(mixedRoot, "state"),
+  });
+  const preview = previewSetupBroker(mixedPaths, {
+    hostId: "complete-device-types",
+    simctlAdapter: mixed.adapter,
+  });
+  assert.equal(preview.status, "changes_required");
+  assert.ok(preview.devices.every((device) => typeof device.deviceTypeIdentifier === "string"
+    && device.deviceTypeIdentifier.length > 0
+    && typeof device.deviceTypeName === "string"
+    && device.deviceTypeName.length > 0));
+  assert.equal(
+    preview.devices.find((device) => device.deviceFamily === "iPhone").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPhone-SE",
+  );
+  assert.equal(
+    preview.devices.find((device) => device.deviceFamily === "iPad").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPad-Air",
+  );
+});
+
+test("setup fallback device types stay stable when preferred names are absent", () => {
+  const root = makeTempDir();
+  const deviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-SE",
+      name: "iPhone SE",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro",
+      name: "iPhone 16 Pro",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-11",
+      name: "iPad Pro 11-inch",
+      productFamily: "iPad",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Air",
+      name: "iPad Air",
+      productFamily: "iPad",
+    },
+  ];
+  const runtime = {
+    buildversion: "23F76",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    isAvailable: true,
+    version: "26.5",
+  };
+  const forwardSimctl = createSimctlFixture(root, {
+    runtimes: [{ ...runtime, supportedDeviceTypes: deviceTypes }],
+  });
+  const reversedRoot = makeTempDir();
+  const reversedSimctl = createSimctlFixture(reversedRoot, {
+    runtimes: [{ ...runtime, supportedDeviceTypes: [...deviceTypes].reverse() }],
+  });
+  const forwardPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+  const reversedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(reversedRoot, "host-config.json"),
+    stateRoot: path.join(reversedRoot, "state"),
+  });
+
+  const forward = previewSetupBroker(forwardPaths, {
+    hostId: "fallback-device-types",
+    simctlAdapter: forwardSimctl.adapter,
+  });
+  const reversed = previewSetupBroker(reversedPaths, {
+    hostId: "fallback-device-types",
+    simctlAdapter: reversedSimctl.adapter,
+  });
+
+  assert.equal(forward.planId, reversed.planId);
+  assert.equal(
+    forward.devices.find((device) => device.deviceFamily === "iPhone").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro",
+  );
+  assert.equal(
+    reversed.devices.find((device) => device.deviceFamily === "iPhone").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro",
+  );
+  assert.equal(
+    forward.devices.find((device) => device.deviceFamily === "iPad").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPad-Air",
+  );
+  assert.equal(
+    reversed.devices.find((device) => device.deviceFamily === "iPad").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPad-Air",
+  );
+});
+
+test("setup preferred device types stay stable when preferred names share identifiers", () => {
+  const root = makeTempDir();
+  const deviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16-B",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16-A",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16-B",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16-A",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+  ];
+  const runtime = {
+    buildversion: "22C146",
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-18-2",
+    isAvailable: true,
+    version: "18.2",
+  };
+  const forwardSimctl = createSimctlFixture(root, {
+    runtimes: [{ ...runtime, supportedDeviceTypes: deviceTypes }],
+  });
+  const reversedRoot = makeTempDir();
+  const reversedSimctl = createSimctlFixture(reversedRoot, {
+    runtimes: [{ ...runtime, supportedDeviceTypes: [...deviceTypes].reverse() }],
+  });
+  const forwardPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+  const reversedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(reversedRoot, "host-config.json"),
+    stateRoot: path.join(reversedRoot, "state"),
+  });
+
+  const forward = previewSetupBroker(forwardPaths, {
+    hostId: "preferred-device-types",
+    simctlAdapter: forwardSimctl.adapter,
+  });
+  const reversed = previewSetupBroker(reversedPaths, {
+    hostId: "preferred-device-types",
+    simctlAdapter: reversedSimctl.adapter,
+  });
+
+  assert.equal(forward.planId, reversed.planId);
+  assert.equal(
+    forward.devices.find((device) => device.deviceFamily === "iPhone").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPhone-16-A",
+  );
+  assert.equal(
+    reversed.devices.find((device) => device.deviceFamily === "iPhone").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPhone-16-A",
+  );
+  assert.equal(
+    forward.devices.find((device) => device.deviceFamily === "iPad").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPad-A16-A",
+  );
+  assert.equal(
+    reversed.devices.find((device) => device.deviceFamily === "iPad").deviceTypeIdentifier,
+    "com.apple.CoreSimulator.SimDeviceType.iPad-A16-A",
+  );
+});
+
+test("setup does not reuse a matching Simulator that omits UDID", () => {
+  const root = makeTempDir();
+  const matchingName = "Simulator Broker setup-udid ui-1";
+  const simctl = createSimctlFixture(root, {
+    devices: [
+      createDeviceRecord({
+        deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        name: matchingName,
+      }),
+    ],
+  });
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "setup-udid",
+    simctlAdapter: simctl.adapter,
+  });
+  const ui1 = preview.devices.find((device) => device.alias === "ui-1");
+  assert.equal(preview.status, "changes_required");
+  assert.equal(ui1.action, "create");
+  assert.equal(ui1.simulatorId, null);
+  assert.equal(preview.confirmation.createCount, 6);
+  assert.equal(preview.confirmation.reuseCount, 0);
+});
+
+test("setup preview is an exact stable six-device plan with strict reuse matching", () => {
+  const root = makeTempDir();
+  const matchingName = "Simulator Broker setup-plan ui-1";
+  const simctl = createSimctlFixture(root, {
+    devices: [
+      createDeviceRecord({
+        deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        name: matchingName,
+        udid: "REUSE-UI-1",
+      }),
+      createDeviceRecord({
+        deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+        name: "Simulator Broker setup-plan ui-2",
+        udid: "WRONG-TYPE-UI-2",
+      }),
+    ],
+  });
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+  const first = previewSetupBroker(resolvedPaths, {
+    hostId: "setup-plan",
+    simctlAdapter: simctl.adapter,
+  });
+
+  assert.equal(first.status, "changes_required");
+  assert.deepEqual(first.devices.map((device) => device.alias), [
+    "manual-1", "ui-1", "ui-2", "build-1", "build-2", "ipad-1",
+  ]);
+  assert.deepEqual(first.devices.map((device) => device.action), [
+    "create", "reuse", "create", "create", "create", "create",
+  ]);
+  assert.equal(first.confirmation.createCount, 5);
+  assert.equal(first.confirmation.reuseCount, 1);
+
+  const state = readJson(simctl.statePath);
+  state.devices.reverse();
+  state.devices.push(createDeviceRecord({
+    deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+    name: "Unrelated Simulator",
+    udid: "UNRELATED",
+  }));
+  state.runtimes.reverse();
+  writeJson(simctl.statePath, state);
+  const reordered = previewSetupBroker(resolvedPaths, {
+    hostId: "setup-plan",
+    simctlAdapter: simctl.adapter,
+  });
+  assert.equal(reordered.planId, first.planId);
+});
+
+test("setup apply timestamps host.initialized after both provisioning locks", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "lock-timestamp-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const samples = [];
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "lock-timestamp-setup",
+    now: () => {
+      const value = new Date(Date.UTC(2026, 0, 1, samples.length)).toISOString();
+      samples.push(value);
+      return value;
+    },
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.ok(samples.length >= 2);
+  const initialized = readEventsBroker(resolvedPaths, { type: "host.initialized" }).events.at(-1);
+  assert.equal(initialized.timestamp, samples[1]);
+  assert.notEqual(initialized.timestamp, samples[0]);
+});
+
+test("setup rejects missing and stale confirmation before mutation and is idempotent after apply", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "confirmed-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const baselineCount = readJson(paths.simctl.statePath).devices.length;
+
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    hostId: "confirmed-setup",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-confirmation-required" && error.exitCode === 5);
+  assert.equal(readJson(paths.simctl.statePath).devices.length, baselineCount);
+
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: "sha256:stale",
+    hostId: "confirmed-setup",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-plan-stale" && error.exitCode === 5);
+  assert.equal(readJson(paths.simctl.statePath).devices.length, baselineCount);
+  assert.equal(fs.existsSync(resolvedPaths.leasesDir), false);
+  assert.equal(fs.existsSync(resolvedPaths.pinsDir), false);
+  assert.equal(fs.existsSync(resolvedPaths.capacityTransactionsDir), false);
+  assert.equal(fs.existsSync(resolvedPaths.evidenceDir), false);
+
+  const applied = applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "confirmed-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(applied.status, "ready");
+  assert.equal(applied.devices.total, 6);
+  assert.equal(applied.devices.created, 6);
+  const committedHost = readJson(paths.hostConfigPath);
+  assert.equal(committedHost.aliases.length, 6);
+  assert.deepEqual(applied.setupCommittedHostIdentity, {
+    hostId: committedHost.hostId,
+    simulators: committedHost.aliases.map(({ alias, simulatorId }) => ({ alias, simulatorId })),
+  });
+
+  const secondPreview = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(secondPreview.host.action, "keep");
+  assert.equal(secondPreview.confirmation.required, false);
+  const secondApply = applySetupBroker(resolvedPaths, {
+    confirmPlanId: secondPreview.planId,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(secondApply.devices.created, 0);
+  assert.equal(readJson(paths.simctl.statePath).devices.length, baselineCount + 6);
+
+  const matchingPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "confirmed-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(matchingPreview.planId, secondPreview.planId);
+  assert.notEqual(matchingPreview.status, "blocked");
+
+  const mismatchedPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "different",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(mismatchedPreview.status, "blocked");
+  assert.ok(mismatchedPreview.prerequisites.some((issue) => issue.id === "host-id"));
+  assert.notEqual(mismatchedPreview.planId, secondPreview.planId);
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: secondPreview.planId,
+    hostId: "different",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-plan-stale");
+});
+
+test("setup rejects stale confirmation before creating or tightening persistent state directories", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  fs.mkdirSync(resolvedPaths.evidenceDir, { recursive: true, mode: 0o755 });
+  fs.chmodSync(resolvedPaths.evidenceDir, 0o755);
+
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: "sha256:stale",
+    hostId: "stale-state-dirs",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-plan-stale" && error.exitCode === 5);
+
+  assert.equal(fs.existsSync(resolvedPaths.hostConfigPath), false);
+  assert.equal(fs.existsSync(resolvedPaths.leasesDir), false);
+  assert.equal(fs.existsSync(resolvedPaths.pinsDir), false);
+  assert.equal(fs.existsSync(resolvedPaths.capacityTransactionsDir), false);
+  assert.equal(fs.statSync(resolvedPaths.evidenceDir).mode & 0o777, 0o755);
+});
+
+test("setup uses the default host-id fallback for empty-slug requested IDs on rerun", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "!!!",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.notEqual(preview.host.hostId, "!!!");
+  assert.equal(preview.status, "changes_required");
+
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "!!!",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const rerun = previewSetupBroker(resolvedPaths, {
+    hostId: "!!!",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.notEqual(rerun.status, "blocked");
+  assert.equal(rerun.host.hostId, preview.host.hostId);
+  assert.equal(rerun.host.hostId, readJson(paths.hostConfigPath).hostId);
+  assert.equal(
+    rerun.prerequisites.some((issue) => issue.id === "host-id"),
+    false,
+  );
+});
+
+test("setup blocks an existing host when doctor-relevant state files are malformed", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "corrupt-state-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "corrupt-state-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  fs.writeFileSync(resolvedPaths.knownProjectsPath, "{not-json\n");
+  const knownProjectsBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(knownProjectsBlocked.status, "blocked");
+  assert.ok(knownProjectsBlocked.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+  assert.deepEqual(
+    knownProjectsBlocked.prerequisites.find((issue) => issue.id === "known-projects").remediationCommands,
+    [setupCommandWithSelectedPaths("simbroker doctor", resolvedPaths)],
+  );
+
+  writeJson(resolvedPaths.knownProjectsPath, {
+    projects: {
+      "catalog-a": {
+        lastObservedAt: "2026-01-01T00:00:00.000Z",
+        projectFilePath: path.join(paths.root, "repo/.simulator-broker/project.json"),
+        projectId: "catalog-b",
+        projectName: "Mismatched Catalog",
+        purposes: [],
+        repoRoot: path.join(paths.root, "repo"),
+      },
+    },
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    version: 1,
+  });
+  const mismatchedCatalogBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(mismatchedCatalogBlocked.status, "blocked");
+  assert.ok(mismatchedCatalogBlocked.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+
+  writeJson(resolvedPaths.knownProjectsPath, {
+    projects: {},
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    version: 1,
+  });
+  fs.mkdirSync(resolvedPaths.leasesDir, { recursive: true });
+  fs.writeFileSync(path.join(resolvedPaths.leasesDir, "broken.json"), "{not-json\n");
+  const leasesBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(leasesBlocked.status, "blocked");
+  assert.ok(leasesBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+
+  fs.writeFileSync(path.join(resolvedPaths.leasesDir, "broken.json"), "{}\n");
+  const emptyLeaseBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(emptyLeaseBlocked.status, "blocked");
+  assert.ok(emptyLeaseBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+
+  fs.rmSync(path.join(resolvedPaths.leasesDir, "broken.json"));
+  fs.mkdirSync(resolvedPaths.pinsDir, { recursive: true });
+  writeJson(path.join(resolvedPaths.pinsDir, "empty-pin.json"), {});
+  const emptyPinBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(emptyPinBlocked.status, "blocked");
+  assert.ok(emptyPinBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+
+  fs.rmSync(path.join(resolvedPaths.pinsDir, "empty-pin.json"));
+  writeJson(path.join(resolvedPaths.leasesDir, "partial-lease.json"), {
+    alias: "ui-1",
+    leaseId: "partial-lease",
+  });
+  const partialLeaseBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(partialLeaseBlocked.status, "blocked");
+  assert.ok(partialLeaseBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: partialLeaseBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, "partial-lease.json")), true);
+});
+
+test("setup blocks lease and pin files whose names disagree with their record IDs", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "mismatched-record-files",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "mismatched-record-files",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const completeLease = {
+    actorId: "agent:1",
+    actorType: "agent",
+    alias: "ui-1",
+    displayName: "UI One",
+    leaseId: "canonical-lease",
+    leaseKind: "ephemeral",
+    ownerPid: process.pid,
+    projectId: "demo-app",
+    projectName: "Demo App",
+    purposeId: "agent-ui-session",
+    repoRoot: path.join(paths.root, "repo"),
+    simulatorId: "SIM-UI-1",
+    startedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const mismatchedLeasePath = path.join(resolvedPaths.leasesDir, "orphaned-lease.json");
+  writeJson(mismatchedLeasePath, completeLease);
+  const mismatchedLeaseBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(mismatchedLeaseBlocked.status, "blocked");
+  assert.ok(mismatchedLeaseBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: mismatchedLeaseBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(mismatchedLeasePath).leaseId, "canonical-lease");
+  fs.rmSync(mismatchedLeasePath);
+
+  const completePin = {
+    actorId: "human:local-cli",
+    actorType: "human",
+    alias: "manual-1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    pinId: "canonical-pin",
+    projectId: "demo-app",
+    projectName: "Demo App",
+    repoRoot: path.join(paths.root, "repo"),
+  };
+  const mismatchedPinPath = path.join(resolvedPaths.pinsDir, "orphaned-pin.json");
+  writeJson(mismatchedPinPath, completePin);
+  const mismatchedPinBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(mismatchedPinBlocked.status, "blocked");
+  assert.ok(mismatchedPinBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: mismatchedPinBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(mismatchedPinPath).pinId, "canonical-pin");
+});
+
+test("setup blocks snapshot-incomplete leases, pins, and schema-invalid registry alias data", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "snapshot-schema-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "snapshot-schema-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const incompleteLeasePath = path.join(resolvedPaths.leasesDir, "incomplete-snapshot-lease.json");
+  writeJson(incompleteLeasePath, {
+    actorId: "agent:1",
+    actorType: "agent",
+    alias: "ui-1",
+    leaseId: "incomplete-snapshot-lease",
+    ownerPid: process.pid,
+    projectId: "demo-app",
+    purposeId: "agent-ui-session",
+    simulatorId: "sim-ui-1",
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const incompleteLeaseBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(incompleteLeaseBlocked.status, "blocked");
+  assert.ok(incompleteLeaseBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: incompleteLeaseBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(incompleteLeasePath), true);
+  fs.rmSync(incompleteLeasePath);
+
+  const incompletePinPath = path.join(resolvedPaths.pinsDir, "incomplete-pin.json");
+  writeJson(incompletePinPath, {
+    alias: "ui-1",
+    pinId: "incomplete-pin",
+  });
+  const incompletePinBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(incompletePinBlocked.status, "blocked");
+  assert.ok(incompletePinBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: incompletePinBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.deepEqual(readJson(incompletePinPath), {
+    alias: "ui-1",
+    pinId: "incomplete-pin",
+  });
+  fs.rmSync(incompletePinPath);
+
+  const originalRegistry = readJson(resolvedPaths.registryPath);
+  const invalidHealthRegistry = structuredClone(originalRegistry);
+  invalidHealthRegistry.aliases["ui-1"].health = "not-a-health";
+  writeJson(resolvedPaths.registryPath, invalidHealthRegistry);
+  const invalidHealthBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(invalidHealthBlocked.status, "blocked");
+  assert.ok(invalidHealthBlocked.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: invalidHealthBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(resolvedPaths.registryPath).aliases["ui-1"].health, "not-a-health");
+
+  writeJson(resolvedPaths.registryPath, {
+    aliases: {},
+    updatedAt: originalRegistry.updatedAt,
+    version: originalRegistry.version,
+  });
+  const emptyAliasMapBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(emptyAliasMapBlocked.status, "blocked");
+  assert.ok(emptyAliasMapBlocked.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: emptyAliasMapBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.deepEqual(readJson(resolvedPaths.registryPath).aliases, {});
+
+  const missingHealthRegistry = structuredClone(originalRegistry);
+  delete missingHealthRegistry.aliases["ui-1"].health;
+  writeJson(resolvedPaths.registryPath, missingHealthRegistry);
+  const missingHealthAllowed = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.notEqual(missingHealthAllowed.status, "blocked");
+  assert.equal(
+    missingHealthAllowed.prerequisites.some((issue) => issue.id === "registry" && issue.status === "blocked"),
+    false,
+  );
+
+  writeJson(resolvedPaths.registryPath, originalRegistry);
+  const invalidPowerStateRegistry = structuredClone(originalRegistry);
+  invalidPowerStateRegistry.aliases["ui-1"].powerState = "bogus";
+  writeJson(resolvedPaths.registryPath, invalidPowerStateRegistry);
+  const invalidPowerStateBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(invalidPowerStateBlocked.status, "blocked");
+  assert.ok(invalidPowerStateBlocked.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: invalidPowerStateBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(resolvedPaths.registryPath).aliases["ui-1"].powerState, "bogus");
+
+  const missingPowerStateRegistry = structuredClone(originalRegistry);
+  delete missingPowerStateRegistry.aliases["ui-1"].powerState;
+  writeJson(resolvedPaths.registryPath, missingPowerStateRegistry);
+  const missingPowerStateAllowed = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.notEqual(missingPowerStateAllowed.status, "blocked");
+  assert.equal(
+    missingPowerStateAllowed.prerequisites.some((issue) => issue.id === "registry" && issue.status === "blocked"),
+    false,
+  );
+});
+
+test("setup blocks leases and pins with mistyped optional snapshot fields", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "optional-snapshot-fields",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "optional-snapshot-fields",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const completeLease = {
+    actorId: "agent:1",
+    actorType: "agent",
+    alias: "ui-1",
+    displayName: "UI One",
+    leaseId: "optional-snapshot-lease",
+    leaseKind: "ephemeral",
+    ownerPid: process.pid,
+    projectId: "demo-app",
+    projectName: "Demo App",
+    purposeId: "agent-ui-session",
+    repoRoot: path.join(paths.root, "repo"),
+    simulatorId: committedAliasSimulatorId(resolvedPaths, "ui-1"),
+    startedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const completeLeasePath = path.join(resolvedPaths.leasesDir, "optional-snapshot-lease.json");
+  writeJson(completeLeasePath, completeLease);
+  const completeLeaseAllowed = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.notEqual(completeLeaseAllowed.status, "blocked");
+  assert.equal(
+    completeLeaseAllowed.prerequisites.some((issue) => issue.id === "leases" && issue.status === "blocked"),
+    false,
+  );
+
+  writeJson(completeLeasePath, { ...completeLease, jobId: 42 });
+  const mistypedLeaseBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(mistypedLeaseBlocked.status, "blocked");
+  assert.ok(mistypedLeaseBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: mistypedLeaseBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(completeLeasePath).jobId, 42);
+
+  writeJson(completeLeasePath, { ...completeLease, ownerPid: String(process.pid) });
+  const stringOwnerPidBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(stringOwnerPidBlocked.status, "blocked");
+  assert.ok(stringOwnerPidBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: stringOwnerPidBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(completeLeasePath).ownerPid, String(process.pid));
+
+  writeJson(completeLeasePath, { ...completeLease, ownerPid: 9223372036854775808 });
+  const oversizedOwnerPidBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(oversizedOwnerPidBlocked.status, "blocked");
+  assert.ok(oversizedOwnerPidBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: oversizedOwnerPidBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(completeLeasePath).ownerPid, 9223372036854776000);
+  fs.rmSync(completeLeasePath);
+
+  const completePin = {
+    actorId: "human:local-cli",
+    actorType: "human",
+    alias: "manual-1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    pinId: "optional-snapshot-pin",
+    projectId: "demo-app",
+    projectName: "Demo App",
+    repoRoot: path.join(paths.root, "repo"),
+  };
+  const completePinPath = path.join(resolvedPaths.pinsDir, "optional-snapshot-pin.json");
+  writeJson(completePinPath, completePin);
+  const completePinAllowed = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.notEqual(completePinAllowed.status, "blocked");
+  assert.equal(
+    completePinAllowed.prerequisites.some((issue) => issue.id === "leases" && issue.status === "blocked"),
+    false,
+  );
+
+  writeJson(completePinPath, { ...completePin, note: 42, purposeId: 42 });
+  const mistypedPinBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(mistypedPinBlocked.status, "blocked");
+  assert.ok(mistypedPinBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: mistypedPinBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.deepEqual(readJson(completePinPath), {
+    ...completePin,
+    note: 42,
+    purposeId: 42,
+  });
+});
+
+test("setup blocks leases that disagree with their host alias or share an alias", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "lease-host-agreement",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "lease-host-agreement",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const uiOneSimulatorId = committedAliasSimulatorId(resolvedPaths, "ui-1");
+  const uiTwoSimulatorId = committedAliasSimulatorId(resolvedPaths, "ui-2");
+  const completeLease = {
+    actorId: "agent:1",
+    actorType: "agent",
+    alias: "ui-1",
+    displayName: "UI One",
+    leaseId: "cross-alias-lease",
+    leaseKind: "ephemeral",
+    ownerPid: process.pid,
+    projectId: "demo-app",
+    projectName: "Demo App",
+    purposeId: "agent-ui-session",
+    repoRoot: path.join(paths.root, "repo"),
+    simulatorId: uiTwoSimulatorId,
+    startedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const crossAliasPath = path.join(resolvedPaths.leasesDir, "cross-alias-lease.json");
+  writeJson(crossAliasPath, completeLease);
+  const crossAliasBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(crossAliasBlocked.status, "blocked");
+  assert.ok(crossAliasBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: crossAliasBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(crossAliasPath).simulatorId, uiTwoSimulatorId);
+  fs.rmSync(crossAliasPath);
+
+  const unknownAliasPath = path.join(resolvedPaths.leasesDir, "unknown-alias-lease.json");
+  writeJson(unknownAliasPath, {
+    ...completeLease,
+    alias: "retired-1",
+    leaseId: "unknown-alias-lease",
+    simulatorId: uiOneSimulatorId,
+  });
+  const unknownAliasBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(unknownAliasBlocked.status, "blocked");
+  assert.ok(unknownAliasBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  fs.rmSync(unknownAliasPath);
+
+  const firstLeasePath = path.join(resolvedPaths.leasesDir, "first-alias-lease.json");
+  const secondLeasePath = path.join(resolvedPaths.leasesDir, "second-alias-lease.json");
+  writeJson(firstLeasePath, {
+    ...completeLease,
+    leaseId: "first-alias-lease",
+    simulatorId: uiOneSimulatorId,
+  });
+  writeJson(secondLeasePath, {
+    ...completeLease,
+    leaseId: "second-alias-lease",
+    simulatorId: uiOneSimulatorId,
+  });
+  const duplicateAliasBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(duplicateAliasBlocked.status, "blocked");
+  assert.ok(duplicateAliasBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: duplicateAliasBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(firstLeasePath), true);
+  assert.equal(fs.existsSync(secondLeasePath), true);
+});
+
+test("setup blocks pins that name an unknown alias or share an alias", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "pin-host-agreement",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "pin-host-agreement",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const completePin = {
+    actorId: "human:local-cli",
+    actorType: "human",
+    alias: "manual-1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    pinId: "canonical-pin",
+    projectId: "demo-app",
+    projectName: "Demo App",
+    repoRoot: path.join(paths.root, "repo"),
+  };
+
+  const unknownAliasPath = path.join(resolvedPaths.pinsDir, "unknown-alias-pin.json");
+  writeJson(unknownAliasPath, {
+    ...completePin,
+    alias: "retired-1",
+    pinId: "unknown-alias-pin",
+  });
+  const unknownAliasBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(unknownAliasBlocked.status, "blocked");
+  assert.ok(unknownAliasBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: unknownAliasBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(readJson(unknownAliasPath).alias, "retired-1");
+  fs.rmSync(unknownAliasPath);
+
+  const firstPinPath = path.join(resolvedPaths.pinsDir, "first-alias-pin.json");
+  const secondPinPath = path.join(resolvedPaths.pinsDir, "second-alias-pin.json");
+  writeJson(firstPinPath, {
+    ...completePin,
+    pinId: "first-alias-pin",
+  });
+  writeJson(secondPinPath, {
+    ...completePin,
+    pinId: "second-alias-pin",
+  });
+  const duplicateAliasBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(duplicateAliasBlocked.status, "blocked");
+  assert.ok(duplicateAliasBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: duplicateAliasBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(firstPinPath), true);
+  assert.equal(fs.existsSync(secondPinPath), true);
+});
+
+test("setup blocks an existing host-config that is not a regular file", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  fs.mkdirSync(paths.hostConfigPath);
+
+  const preview = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(preview.status, "blocked");
+  assert.ok(preview.prerequisites.some((issue) =>
+    issue.id === "host-config" && issue.status === "blocked"));
+  assert.deepEqual(preview.nextSteps, [
+    setupCommandWithSelectedPaths("simbroker doctor", resolvedPaths),
+  ]);
+});
+
+test("setup treats a dangling host-config symlink as occupied existing state", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-host",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(preview.status, "changes_required");
+  assert.equal(preview.host.configured, false);
+
+  fs.symlinkSync(path.join(paths.root, "missing-host.json"), paths.hostConfigPath);
+
+  const occupiedPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-host",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(occupiedPreview.status, "blocked");
+  assert.ok(occupiedPreview.prerequisites.some((issue) =>
+    issue.id === "host-config" && issue.status === "blocked"));
+  assert.match(
+    occupiedPreview.prerequisites.find((issue) => issue.id === "host-config").summary,
+    /regular file/,
+  );
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "fresh-over-dangling-host",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-plan-stale");
+  assert.equal(fs.lstatSync(paths.hostConfigPath).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+});
+
+test("setup blocks a missing host config when the state root already has broker records", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  fs.mkdirSync(resolvedPaths.stateRoot, { recursive: true });
+  writeJson(resolvedPaths.registryPath, {
+    aliases: {},
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    version: 1,
+  });
+
+  const registryBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-state",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(registryBlocked.status, "blocked");
+  assert.equal(registryBlocked.confirmation.required, false);
+  assert.ok(registryBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: registryBlocked.planId,
+    hostId: "fresh-over-state",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+
+  fs.rmSync(resolvedPaths.registryPath);
+  fs.mkdirSync(resolvedPaths.leasesDir, { recursive: true });
+  writeJson(path.join(resolvedPaths.leasesDir, "leftover.json"), {
+    alias: "ui-1",
+    leaseId: "leftover",
+  });
+  const leftoverBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(leftoverBlocked.status, "blocked");
+  assert.ok(leftoverBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+
+  fs.rmSync(path.join(resolvedPaths.leasesDir, "leftover.json"));
+  fs.mkdirSync(path.join(resolvedPaths.leasesDir, "directory.json"));
+  const leaseDirectoryBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(leaseDirectoryBlocked.status, "blocked");
+  assert.ok(leaseDirectoryBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  fs.rmSync(path.join(resolvedPaths.leasesDir, "directory.json"), { recursive: true });
+
+  fs.mkdirSync(resolvedPaths.registryPath);
+  const registryDirectoryBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-registry-dir",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(registryDirectoryBlocked.status, "blocked");
+  assert.ok(registryDirectoryBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  fs.rmSync(resolvedPaths.registryPath, { recursive: true });
+
+  fs.symlinkSync(path.join(paths.root, "missing-registry.json"), resolvedPaths.registryPath);
+  const danglingRegistryBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-registry",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(danglingRegistryBlocked.status, "blocked");
+  assert.ok(danglingRegistryBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: danglingRegistryBlocked.planId,
+    hostId: "fresh-over-dangling-registry",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.registryPath).isSymbolicLink(), true);
+  fs.rmSync(resolvedPaths.registryPath);
+
+  fs.rmSync(resolvedPaths.leasesDir, { recursive: true, force: true });
+  fs.symlinkSync(path.join(paths.root, "missing-leases"), resolvedPaths.leasesDir);
+  const danglingLeasesBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-leases",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(danglingLeasesBlocked.status, "blocked");
+  assert.ok(danglingLeasesBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: danglingLeasesBlocked.planId,
+    hostId: "fresh-over-dangling-leases",
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.lstatSync(resolvedPaths.leasesDir).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+  fs.rmSync(resolvedPaths.leasesDir);
+
+  fs.rmSync(resolvedPaths.pinsDir, { recursive: true, force: true });
+  fs.symlinkSync(path.join(paths.root, "missing-pins"), resolvedPaths.pinsDir);
+  const danglingPinsBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-pins",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(danglingPinsBlocked.status, "blocked");
+  assert.ok(danglingPinsBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: danglingPinsBlocked.planId,
+    hostId: "fresh-over-dangling-pins",
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.lstatSync(resolvedPaths.pinsDir).isSymbolicLink(), true);
+  fs.rmSync(resolvedPaths.pinsDir);
+
+  fs.rmSync(resolvedPaths.evidenceDir, { recursive: true, force: true });
+  fs.writeFileSync(resolvedPaths.evidenceDir, "occupied\n");
+  const evidenceFileBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-evidence-file",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(evidenceFileBlocked.status, "blocked");
+  assert.ok(evidenceFileBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: evidenceFileBlocked.planId,
+    hostId: "fresh-over-evidence-file",
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.statSync(resolvedPaths.evidenceDir).isFile(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+  fs.rmSync(resolvedPaths.evidenceDir);
+
+  fs.rmSync(resolvedPaths.capacityTransactionsDir, { recursive: true, force: true });
+  fs.symlinkSync(path.join(paths.root, "missing-capacity-transactions"), resolvedPaths.capacityTransactionsDir);
+  const danglingTransactionsBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-capacity-transactions",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(danglingTransactionsBlocked.status, "blocked");
+  assert.ok(danglingTransactionsBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: danglingTransactionsBlocked.planId,
+    hostId: "fresh-over-dangling-capacity-transactions",
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.lstatSync(resolvedPaths.capacityTransactionsDir).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+  fs.rmSync(resolvedPaths.capacityTransactionsDir);
+
+  const emptyLeaseDir = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-empty-state",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(emptyLeaseDir.status, "changes_required");
+  assert.equal(emptyLeaseDir.confirmation.required, true);
+  assert.equal(emptyLeaseDir.host.configured, false);
+});
+
+test("setup blocks a missing host when the state root already has an invalid known-projects catalog", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  fs.mkdirSync(resolvedPaths.stateRoot, { recursive: true });
+  fs.writeFileSync(resolvedPaths.knownProjectsPath, "{not-json\n");
+
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-catalog",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(preview.status, "blocked");
+  assert.equal(preview.confirmation.required, false);
+  assert.ok(preview.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+  assert.deepEqual(
+    preview.prerequisites.find((issue) => issue.id === "known-projects").remediationCommands,
+    [setupCommandWithSelectedPaths("simbroker doctor", resolvedPaths)],
+  );
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "fresh-over-catalog",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+
+  writeJson(resolvedPaths.knownProjectsPath, {
+    projects: {},
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    version: 1,
+  });
+  const validCatalog = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-catalog",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(validCatalog.status, "changes_required");
+  assert.equal(validCatalog.confirmation.required, true);
+  assert.equal(validCatalog.host.configured, false);
+
+  fs.rmSync(resolvedPaths.knownProjectsPath);
+  fs.symlinkSync(path.join(paths.root, "missing-known-projects.json"), resolvedPaths.knownProjectsPath);
+  const danglingCatalog = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-catalog",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(danglingCatalog.status, "blocked");
+  assert.equal(danglingCatalog.confirmation.required, false);
+  assert.ok(danglingCatalog.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: danglingCatalog.planId,
+    hostId: "fresh-over-dangling-catalog",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.knownProjectsPath).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+});
+
+test("setup blocks a missing host when the state root already has an invalid idle policy", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  fs.mkdirSync(resolvedPaths.stateRoot, { recursive: true });
+  fs.writeFileSync(resolvedPaths.idlePolicyPath, "{not-json\n");
+
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-idle-policy",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(preview.status, "blocked");
+  assert.equal(preview.confirmation.required, false);
+  assert.ok(preview.prerequisites.some((issue) =>
+    issue.id === "idle-policy" && issue.status === "blocked"));
+  assert.deepEqual(
+    preview.prerequisites.find((issue) => issue.id === "idle-policy").remediationCommands,
+    [setupCommandWithSelectedPaths("simbroker doctor", resolvedPaths)],
+  );
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "fresh-over-idle-policy",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+
+  writeJson(resolvedPaths.idlePolicyPath, {
+    graceSeconds: 60,
+    version: 1,
+  });
+  const validPolicy = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-idle-policy",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(validPolicy.status, "changes_required");
+  assert.equal(validPolicy.confirmation.required, true);
+  assert.equal(validPolicy.host.configured, false);
+
+  fs.rmSync(resolvedPaths.idlePolicyPath);
+  fs.symlinkSync(path.join(paths.root, "missing-idle-policy.json"), resolvedPaths.idlePolicyPath);
+  const danglingPolicy = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-idle-policy",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(danglingPolicy.status, "blocked");
+  assert.equal(danglingPolicy.confirmation.required, false);
+  assert.ok(danglingPolicy.prerequisites.some((issue) =>
+    issue.id === "idle-policy" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: danglingPolicy.planId,
+    hostId: "fresh-over-dangling-idle-policy",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.idlePolicyPath).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+});
+
+test("setup blocks a missing host when events.ndjson is occupied and not a regular file", { timeout: 5_000 }, () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  fs.mkdirSync(resolvedPaths.stateRoot, { recursive: true });
+  makeFifo(resolvedPaths.eventsPath);
+
+  const fifoBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-events-fifo",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(fifoBlocked.status, "blocked");
+  assert.equal(fifoBlocked.confirmation.required, false);
+  assert.ok(fifoBlocked.prerequisites.some((issue) =>
+    issue.id === "events" && issue.status === "blocked"));
+  assert.deepEqual(
+    fifoBlocked.prerequisites.find((issue) => issue.id === "events").remediationCommands,
+    [setupCommandWithSelectedPaths("simbroker doctor", resolvedPaths)],
+  );
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: fifoBlocked.planId,
+    hostId: "fresh-over-events-fifo",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.eventsPath).isFIFO(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+  fs.rmSync(resolvedPaths.eventsPath);
+
+  fs.symlinkSync(path.join(paths.root, "missing-events.ndjson"), resolvedPaths.eventsPath);
+  const danglingBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-dangling-events",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(danglingBlocked.status, "blocked");
+  assert.ok(danglingBlocked.prerequisites.some((issue) =>
+    issue.id === "events" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: danglingBlocked.planId,
+    hostId: "fresh-over-dangling-events",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.eventsPath).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+  fs.rmSync(resolvedPaths.eventsPath);
+
+  fs.writeFileSync(resolvedPaths.eventsPath, "");
+  fs.chmodSync(resolvedPaths.eventsPath, 0o444);
+  const readOnlyBlocked = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-readonly-events",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(readOnlyBlocked.status, "blocked");
+  assert.equal(readOnlyBlocked.confirmation.required, false);
+  assert.ok(readOnlyBlocked.prerequisites.some((issue) =>
+    issue.id === "events" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: readOnlyBlocked.planId,
+    hostId: "fresh-over-readonly-events",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+  fs.chmodSync(resolvedPaths.eventsPath, 0o644);
+
+  const leftoverEvents = previewSetupBroker(resolvedPaths, {
+    hostId: "fresh-over-regular-events",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(leftoverEvents.status, "changes_required");
+  assert.equal(leftoverEvents.confirmation.required, true);
+  assert.equal(leftoverEvents.host.configured, false);
+});
+
+test("setup blocks a configured host whose known-projects catalog is a dangling symlink", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "configured-dangling-catalog",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "configured-dangling-catalog",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  fs.rmSync(resolvedPaths.knownProjectsPath);
+  fs.symlinkSync(path.join(paths.root, "missing-known-projects.json"), resolvedPaths.knownProjectsPath);
+
+  const blocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.confirmation.required, false);
+  assert.ok(blocked.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: blocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.knownProjectsPath).isSymbolicLink(), true);
+});
+
+test("setup blocks a configured host whose known-projects catalog repeats a purpose id", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "duplicate-catalog-purpose",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "duplicate-catalog-purpose",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const duplicatePurpose = {
+    capability: "interactive-resettable",
+    defaultActorType: "agent",
+    displayName: "Agent UI Session",
+    id: "agent-ui-session",
+  };
+  writeJson(resolvedPaths.knownProjectsPath, {
+    projects: {
+      "demo-app": {
+        lastObservedAt: "2026-01-01T00:00:00.000Z",
+        projectFilePath: path.join(paths.root, "repo/.simulator-broker/project.json"),
+        projectId: "demo-app",
+        projectName: "Demo App",
+        purposes: [
+          duplicatePurpose,
+          {
+            ...duplicatePurpose,
+            displayName: "Agent UI Session Duplicate",
+          },
+        ],
+        repoRoot: path.join(paths.root, "repo"),
+      },
+    },
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    version: 1,
+  });
+
+  const blocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.confirmation.required, false);
+  assert.ok(blocked.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: blocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(
+    readJson(resolvedPaths.knownProjectsPath).projects["demo-app"].purposes.filter(
+      (purpose) => purpose.id === "agent-ui-session",
+    ).length,
+    2,
+  );
+});
+
+test("setup blocks a configured host whose registry is a dangling symlink", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "configured-dangling-registry",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "configured-dangling-registry",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  fs.rmSync(resolvedPaths.registryPath);
+  fs.symlinkSync(path.join(paths.root, "missing-registry.json"), resolvedPaths.registryPath);
+
+  const blocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.confirmation.required, false);
+  assert.ok(blocked.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: blocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.registryPath).isSymbolicLink(), true);
+});
+
+test("setup blocks a configured host whose leases or pins directory is a dangling symlink", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "configured-dangling-leases",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "configured-dangling-leases",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  fs.rmSync(resolvedPaths.leasesDir, { recursive: true, force: true });
+  fs.symlinkSync(path.join(paths.root, "missing-leases"), resolvedPaths.leasesDir);
+
+  const leasesBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(leasesBlocked.status, "blocked");
+  assert.equal(leasesBlocked.confirmation.required, false);
+  assert.ok(leasesBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: leasesBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.lstatSync(resolvedPaths.leasesDir).isSymbolicLink(), true);
+  fs.rmSync(resolvedPaths.leasesDir);
+  fs.mkdirSync(resolvedPaths.leasesDir, { recursive: true });
+
+  fs.rmSync(resolvedPaths.pinsDir, { recursive: true, force: true });
+  fs.symlinkSync(path.join(paths.root, "missing-pins"), resolvedPaths.pinsDir);
+  const pinsBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(pinsBlocked.status, "blocked");
+  assert.ok(pinsBlocked.prerequisites.some((issue) =>
+    issue.id === "leases" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: pinsBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.lstatSync(resolvedPaths.pinsDir).isSymbolicLink(), true);
+});
+
+test("setup blocks a configured host whose capacity-transactions or evidence directory is invalid", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "configured-dangling-setup-dirs",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "configured-dangling-setup-dirs",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  fs.rmSync(resolvedPaths.evidenceDir, { recursive: true, force: true });
+  fs.symlinkSync(path.join(paths.root, "missing-evidence"), resolvedPaths.evidenceDir);
+
+  const evidenceBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(evidenceBlocked.status, "blocked");
+  assert.equal(evidenceBlocked.confirmation.required, false);
+  assert.ok(evidenceBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: evidenceBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.lstatSync(resolvedPaths.evidenceDir).isSymbolicLink(), true);
+  fs.rmSync(resolvedPaths.evidenceDir);
+  fs.mkdirSync(resolvedPaths.evidenceDir, { recursive: true });
+
+  fs.rmSync(resolvedPaths.capacityTransactionsDir, { recursive: true, force: true });
+  fs.writeFileSync(resolvedPaths.capacityTransactionsDir, "occupied\n");
+  const transactionsBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(transactionsBlocked.status, "blocked");
+  assert.ok(transactionsBlocked.prerequisites.some((issue) =>
+    issue.id === "state-root" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: transactionsBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }));
+  assert.equal(fs.statSync(resolvedPaths.capacityTransactionsDir).isFile(), true);
+});
+
+test("setup blocks a configured host whose idle policy is malformed", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "configured-idle-policy",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "configured-idle-policy",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  fs.writeFileSync(resolvedPaths.idlePolicyPath, "{not-json\n");
+
+  const blocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.confirmation.required, false);
+  assert.ok(blocked.prerequisites.some((issue) =>
+    issue.id === "idle-policy" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: blocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(resolvedPaths.idlePolicyPath), true);
+});
+
+test("setup blocks registry and known-projects FIFOs before reading JSON", { timeout: 5_000 }, () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "configured-fifo-state",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "configured-fifo-state",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  fs.rmSync(resolvedPaths.registryPath);
+  makeFifo(resolvedPaths.registryPath);
+  const registryBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(registryBlocked.status, "blocked");
+  assert.ok(registryBlocked.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: registryBlocked.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.lstatSync(resolvedPaths.registryPath).isFIFO(), true);
+  fs.rmSync(resolvedPaths.registryPath);
+
+  fs.rmSync(resolvedPaths.knownProjectsPath);
+  makeFifo(resolvedPaths.knownProjectsPath);
+  const catalogBlocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(catalogBlocked.status, "blocked");
+  assert.ok(catalogBlocked.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+  assert.equal(fs.lstatSync(resolvedPaths.knownProjectsPath).isFIFO(), true);
+  fs.rmSync(resolvedPaths.knownProjectsPath);
+
+  const freshPaths = makePaths();
+  const freshResolved = brokerPaths(freshPaths);
+  fs.mkdirSync(freshResolved.stateRoot, { recursive: true });
+  makeFifo(freshResolved.knownProjectsPath);
+  const freshCatalogBlocked = previewSetupBroker(freshResolved, {
+    hostId: "fresh-fifo-catalog",
+    simctlAdapter: freshPaths.simctl.adapter,
+  });
+  assert.equal(freshCatalogBlocked.status, "blocked");
+  assert.ok(freshCatalogBlocked.prerequisites.some((issue) =>
+    issue.id === "known-projects" && issue.status === "blocked"));
+  assert.equal(fs.existsSync(freshPaths.hostConfigPath), false);
+});
+
+test("setup blocks an existing host whose registry marks an alias for repair", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "unhealthy-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "unhealthy-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-1"].health = "repair-needed";
+  registry.aliases["ui-1"].driftReason = "test-unhealthy";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  const blocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.service.action, "blocked");
+  assert.ok(blocked.prerequisites.some((issue) => issue.alias === "ui-1"));
+  assert.deepEqual(blocked.nextSteps, [
+    setupCommandWithSelectedPaths(`simbroker simulators repair --alias ${shellQuote("ui-1")}`, resolvedPaths),
+  ]);
+});
+
+test("setup quotes aliases that contain whitespace in repair commands", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "quoted-alias-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "quoted-alias-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const hostConfig = readJson(paths.hostConfigPath);
+  const registry = readJson(resolvedPaths.registryPath);
+  const originalAlias = hostConfig.aliases.find((alias) => alias.alias === "ui-1");
+  originalAlias.alias = "QA Phone";
+  registry.aliases["QA Phone"] = {
+    ...registry.aliases["ui-1"],
+    health: "repair-needed",
+    driftReason: "test-unhealthy",
+  };
+  delete registry.aliases["ui-1"];
+  writeJson(paths.hostConfigPath, hostConfig);
+  writeJson(resolvedPaths.registryPath, registry);
+
+  const blocked = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const issue = blocked.prerequisites.find((item) => item.alias === "QA Phone");
+  assert.equal(blocked.status, "blocked");
+  assert.ok(issue);
+  assert.deepEqual(issue.remediationCommands, [
+    setupCommandWithSelectedPaths(`simbroker simulators repair --alias ${shellQuote("QA Phone")}`, resolvedPaths),
+  ]);
+});
+
+test("setup accepts major-only requirements but does not recreate an arbitrary missing registry", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "existing-major-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "existing-major-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const hostConfig = readJson(paths.hostConfigPath);
+  const registry = readJson(resolvedPaths.registryPath);
+  hostConfig.aliases = hostConfig.aliases.map((alias) => ({ ...alias, iosVersion: "18" }));
+  writeJson(paths.hostConfigPath, hostConfig);
+
+  const healthy = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
+  assert.notEqual(healthy.status, "blocked");
+
+  fs.rmSync(resolvedPaths.registryPath);
+  const ambiguousMissingRegistry = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
+  assert.equal(ambiguousMissingRegistry.status, "blocked");
+  assert.ok(ambiguousMissingRegistry.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+  writeJson(resolvedPaths.registryPath, registry);
+
+  hostConfig.aliases[0].displayName = "Custom Manual iPhone";
+  writeJson(paths.hostConfigPath, hostConfig);
+  fs.rmSync(resolvedPaths.registryPath);
+  const missingRegistry = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
+  assert.equal(missingRegistry.status, "blocked");
+  assert.ok(missingRegistry.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: missingRegistry.planId,
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.payload?.reasonCode === "setup-prerequisite-failed");
+  assert.equal(fs.existsSync(resolvedPaths.registryPath), false);
+});
+
+test("setup missing-registry recovery requires the selected runtime and device types", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "registry-identity",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "registry-identity",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  fs.rmSync(resolvedPaths.registryPath);
+
+  const state = readJson(paths.simctl.statePath);
+  const selectedRuntimeId = state.runtimes[0].identifier;
+  const alternateRuntimeId = `${selectedRuntimeId}-Alternate`;
+  state.runtimes.push({ ...state.runtimes[0], identifier: alternateRuntimeId });
+  state.devices = state.devices.map((device) => ({
+    ...device,
+    runtimeIdentifier: alternateRuntimeId,
+  }));
+  writeJson(paths.simctl.statePath, state);
+
+  const runtimeMismatch = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
+  assert.equal(runtimeMismatch.status, "blocked");
+  assert.ok(runtimeMismatch.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+
+  const nonPreferredDeviceType = {
+    identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation",
+    name: "iPhone SE (3rd generation)",
+    productFamily: "iPhone",
+  };
+  state.devicetypes.push(nonPreferredDeviceType);
+  state.runtimes[0].supportedDeviceTypes.push(nonPreferredDeviceType);
+  const configuredSimulatorId = readJson(paths.hostConfigPath).aliases[0].simulatorId;
+  state.devices = state.devices.map((device) => ({
+    ...device,
+    deviceTypeIdentifier: device.udid === configuredSimulatorId
+      ? nonPreferredDeviceType.identifier
+      : device.deviceTypeIdentifier,
+    runtimeIdentifier: selectedRuntimeId,
+  }));
+  writeJson(paths.simctl.statePath, state);
+
+  const deviceTypeMismatch = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
+  assert.equal(deviceTypeMismatch.status, "blocked");
+  assert.ok(deviceTypeMismatch.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "blocked"));
+});
+
+test("setup resumes registry initialization after a post-commit inventory failure", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "registry-resume-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  let failPostCommitInventory = true;
+  const failingAdapter = {
+    ...paths.simctl.adapter,
+    listDevices() {
+      if (failPostCommitInventory && fs.existsSync(paths.hostConfigPath)) {
+        failPostCommitInventory = false;
+        throw new Error("post-commit inventory failed");
+      }
+      return paths.simctl.adapter.listDevices();
+    },
+  };
+
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "registry-resume-setup",
+    simctlAdapter: failingAdapter,
+  }), /post-commit inventory failed/);
+  assert.equal(fs.existsSync(paths.hostConfigPath), true);
+  assert.equal(fs.existsSync(resolvedPaths.registryPath), false);
+
+  const recoveryPreview = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
+  assert.equal(recoveryPreview.status, "changes_required");
+  const recovered = applySetupBroker(resolvedPaths, {
+    confirmPlanId: recoveryPreview.planId,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(recovered.status, "ready");
+  assert.equal(fs.existsSync(resolvedPaths.registryPath), true);
+});
+
+test("setup keeps missing-registry recovery blocked for a non-starter host", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "non-starter-registry",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "non-starter-registry",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const hostConfig = readJson(paths.hostConfigPath);
+  hostConfig.aliases[0].displayName = "Custom Manual Device";
+  writeJson(paths.hostConfigPath, hostConfig);
+  fs.rmSync(resolvedPaths.registryPath);
+
+  const blocked = previewSetupBroker(resolvedPaths, { simctlAdapter: paths.simctl.adapter });
+
+  assert.equal(blocked.status, "blocked");
+  assert.deepEqual(blocked.nextSteps, [
+    setupCommandWithSelectedPaths("simbroker doctor", resolvedPaths),
+  ]);
+});
+
+test("setup rolls back every pre-commit create failure and cooperative interruption", () => {
+  for (let failurePosition = 1; failurePosition <= 6; failurePosition += 1) {
+    const paths = makePaths();
+    const resolvedPaths = brokerPaths(paths);
+    const preview = previewSetupBroker(resolvedPaths, {
+      hostId: `rollback-${failurePosition}`,
+      simctlAdapter: paths.simctl.adapter,
+    });
+    const baselineIds = readJson(paths.simctl.statePath).devices.map((device) => device.udid).sort();
+    let createCount = 0;
+    const failingAdapter = {
+      ...paths.simctl.adapter,
+      createDevice(name, deviceTypeId, runtimeId) {
+        createCount += 1;
+        const simulatorId = paths.simctl.adapter.createDevice(name, deviceTypeId, runtimeId);
+        if (createCount === failurePosition) {
+          throw new Error(`create failed at ${failurePosition}`);
+        }
+        return simulatorId;
+      },
+    };
+    assert.throws(() => applySetupBroker(resolvedPaths, {
+      confirmPlanId: preview.planId,
+      hostId: `rollback-${failurePosition}`,
+      simctlAdapter: failingAdapter,
+    }), new RegExp(`create failed at ${failurePosition}`));
+    assert.equal(fs.existsSync(paths.hostConfigPath), false);
+    assert.deepEqual(readJson(paths.simctl.statePath).devices.map((device) => device.udid).sort(), baselineIds);
+  }
+
+  const interruptedPaths = makePaths();
+  const interruptedResolvedPaths = brokerPaths(interruptedPaths);
+  const interruptedPreview = previewSetupBroker(interruptedResolvedPaths, {
+    hostId: "interrupted-setup",
+    simctlAdapter: interruptedPaths.simctl.adapter,
+  });
+  const baselineIds = readJson(interruptedPaths.simctl.statePath).devices.map((device) => device.udid).sort();
+  let createCount = 0;
+  const interruptingAdapter = {
+    ...interruptedPaths.simctl.adapter,
+    createDevice(name, deviceTypeId, runtimeId) {
+      createCount += 1;
+      return interruptedPaths.simctl.adapter.createDevice(name, deviceTypeId, runtimeId);
+    },
+  };
+  assert.throws(() => applySetupBroker(interruptedResolvedPaths, {
+    cancellationSignalName: "SIGTERM",
+    confirmPlanId: interruptedPreview.planId,
+    hostId: "interrupted-setup",
+    isCancelled: () => createCount >= 2,
+    simctlAdapter: interruptingAdapter,
+  }), (error) => error.payload?.reasonCode === "setup-interrupted" && error.exitCode === 143);
+  assert.equal(fs.existsSync(interruptedPaths.hostConfigPath), false);
+  assert.deepEqual(readJson(interruptedPaths.simctl.statePath).devices.map((device) => device.udid).sort(), baselineIds);
+});
+
+test("setup rollback deletes only attempt-attributed simulators", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const hostId = "attributed-rollback";
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const firstDevice = preview.devices[0];
+  const externalId = "EXTERNAL-SAME-NAME";
+  let createCount = 0;
+  const failingAdapter = {
+    ...paths.simctl.adapter,
+    createDevice(name, deviceTypeId, runtimeId) {
+      createCount += 1;
+      if (createCount === 1) {
+        const state = readJson(paths.simctl.statePath);
+        state.devices.push(createDeviceRecord({
+          deviceTypeIdentifier: deviceTypeId,
+          name: firstDevice.simulatorName,
+          runtimeIdentifier: runtimeId,
+          runtimeVersion: firstDevice.runtimeVersion,
+          udid: externalId,
+        }));
+        writeJson(paths.simctl.statePath, state);
+        paths.simctl.adapter.createDevice(name, deviceTypeId, runtimeId);
+        throw new Error("create returned an error after the side effect");
+      }
+      return paths.simctl.adapter.createDevice(name, deviceTypeId, runtimeId);
+    },
+  };
+
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId,
+    setupAttemptId: "ROLLBACK-TEST",
+    simctlAdapter: failingAdapter,
+  }), /after the side effect/);
+
+  const remaining = readJson(paths.simctl.statePath).devices;
+  assert.ok(remaining.some((device) => device.udid === externalId));
+  assert.equal(remaining.some((device) => device.name.includes("[setup ROLLBACK-TEST")), false);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+});
+
+test("setup rollback attempts every created device and preserves the provisioning failure", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const hostId = "complete-rollback-attempt";
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const baselineIds = new Set(readJson(paths.simctl.statePath).devices.map((device) => device.udid));
+  const attemptedDeletes = [];
+  let createCount = 0;
+  let failedDeleteId = null;
+  const failingAdapter = {
+    ...paths.simctl.adapter,
+    createDevice(name, deviceTypeId, runtimeId) {
+      createCount += 1;
+      const simulatorId = paths.simctl.adapter.createDevice(name, deviceTypeId, runtimeId);
+      if (createCount === 4) {
+        throw new Error("primary provisioning failure");
+      }
+      return simulatorId;
+    },
+    deleteDevice(simulatorId) {
+      attemptedDeletes.push(simulatorId);
+      if (failedDeleteId === null) {
+        failedDeleteId = simulatorId;
+        throw new Error("one rollback delete failed");
+      }
+      return paths.simctl.adapter.deleteDevice(simulatorId);
+    },
+  };
+
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId,
+    simctlAdapter: failingAdapter,
+  }), (error) => {
+    assert.match(error.message, /primary provisioning failure/);
+    assert.equal(error.payload?.rollbackFailureCount, 1);
+    assert.deepEqual(error.payload?.rollbackFailures, [{
+      error: "one rollback delete failed",
+      operation: "delete",
+      simulatorId: failedDeleteId,
+    }]);
+    return true;
+  });
+
+  assert.equal(new Set(attemptedDeletes).size, 4);
+  const remainingCreatedIds = readJson(paths.simctl.statePath).devices
+    .map((device) => device.udid)
+    .filter((simulatorId) => !baselineIds.has(simulatorId));
+  assert.deepEqual(remainingCreatedIds, [failedDeleteId]);
+  assert.equal(fs.existsSync(paths.hostConfigPath), false);
+});
+
+test("setup preserves devices and host config after the atomic host commit point", () => {
+  const paths = makePaths();
+  const resolvedPaths = brokerPaths(paths);
+  const preview = previewSetupBroker(resolvedPaths, {
+    hostId: "post-commit-setup",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.throws(() => applySetupBroker(resolvedPaths, {
+    confirmPlanId: preview.planId,
+    hostId: "post-commit-setup",
+    hostWriteFailStage: "after-rename",
+    simctlAdapter: paths.simctl.adapter,
+  }), (error) => error.hostConfigCommitted === true);
+  assert.equal(readJson(paths.hostConfigPath).aliases.length, 6);
+  assert.ok(readJson(paths.simctl.statePath).devices.length >= 10);
+
+  const recoveryPreview = previewSetupBroker(resolvedPaths, {
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.notEqual(recoveryPreview.status, "blocked");
+  assert.ok(recoveryPreview.prerequisites.some((issue) =>
+    issue.id === "registry" && issue.status === "info"));
+  const recovered = applySetupBroker(resolvedPaths, {
+    confirmPlanId: recoveryPreview.planId,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(recovered.devices.created, 0);
+  assert.equal(fs.existsSync(resolvedPaths.registryPath), true);
 });
 
 test("host init --bootstrap-config names --ios-version when no runtime matches the starter iOS version", () => {
@@ -6100,11 +8612,66 @@ test("forced-abort avoids command process-group termination when the requester i
   writeBaseHostConfig(paths.hostConfigPath);
   writeBaseProject(paths.projectFilePath);
   const resolvedPaths = brokerPaths(paths);
+  const ownerPid = unusedFixturePid(1000);
+  const commandPid = unusedFixturePid(2000, [ownerPid]);
+  const requesterPid = process.pid;
+  const processes = makeProcessFixture([
+    { command: "bash", pgid: ownerPid, pid: ownerPid, ppid: 1, rssBytes: 2 * 1024 * 1024 },
+    { command: "xcodebuild test SIM-UI-1", pgid: commandPid, pid: commandPid, ppid: ownerPid, rssBytes: 40 * 1024 * 1024 },
+    { command: "node client/bin/simbroker.mjs lease contain", pgid: commandPid, pid: requesterPid, ppid: commandPid, rssBytes: 5 * 1024 * 1024 },
+  ]);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-cleanup",
+    actorType: "agent",
+    ownerPgid: ownerPid,
+    ownerPid,
+    processExists: (pid) => pid === ownerPid,
+    processSampler: liveProcessSampler({ command: "with-broker-lease", pgid: ownerPid, pid: ownerPid }),
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  registerLeaseProcessBroker(resolvedPaths, {
+    command: "xcodebuild test",
+    commandPgid: commandPid,
+    commandPid,
+    leaseId: lease.leaseId,
+    processExists: (pid) => pid === ownerPid,
+    processSampler: processes.sampler,
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  const result = containLeaseBroker(resolvedPaths, {
+    leaseId: lease.leaseId,
+    processController: processes.controller,
+    processExists: (pid) => pid === ownerPid,
+    processSampler: processes.sampler,
+    reason: "forced-abort",
+    requesterPid,
+    simctlAdapter: paths.simctl.adapter,
+    termWaitMs: 0,
+  });
+
+  assert.equal(result.contained, true);
+  assert.equal(processes.controller.currentPid, FIXTURE_CONTROLLER_PID);
+  assert.notEqual(processes.controller.currentPid, requesterPid);
+  assert.equal(processes.isAlive(requesterPid), true);
+  assert.equal(processes.isAlive(commandPid), false);
+  assert.equal(result.cleanupActions.some((action) => action.target === "process-group" && action.pgid === commandPid), false);
+  assert.ok(result.cleanupActions.some((action) => action.pid === requesterPid && action.skipped === true && action.why === "active-containment-requester"));
+});
+
+test("forced-abort records current-broker-process when the controller pid is lease-owned", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
   const processes = makeProcessFixture([
     { command: "bash", pgid: 1000, pid: 1000, ppid: 1, rssBytes: 2 * 1024 * 1024 },
-    { command: "xcodebuild test SIM-UI-1", pgid: 2000, pid: 2000, ppid: 1000, rssBytes: 40 * 1024 * 1024 },
-    { command: "node client/bin/simbroker.mjs lease contain", pgid: 2000, pid: 2500, ppid: 2000, rssBytes: 5 * 1024 * 1024 },
+    { command: "xcodebuild test SIM-UI-1", pgid: 1000, pid: 2000, ppid: 1000, rssBytes: 40 * 1024 * 1024 },
   ]);
+  processes.controller.currentPid = 2000;
 
   initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
   const lease = acquireLeaseBroker(resolvedPaths, {
@@ -6119,7 +8686,6 @@ test("forced-abort avoids command process-group termination when the requester i
   }).lease;
   registerLeaseProcessBroker(resolvedPaths, {
     command: "xcodebuild test",
-    commandPgid: 2000,
     commandPid: 2000,
     leaseId: lease.leaseId,
     processExists: (pid) => pid === 1000,
@@ -6133,16 +8699,13 @@ test("forced-abort avoids command process-group termination when the requester i
     processExists: (pid) => pid === 1000,
     processSampler: processes.sampler,
     reason: "forced-abort",
-    requesterPid: 2500,
     simctlAdapter: paths.simctl.adapter,
     termWaitMs: 0,
   });
 
   assert.equal(result.contained, true);
-  assert.equal(processes.isAlive(2500), true);
-  assert.equal(processes.isAlive(2000), false);
-  assert.equal(result.cleanupActions.some((action) => action.target === "process-group" && action.pgid === 2000), false);
-  assert.ok(result.cleanupActions.some((action) => action.pid === 2500 && action.skipped === true && action.why === "active-containment-requester"));
+  assert.equal(processes.isAlive(2000), true);
+  assert.ok(result.cleanupActions.some((action) => action.pid === 2000 && action.skipped === true && action.why === "current-broker-process"));
 });
 
 test("forced-abort does not group-kill when the owner process group is unknown", () => {

@@ -136,14 +136,18 @@ private final class ProcessRunState: @unchecked Sendable {
         return
       }
 
-      let message = envelope.error ?? (stderrText.isEmpty ? "Broker CLI command failed." : stderrText)
-      finish(.failure(BrokerCLICommandError.commandFailed(message)))
+      finish(.failure(BrokerCLICommandError.commandFailed(
+        envelope.failureDisplayMessage(stderrText: stderrText)
+      )))
     } catch {
       finish(.failure(BrokerCLICommandError.invalidJSONResponse(cliPath)))
     }
   }
 
-  func terminateAndFail(_ error: Error) {
+  func terminateAndFail(
+    _ error: Error,
+    escalationNanoseconds: UInt64 = processTerminationEscalationNanoseconds
+  ) {
     var shouldInstallEscalationTask = false
     lock.lock()
     if completedResult == nil {
@@ -158,7 +162,7 @@ private final class ProcessRunState: @unchecked Sendable {
     if shouldInstallEscalationTask {
       installKillEscalationTask(Task { [weak self] in
         do {
-          try await Task.sleep(nanoseconds: processTerminationEscalationNanoseconds)
+          try await Task.sleep(nanoseconds: escalationNanoseconds)
         } catch {
           return
         }
@@ -265,13 +269,139 @@ private final class ProcessRunState: @unchecked Sendable {
   }
 }
 
+struct BrokerCLIDoctorIssue: Decodable, Sendable, Equatable {
+  let alias: String?
+  let error: String?
+  let health: String?
+  let reasonCode: String?
+  let remediationCommands: [String]?
+}
+
 struct BrokerCLICommandEnvelope: Decodable, Sendable {
+  let completedStages: [String]?
+  let doctorIssues: [BrokerCLIDoctorIssue]?
   let error: String?
   let exitCode: Int?
+  let failedStage: String?
+  let hostCommitted: Bool?
+  let logPath: String?
   let ok: Bool?
   let reasonCode: String?
+  let recoveryCommand: String?
+  let rollbackFailureCount: Int?
+  let setupPlan: BrokerSetupPlan?
   let started: Bool?
+  let status: String?
   let unchanged: Bool?
+
+  init(
+    completedStages: [String]? = nil,
+    doctorIssues: [BrokerCLIDoctorIssue]? = nil,
+    error: String?,
+    exitCode: Int?,
+    failedStage: String? = nil,
+    hostCommitted: Bool? = nil,
+    logPath: String? = nil,
+    ok: Bool?,
+    reasonCode: String?,
+    recoveryCommand: String? = nil,
+    rollbackFailureCount: Int? = nil,
+    setupPlan: BrokerSetupPlan? = nil,
+    started: Bool?,
+    status: String? = nil,
+    unchanged: Bool?
+  ) {
+    self.completedStages = completedStages
+    self.doctorIssues = doctorIssues
+    self.error = error
+    self.exitCode = exitCode
+    self.failedStage = failedStage
+    self.hostCommitted = hostCommitted
+    self.logPath = logPath
+    self.ok = ok
+    self.reasonCode = reasonCode
+    self.recoveryCommand = recoveryCommand
+    self.rollbackFailureCount = rollbackFailureCount
+    self.setupPlan = setupPlan
+    self.started = started
+    self.status = status
+    self.unchanged = unchanged
+  }
+
+  init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    completedStages = try container.decodeIfPresent([String].self, forKey: .completedStages)
+    doctorIssues = try container.decodeIfPresent([BrokerCLIDoctorIssue].self, forKey: .doctorIssues)
+    error = try container.decodeIfPresent(String.self, forKey: .error)
+    exitCode = try container.decodeIfPresent(Int.self, forKey: .exitCode)
+    failedStage = try container.decodeIfPresent(String.self, forKey: .failedStage)
+    hostCommitted = try container.decodeIfPresent(Bool.self, forKey: .hostCommitted)
+    logPath = try container.decodeIfPresent(String.self, forKey: .logPath)
+    ok = try container.decodeIfPresent(Bool.self, forKey: .ok)
+    reasonCode = try container.decodeIfPresent(String.self, forKey: .reasonCode)
+    recoveryCommand = try container.decodeIfPresent(String.self, forKey: .recoveryCommand)
+    rollbackFailureCount = try container.decodeIfPresent(Int.self, forKey: .rollbackFailureCount)
+    setupPlan = try? BrokerSetupPlan(from: decoder)
+    started = try container.decodeIfPresent(Bool.self, forKey: .started)
+    status = try container.decodeIfPresent(String.self, forKey: .status)
+    unchanged = try container.decodeIfPresent(Bool.self, forKey: .unchanged)
+  }
+
+  func failureDisplayMessage(stderrText: String = "") -> String {
+    var message = error ?? (stderrText.isEmpty ? "Broker CLI command failed." : stderrText)
+    if let failedStage {
+      message += " Failed stage: \(failedStage)."
+    }
+    if let completedStages, completedStages.isEmpty == false {
+      message += " Completed: \(completedStages.joined(separator: ", "))."
+    }
+    if let rollbackFailureCount, rollbackFailureCount > 0 {
+      message += " Rollback cleanup was incomplete for \(rollbackFailureCount) Simulator operation(s)."
+    }
+    if let logPath, logPath.isEmpty == false {
+      message += " Service log: \(logPath)."
+    }
+    if let doctorIssues, doctorIssues.isEmpty == false {
+      let summaries = doctorIssues.map { issue in
+        var summary: String
+        if let alias = issue.alias, alias.isEmpty == false {
+          let health = issue.health.map { " (\($0))" } ?? ""
+          summary = "\(alias)\(health)"
+        } else if let error = issue.error, error.isEmpty == false {
+          summary = error
+        } else {
+          summary = issue.reasonCode ?? "unknown"
+        }
+        let commands = (issue.remediationCommands ?? []).filter { $0.isEmpty == false }
+        if commands.isEmpty == false {
+          summary += "; repair: \(commands.joined(separator: "; "))"
+        }
+        return summary
+      }
+      message += " Doctor issues: \(summaries.joined(separator: "; "))."
+    }
+    if let recoveryCommand {
+      message += " Recovery: \(recoveryCommand)"
+    }
+    return message
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case completedStages
+    case doctorIssues
+    case error
+    case exitCode
+    case failedStage
+    case hostCommitted
+    case logPath
+    case ok
+    case reasonCode
+    case recoveryCommand
+    case rollbackFailureCount
+    case started
+    case status
+    case unchanged
+  }
 }
 
 enum BrokerCLICommandError: LocalizedError, Sendable {
@@ -386,6 +516,10 @@ struct ProcessBrokerLocalCommandRunner: BrokerLocalCommandRunning {
     timeoutNanoseconds ?? BrokerLocalCommandTimeouts.timeoutNanoseconds(for: arguments)
   }
 
+  func resolvedCancellationEscalationNanoseconds(for arguments: [String]) -> UInt64 {
+    BrokerLocalCommandTimeouts.cancellationEscalationNanoseconds(for: arguments)
+  }
+
   func run(cliPath: URL, arguments: [String]) async throws -> BrokerCLICommandEnvelope {
     guard FileManager.default.isExecutableFile(atPath: cliPath.path) else {
       throw BrokerCLICommandError.missingCLI(cliPath)
@@ -411,6 +545,7 @@ struct ProcessBrokerLocalCommandRunner: BrokerLocalCommandRunning {
       processTreeResolver: processTreeResolver
     )
     let effectiveTimeoutNanoseconds = resolvedTimeoutNanoseconds(for: arguments)
+    let cancellationEscalationNanoseconds = resolvedCancellationEscalationNanoseconds(for: arguments)
 
     return try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in
@@ -435,17 +570,28 @@ struct ProcessBrokerLocalCommandRunner: BrokerLocalCommandRunning {
           return
         }
 
-        state.installTimeoutTask(Task { [state, cliPath, effectiveTimeoutNanoseconds] in
+        state.installTimeoutTask(Task { [
+          state,
+          cliPath,
+          effectiveTimeoutNanoseconds,
+          cancellationEscalationNanoseconds
+        ] in
           do {
             try await Task.sleep(nanoseconds: effectiveTimeoutNanoseconds)
           } catch {
             return
           }
-          state.terminateAndFail(BrokerCLICommandError.processTimedOut(cliPath))
+          state.terminateAndFail(
+            BrokerCLICommandError.processTimedOut(cliPath),
+            escalationNanoseconds: cancellationEscalationNanoseconds
+          )
         })
       }
     } onCancel: {
-      state.terminateAndFail(CancellationError())
+      state.terminateAndFail(
+        CancellationError(),
+        escalationNanoseconds: cancellationEscalationNanoseconds
+      )
     }
   }
 }
@@ -465,6 +611,16 @@ private enum BrokerLocalCommandTimeouts {
   private static let serviceStartStateLoads = 2
   private static let simctlCommandTimeoutSeconds = 120
   private static let simctlInventoryCommandsPerStateLoad = 3
+  // One in-flight simctl command, plus two 3-command inventories
+  // (indeterminate create recovery and rollback attribution) and six deletes.
+  private static let setupCancellationActiveOperationCount = 1
+  private static let setupCancellationOperationCount = setupCancellationActiveOperationCount
+    + simctlInventoryCommandsPerStateLoad
+    + simctlInventoryCommandsPerStateLoad
+    + serviceStartHostAliasCount
+  private static let setupCancellationOverheadSeconds = 60
+  private static let setupMaxSimctlCommandsUnderCapacityLock = 30
+  private static let setupPreviewTimeoutSeconds = 600
   private static let staleContainmentProcessSamplerInvocations = 8
   private static let stateLoadBudgetSeconds = (simctlInventoryCommandsPerStateLoad * simctlCommandTimeoutSeconds)
     + (processSamplerInvocationsPerStateLoad * processSamplerTimeoutSeconds)
@@ -486,6 +642,13 @@ private enum BrokerLocalCommandTimeouts {
 
   static func timeoutNanoseconds(for arguments: [String]) -> UInt64 {
     let flags = flagMap(from: arguments)
+    if let setupIndex = arguments.firstIndex(of: "setup") {
+      let isApply = arguments[(setupIndex + 1)...].contains("--apply")
+      if isApply == false {
+        return secondsToNanoseconds(setupPreviewTimeoutSeconds)
+      }
+      return secondsToNanoseconds(setupApplyTimeoutSeconds(paths: runtimePaths(from: flags)))
+    }
     if let commandGroup = localCommandGroup(in: arguments),
        commandGroup == ("service", "start") {
       let paths = runtimePaths(from: flags)
@@ -501,8 +664,45 @@ private enum BrokerLocalCommandTimeouts {
     return secondsToNanoseconds((request.timeoutBudget(paths: paths).transferTimeoutSeconds * commandTransferWindowCount) + commandLauncherOverheadSeconds)
   }
 
+  static func cancellationEscalationNanoseconds(for arguments: [String]) -> UInt64 {
+    if let setupIndex = arguments.firstIndex(of: "setup"),
+       arguments[(setupIndex + 1)...].contains("--apply") {
+      return secondsToNanoseconds(
+        (setupCancellationOperationCount * simctlCommandTimeoutSeconds)
+          + setupCancellationOverheadSeconds
+      )
+    }
+    return processTerminationEscalationNanoseconds
+  }
+
   private static func secondsToNanoseconds(_ seconds: Int) -> UInt64 {
     UInt64(max(1, seconds)) * 1_000_000_000
+  }
+
+  private static func setupCapacityLockTimeoutSeconds() -> Int {
+    (setupMaxSimctlCommandsUnderCapacityLock * simctlCommandTimeoutSeconds)
+      + defaultLockTimeoutSeconds
+  }
+
+  private static func setupFinishingStageBudgetSeconds(paths: BrokerRuntimePaths?) -> Int {
+    let hostAliasCount = serviceStartHostAliasCount(from: paths)
+    let snapshotTransferTimeoutSeconds = BrokerCommandRequest(command: "snapshot", group: "app", options: [:])
+      .timeoutBudget(paths: paths)
+      .transferTimeoutSeconds
+    let doctorTransferTimeoutSeconds = BrokerCommandRequest(command: "status", group: "doctor", options: [:])
+      .timeoutBudget(paths: paths)
+      .transferTimeoutSeconds
+    return serviceStartTimeoutSeconds(paths: paths, hostAliasCount: hostAliasCount)
+      + snapshotTransferTimeoutSeconds
+      + doctorTransferTimeoutSeconds
+  }
+
+  private static func setupApplyTimeoutSeconds(paths: BrokerRuntimePaths?) -> Int {
+    let lockHeldProvisioningBudget = setupCapacityLockTimeoutSeconds()
+    return lockHeldProvisioningBudget
+      + lockHeldProvisioningBudget
+      + setupFinishingStageBudgetSeconds(paths: paths)
+      + commandLauncherOverheadSeconds
   }
 
   private static func serviceStartTimeoutSeconds(paths: BrokerRuntimePaths?, hostAliasCount: Int) -> Int {

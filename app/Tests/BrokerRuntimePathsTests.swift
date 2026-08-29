@@ -12,17 +12,21 @@ final class BrokerRuntimePathsTests: XCTestCase {
         "/tmp/host-from-args.json",
         "--cli-path",
         "/tmp/cli-from-args",
+        "--service-socket",
+        "/tmp/socket-from-args.sock",
       ],
       environment: [
         BrokerRuntimePaths.stateRootEnvironmentKey: "/tmp/from-env",
         BrokerRuntimePaths.hostConfigEnvironmentKey: "/tmp/host-from-env.json",
         BrokerRuntimePaths.cliPathEnvironmentKey: "/tmp/cli-from-env",
+        BrokerRuntimePaths.serviceSocketEnvironmentKey: "/tmp/socket-from-env.sock",
       ]
     )
 
     XCTAssertEqual(paths.stateRoot.path, "/tmp/from-args")
     XCTAssertEqual(paths.hostConfigURL.path, "/tmp/host-from-args.json")
     XCTAssertEqual(paths.configuredCLIURL?.path, "/tmp/cli-from-args")
+    XCTAssertEqual(paths.serviceSocketURL?.path, "/tmp/socket-from-args.sock")
   }
 
   func testLaunchContextFallsBackFromEnvironmentToBuiltInDefaults() {
@@ -32,11 +36,13 @@ final class BrokerRuntimePathsTests: XCTestCase {
         BrokerRuntimePaths.stateRootEnvironmentKey: "/tmp/from-env",
         BrokerRuntimePaths.hostConfigEnvironmentKey: "/tmp/host-from-env.json",
         BrokerRuntimePaths.cliPathEnvironmentKey: "/tmp/cli-from-env",
+        BrokerRuntimePaths.serviceSocketEnvironmentKey: "/tmp/socket-from-env.sock",
       ]
     )
     XCTAssertEqual(environmentPaths.stateRoot.path, "/tmp/from-env")
     XCTAssertEqual(environmentPaths.hostConfigURL.path, "/tmp/host-from-env.json")
     XCTAssertEqual(environmentPaths.configuredCLIURL?.path, "/tmp/cli-from-env")
+    XCTAssertEqual(environmentPaths.serviceSocketURL?.path, "/tmp/socket-from-env.sock")
 
     let defaultsPaths = BrokerRuntimePaths.fromLaunchContext(
       arguments: ["SimulatorBrokerApp"],
@@ -45,6 +51,7 @@ final class BrokerRuntimePathsTests: XCTestCase {
     XCTAssertEqual(defaultsPaths.stateRoot.path, BrokerRuntimePaths.defaultStateRoot().path)
     XCTAssertEqual(defaultsPaths.hostConfigURL.path, BrokerRuntimePaths.defaultHostConfig().path)
     XCTAssertNil(defaultsPaths.configuredCLIURL)
+    XCTAssertNil(defaultsPaths.serviceSocketURL)
   }
 
   func testLaunchContextInfersSimulatorPaneFromAliasArgument() {

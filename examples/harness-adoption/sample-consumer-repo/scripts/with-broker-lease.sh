@@ -252,7 +252,7 @@ fi
 containment_triggered="false"
 if [[ -n "$memory_ceiling_bytes" || -n "$memory_ceiling_mib" ]]; then
   while kill -0 "$command_pid" 2>/dev/null; do
-    sleep "$(node -e 'const ms=Number(process.argv[1] || 1000); console.log(Math.max(ms, 100) / 1000)' "$monitor_interval_ms")"
+    sleep "$(node -e 'const ms=Number(process.argv[1] || 1000); process.stdout.write(String(Math.max(ms, 100) / 1000))' "$monitor_interval_ms")"
     if command_has_exited; then
       break
     fi

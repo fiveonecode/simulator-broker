@@ -9,8 +9,7 @@
       "capability": "interactive-resettable",
       "defaultActorType": "agent",
       "requires": {
-        "deviceFamily": "iPhone",
-        "iosVersion": "18"
+        "deviceFamily": "iPhone"
       }
     },
     {
@@ -25,8 +24,7 @@
       "capability": "automation-resettable",
       "defaultActorType": "ci",
       "requires": {
-        "deviceFamily": "iPhone",
-        "iosVersion": "18"
+        "deviceFamily": "iPhone"
       }
     },
     {

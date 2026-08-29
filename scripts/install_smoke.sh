@@ -14,7 +14,6 @@ app_process_name="SimulatorBrokerApp"
 launched_app_pids_path="$tmp_root/launched-app-pids.txt"
 lease_acquired=0
 lease_released=0
-service_started=0
 service_stopped=0
 preexisting_simulators_path="$tmp_root/preexisting-simulators.txt"
 default_install_metadata_path="${HOME}/Library/Application Support/SimulatorBroker/install/install.json"
@@ -181,7 +180,7 @@ cleanup_broker_resources() {
       > "$(artifact_path lease-release-cleanup.json)" 2>&1 || true
   fi
 
-  if [[ "$service_started" -eq 1 && "$service_stopped" -eq 0 && -x "$cli_path" ]]; then
+  if [[ "$service_stopped" -eq 0 && -x "$cli_path" ]]; then
     "$cli_path" \
       --host-config "$host_config_path" \
       --state-root "$state_root" \
@@ -334,11 +333,33 @@ export SIMBROKER_STATE_ROOT="$state_root"
 export PATH="$bin_dir:$PATH"
 
 record_simulator_inventory "$preexisting_simulators_path"
-log_command host-init simbroker host init --bootstrap-config --host-id install-smoke-host
+log_command setup-preview simbroker setup --json --host-id install-smoke-host
+setup_plan_id="$(node -e '
+  const fs = require("node:fs");
+  const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  if (payload.mode !== "preview" || payload.status !== "changes_required" || payload.devices?.length !== 6) {
+    throw new Error("Setup preview did not describe the six-device starter plan.");
+  }
+  process.stdout.write(payload.planId);
+' "$(artifact_path setup-preview.json)")"
+log_command setup-apply simbroker setup --apply --confirm "$setup_plan_id" --host-id install-smoke-host --json
+node -e '
+  const fs = require("node:fs");
+  const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  if (payload.status !== "ready" || payload.devices?.total !== 6 || payload.service?.running !== true || payload.snapshot?.ready !== true || payload.health?.ok !== true) {
+    throw new Error("Confirmed setup did not finish with six healthy aliases and a running service.");
+  }
+' "$(artifact_path setup-apply.json)"
 log_command project-init simbroker project init --repo-root "$repo_path" --project-id install-smoke --project-name "Install Smoke"
+node -e '
+  const fs = require("node:fs");
+  const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const uiPurposes = payload.projectConfig?.purposes?.filter((purpose) => purpose.requires?.deviceFamily === "iPhone") ?? [];
+  if (uiPurposes.length === 0 || uiPurposes.some((purpose) => Object.hasOwn(purpose.requires, "iosVersion"))) {
+    throw new Error("Default project scaffold must be version-agnostic.");
+  }
+' "$(artifact_path project-init.json)"
 log_command project-validate simbroker project validate --repo-root "$repo_path"
-log_command service-start simbroker service start
-service_started=1
 log_command service-status simbroker service status
 log_command lease-acquire simbroker lease acquire \
   --repo-root "$repo_path" \
@@ -358,6 +379,20 @@ test -f "$state_root/app-snapshot.json"
 launch_installed_app_smoke "$app_path"
 log_command lease-release simbroker lease release --lease-file "$lease_file"
 lease_released=1
+log_command setup-rerun-preview simbroker setup --json
+setup_rerun_plan_id="$(node -e '
+  const fs = require("node:fs");
+  const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  process.stdout.write(payload.planId);
+' "$(artifact_path setup-rerun-preview.json)")"
+log_command setup-rerun-apply simbroker setup --apply --confirm "$setup_rerun_plan_id" --json
+node -e '
+  const fs = require("node:fs");
+  const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  if (payload.devices?.created !== 0 || payload.status !== "ready") {
+    throw new Error("Idempotent setup rerun created new Simulator devices.");
+  }
+' "$(artifact_path setup-rerun-apply.json)"
 log_command service-stop simbroker service stop
 service_stopped=1
 

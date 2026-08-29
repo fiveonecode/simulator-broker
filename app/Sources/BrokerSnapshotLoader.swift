@@ -8,21 +8,26 @@ struct BrokerRuntimePaths: Sendable {
   static let hostConfigArgumentName = "--host-config"
   static let hostConfigEnvironmentKey = "SIMBROKER_HOST_CONFIG"
   static let hostConfigUserDefaultsKey = "SIMBROKER_HOST_CONFIG"
+  static let serviceSocketArgumentName = "--service-socket"
+  static let serviceSocketEnvironmentKey = "SIMBROKER_SERVICE_SOCKET"
   static let stateRootArgumentName = "--state-root"
   static let stateRootEnvironmentKey = "SIMBROKER_STATE_ROOT"
   static let stateRootUserDefaultsKey = "SIMBROKER_STATE_ROOT"
 
   let configuredCLIURL: URL?
   let hostConfigURL: URL
+  let serviceSocketURL: URL?
   let stateRoot: URL
 
   init(
     stateRoot: URL,
     hostConfigURL: URL? = nil,
-    configuredCLIURL: URL? = nil
+    configuredCLIURL: URL? = nil,
+    serviceSocketURL: URL? = nil
   ) {
     self.configuredCLIURL = configuredCLIURL
     self.hostConfigURL = hostConfigURL ?? Self.defaultHostConfig()
+    self.serviceSocketURL = serviceSocketURL
     self.stateRoot = stateRoot
   }
 
@@ -125,7 +130,8 @@ struct BrokerRuntimePaths: Sendable {
         override: environment[hostConfigEnvironmentKey],
         fallback: defaultHostConfig()
       ),
-      configuredCLIURL: resolvedOptionalURL(override: environment[cliPathEnvironmentKey])
+      configuredCLIURL: resolvedOptionalURL(override: environment[cliPathEnvironmentKey]),
+      serviceSocketURL: resolvedOptionalURL(override: environment[serviceSocketEnvironmentKey])
     )
   }
 
@@ -147,6 +153,10 @@ struct BrokerRuntimePaths: Sendable {
       configuredCLIURL: resolvedOptionalURL(
         override: argumentValue(named: cliPathArgumentName, from: arguments)
           ?? environment[cliPathEnvironmentKey]
+      ),
+      serviceSocketURL: resolvedOptionalURL(
+        override: argumentValue(named: serviceSocketArgumentName, from: arguments)
+          ?? environment[serviceSocketEnvironmentKey]
       )
     )
   }
@@ -269,7 +279,8 @@ actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
     }
 
     guard normalizedPath(service.stateRoot) == normalizedPath(paths.stateRoot.path),
-          normalizedPath(service.hostConfigPath) == normalizedPath(paths.hostConfigURL.path) else {
+          normalizedPath(service.hostConfigPath) == normalizedPath(paths.hostConfigURL.path),
+          configuredServiceSocketMatches(service.socketPath) else {
       return nil
     }
 
@@ -290,11 +301,19 @@ actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
 
     guard normalizedPath(liveService.stateRoot) == normalizedPath(paths.stateRoot.path),
           normalizedPath(liveService.hostConfigPath) == normalizedPath(paths.hostConfigURL.path),
-          normalizedPath(liveService.socketPath) == normalizedPath(service.socketPath) else {
+          normalizedPath(liveService.socketPath) == normalizedPath(service.socketPath),
+          configuredServiceSocketMatches(liveService.socketPath) else {
       return nil
     }
 
     return liveService
+  }
+
+  private func configuredServiceSocketMatches(_ socketPath: String) -> Bool {
+    guard let serviceSocketURL = paths.serviceSocketURL else {
+      return true
+    }
+    return normalizedPath(socketPath) == normalizedPath(serviceSocketURL.path)
   }
 
   private func loadSnapshot(hostConfigExists: Bool) throws -> BrokerAppSnapshot? {
