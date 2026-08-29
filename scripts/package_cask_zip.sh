@@ -10,9 +10,9 @@ usage() {
   cat <<'EOF'
 Usage: bash scripts/package_cask_zip.sh [options]
 
-Zip a Developer ID-signed Simulator Broker.app as the Homebrew cask
-artifact Simulator-Broker-<version>.zip. This path does not build, sign,
-notarize, staple, tag, or publish.
+Zip a Developer ID-signed, stapled Simulator Broker.app as the Homebrew
+cask artifact Simulator-Broker-<version>.zip. This path does not build,
+sign, notarize, staple, tag, or publish.
 
 The signed app comes from npm run package:distribution:
 
@@ -20,8 +20,8 @@ The signed app comes from npm run package:distribution:
 
 Notarize and staple that app first. This script only writes the app-only
 zip with ditto -c -k --keepParent. It refuses unsigned, ad-hoc, or
-non-Developer ID signatures, and it refuses a zip that contains the
-distribution payload instead of the app bundle.
+non-Developer ID signatures, an app that xcrun stapler validate rejects,
+and a zip that contains the distribution payload instead of the app bundle.
 
 Options:
   --app <path>         Signed Simulator Broker.app to zip. Default: the
@@ -68,21 +68,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "package_cask_zip.sh requires macOS ditto." >&2
-  exit 1
-fi
-
-if ! command -v ditto >/dev/null 2>&1; then
-  echo "package_cask_zip.sh requires ditto." >&2
-  exit 1
-fi
-
-if ! command -v codesign >/dev/null 2>&1; then
-  echo "package_cask_zip.sh requires codesign." >&2
-  exit 1
-fi
-
 version="$(node -e "const fs=require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],'utf8')).version)" "$repo_root/package.json")"
 
 if [[ -z "$version" || "$version" == "." || "$version" == ".." || "$version" == *"/"* || "$version" == *"\\"* ]]; then
@@ -102,9 +87,30 @@ if [[ "$app_basename" != "Simulator Broker.app" ]]; then
   exit 1
 fi
 
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "package_cask_zip.sh requires macOS ditto." >&2
+  exit 1
+fi
+
+if ! command -v ditto >/dev/null 2>&1; then
+  echo "package_cask_zip.sh requires ditto." >&2
+  exit 1
+fi
+
+if ! command -v codesign >/dev/null 2>&1; then
+  echo "package_cask_zip.sh requires codesign." >&2
+  exit 1
+fi
+
+if ! command -v xcrun >/dev/null 2>&1; then
+  echo "package_cask_zip.sh requires xcrun stapler." >&2
+  exit 1
+fi
+
 codesign_output="$(mktemp "${TMPDIR:-/tmp}/simbroker-package-cask-zip-codesign.XXXXXX")"
+stapler_output="$(mktemp "${TMPDIR:-/tmp}/simbroker-package-cask-zip-stapler.XXXXXX")"
 cleanup() {
-  rm -f "$codesign_output"
+  rm -f "$codesign_output" "$stapler_output"
 }
 trap cleanup EXIT
 
@@ -127,6 +133,12 @@ fi
 if ! grep -F 'Authority=Developer ID Application:' "$codesign_output" >/dev/null; then
   echo "Refusing to zip an app that is not signed with Developer ID Application." >&2
   cat "$codesign_output" >&2 || true
+  exit 1
+fi
+
+if ! xcrun stapler validate "$app_path" >"$stapler_output" 2>&1; then
+  echo "Refusing to zip an app that is not notarized and stapled. Notarize and staple the Developer ID-signed Simulator Broker.app, then rerun." >&2
+  cat "$stapler_output" >&2 || true
   exit 1
 fi
 

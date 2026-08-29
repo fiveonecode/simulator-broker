@@ -64,9 +64,12 @@ A first extracted implementation slice now exists:
   published zip SHA-256.
 - `scripts/package_cask_zip.sh` (`npm run package:cask-zip`) writes that
   app-only zip with `ditto -c -k --keepParent`. It does not build, sign,
-  notarize, staple, tag, or publish. It refuses a missing app, an ad-hoc
-  or non-Developer ID signature, and a zip that contains the distribution
-  payload instead of `Simulator Broker.app`.
+  notarize, staple, tag, or publish. Version, missing-app, and bundle-name
+  checks run before the Darwin/`ditto` gate so `spec-only` stays portable.
+  After Developer ID inspection it runs `xcrun stapler validate` and
+  refuses a missing app, an ad-hoc or non-Developer ID signature, an
+  unstapled app, and a zip that contains the distribution payload instead
+  of `Simulator Broker.app`.
 - public GitHub-hosted CI splits by machine: Ubuntu runs the managed-skill
   ownership check, `test:broker-core`, and `test:harness-adoption` with a
   10-minute budget; macOS runs `test:client` with a 15-minute budget. Neither
@@ -107,10 +110,11 @@ A first extracted implementation slice now exists:
   formula and cask pin the operator-packed checksums of those tagged
   assets. `.github/workflows/release.yml` may rebuild the CLI and npm
   tarballs on the tag, but Ubuntu `test:client` is expected to miss the
-  30-minute budget (issue `#9`); do not replace a pinned operator archive
-  with a workflow rebuild that has a different hash. The app zip is an
-  operator-signed notarized attach for this Alpha, produced with
-  `npm run package:cask-zip` after notarization.
+  30-minute budget (issue `#9`); wait for that job, then attach or
+  `--clobber` operator-packed assets as in Tagged Alpha ship. Do not
+  leave Homebrew pointing at a workflow rebuild that has a different
+  hash. The app zip is an operator-signed notarized attach for this
+  Alpha, produced with `npm run package:cask-zip` after notarization.
 - local-debug portable bundle support through a zip bundle plus package-smoke verification of the bundled install path and installed-app launch proof
 - a separate Release distribution packaging path that requires operator-supplied signing inputs, runs `codesign` plus `spctl`, optionally notarizes with `notarytool`, and writes a readiness summary JSON
 - executable `agent-harness/` changes now route through the implementation
@@ -139,9 +143,13 @@ not reinstall a live machine.
    `notarytool` keychain profile), then `npm run package:cask-zip`.
 6. Pin `Casks/simulator-broker.rb` `sha256` to
    `Simulator-Broker-<version>.zip`.
-7. Open a pull request. After merge, create tag `v<version>` and attach
-   the operator-packed CLI tarball, npm tgz, and app zip. Do not replace
-   those checksums with a `.github/workflows/release.yml` rebuild.
+7. Open a pull request. After merge, create tag `v<version>` and wait
+   for `.github/workflows/release.yml` to finish or fail. If that job
+   did not create the GitHub Release, create it with the operator-packed
+   CLI tarball, npm tgz, and app zip. If the job created the release,
+   `gh release upload` the app zip and `--clobber` CLI/npm assets whose
+   hashes differ from the formula pins. Operator-packed checksums remain
+   the Homebrew source of truth.
 8. Run `scripts/sync_homebrew_tap.sh` against a
    `fiveonecode/homebrew-simulator-broker` checkout.
 9. Live Homebrew reinstall is a separate operator step: only when the
@@ -403,7 +411,7 @@ Add stronger profiles next for:
 - the installer prints the installed CLI path, app path when an app was installed, env helper path, any current-shell PATH warning, PATH persist result, and the next command (`command -v simbroker` after persist, or `source "<env-helper>"` when persist is skipped)
 - `bash scripts/install_local.sh --cli-only` installs the CLI runtime without invoking `xcodegen` or `xcodebuild` and without requiring an app bundle
 - `npm run package:cli` writes `artifacts/cli/simulator-broker-<version>-cli.tar.gz` plus a SHA-256 checksum and does not invoke XcodeGen or `xcodebuild`
-- `npm run package:cask-zip` writes `artifacts/distribution/Simulator-Broker-<version>.zip` plus a SHA-256 checksum from a Developer ID-signed `Simulator Broker.app` using `ditto -c -k --keepParent`, and does not build, sign, notarize, staple, tag, or publish
+- `npm run package:cask-zip` writes `artifacts/distribution/Simulator-Broker-<version>.zip` plus a SHA-256 checksum from a Developer ID-signed, stapled `Simulator Broker.app` using `ditto -c -k --keepParent`. It runs `xcrun stapler validate` before writing the zip, and does not build, sign, notarize, staple, tag, or publish
 - `.github/workflows/ci.yml` runs `test:broker-core` and
   `test:harness-adoption` on `ubuntu-latest` (10 minutes) and `test:client`
   on `macos-latest` (15 minutes). It does not run `npm run test:app` or

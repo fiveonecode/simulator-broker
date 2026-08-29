@@ -520,10 +520,17 @@ test("package_cask_zip.sh is the Homebrew cask zip path", () => {
   assert.ok(script.includes("ditto -c -k --keepParent"));
   assert.ok(script.includes("Simulator Broker.app"));
   assert.ok(script.includes("Developer ID Application"));
+  assert.ok(script.includes("xcrun stapler validate"));
   assert.equal(script.includes("package:local"), false);
   assert.equal(/51Code|51code-developer-id/.test(script), false);
+  const missingAppIndex = script.indexOf("Signed app bundle not found");
+  const darwinGateIndex = script.indexOf('uname -s');
+  assert.ok(missingAppIndex >= 0 && darwinGateIndex >= 0 && missingAppIndex < darwinGateIndex);
   assert.ok(spec.includes("## Tagged Alpha ship"));
   assert.ok(spec.includes("npm run package:cask-zip"));
+  assert.ok(spec.includes("xcrun stapler validate"));
+  assert.ok(spec.includes("gh release upload"));
+  assert.ok(spec.includes("--clobber"));
   assert.ok(gettingStarted.includes("npm run package:cask-zip"));
 });
 
@@ -570,9 +577,13 @@ test("package_cask_zip.sh refuses an unsigned app bundle", () => {
   );
 
   assert.notEqual(result.status, 0, result.stdout + result.stderr);
-  assert.match(
-    `${result.stdout}${result.stderr}`,
-    /not signed|ad-hoc|Developer ID Application|codesign could not read/i,
-  );
+  if (process.platform === "darwin") {
+    assert.match(
+      `${result.stdout}${result.stderr}`,
+      /not signed|ad-hoc|Developer ID Application|codesign could not read/i,
+    );
+  } else {
+    assert.match(`${result.stdout}${result.stderr}`, /requires macOS ditto/i);
+  }
   assert.equal(fs.existsSync(path.join(outputDir, `Simulator-Broker-${version}.zip`)), false);
 });
