@@ -114,15 +114,20 @@ test("newcomer docs enforce one guided machine setup and version-agnostic projec
   for (const body of [readme, gettingStarted, packageReadme]) {
     assert.ok(body.includes("simbroker setup"));
   }
-  assert.match(packageReadme, /published `0\.1\.0-alpha\.2` package predates\s*> guided setup/);
-  assert.match(packageReadme, /available from `main` and source\s*> installs/);
-  assert.match(
-    gettingStarted,
-    /Next Alpha availability:[\s\S]*guided `simbroker setup` is currently available/,
+  assert.equal(
+    /Next Alpha availability/i.test(readme),
+    false,
+    "README must not keep the pre-alpha.3 setup-unavailable warning",
   );
-  assert.match(
-    gettingStarted,
-    /published `0\.1\.0-alpha\.2` Homebrew, npm,\s*> and cask artifacts predate this command/,
+  assert.equal(
+    /predates/i.test(packageReadme),
+    false,
+    "package README must not claim the current tagged package predates setup",
+  );
+  assert.equal(
+    /Next Alpha availability/i.test(gettingStarted),
+    false,
+    "getting started must not keep the pre-alpha.3 setup-unavailable warning",
   );
   for (const body of [readme, gettingStarted]) {
     assert.equal(

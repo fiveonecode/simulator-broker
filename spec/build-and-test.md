@@ -95,7 +95,7 @@ A first extracted implementation slice now exists:
   fixtures inject `processController.currentPid` so hardcoded fixture
   PIDs cannot match the GitHub Actions test-runner pid. Containment still
   skips the live `process.pid` when `currentPid` is omitted.
-- tagged versions such as `v0.1.0-alpha.2` attach the CLI tarball, the
+- tagged versions such as `v0.1.0-alpha.3` attach the CLI tarball, the
   packable `simbroker-<version>.tgz`, and the notarized
   `Simulator-Broker-<version>.zip` to a GitHub Release. The CLI and npm
   tarballs come from `.github/workflows/release.yml`; the app zip is an

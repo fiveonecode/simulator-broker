@@ -1,11 +1,11 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.30`
+> **Version:** `1.0.31`
 > **Last Updated:** `2026-08-29`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
-> **Target:** Next Alpha PR
+> **Target:** Shipped on `v0.1.0-alpha.3`
 
 Related: `spec/global-simulator-broker.md`, `spec/architecture.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `docs/getting-started.md`
 
