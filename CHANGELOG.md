@@ -12,8 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/package_cask_zip.sh` (`npm run package:cask-zip`) writes the
   Homebrew cask zip `Simulator-Broker-<version>.zip` from a Developer
   ID-signed `Simulator Broker.app` after `package:distribution` and
-  notarization. It checks version, missing app, and bundle name before
-  the Darwin/`ditto` gate, then refuses an unstapled app with
+  notarization. It checks version, missing app, bundle name, and
+  `CFBundleIdentifier` `dev.codex.simulator-broker-app` before the
+  Darwin/`ditto` gate, then refuses a signature that fails
+  `codesign --verify --deep --strict` and an unstapled app with
   `xcrun stapler validate`. It does not build, sign, notarize, tag, or
   publish.
 

@@ -64,12 +64,14 @@ A first extracted implementation slice now exists:
   published zip SHA-256.
 - `scripts/package_cask_zip.sh` (`npm run package:cask-zip`) writes that
   app-only zip with `ditto -c -k --keepParent`. It does not build, sign,
-  notarize, staple, tag, or publish. Version, missing-app, and bundle-name
-  checks run before the Darwin/`ditto` gate so `spec-only` stays portable.
-  After Developer ID inspection it runs `xcrun stapler validate` and
-  refuses a missing app, an ad-hoc or non-Developer ID signature, an
-  unstapled app, and a zip that contains the distribution payload instead
-  of `Simulator Broker.app`.
+  notarize, staple, tag, or publish. Version, missing-app, bundle-name,
+  and `CFBundleIdentifier` (`dev.codex.simulator-broker-app`) checks run
+  before the Darwin/`ditto` gate so `spec-only` stays portable. After
+  `codesign --verify --deep --strict` and Developer ID inspection it runs
+  `xcrun stapler validate` and refuses a missing app, a signature that
+  does not verify, an ad-hoc or non-Developer ID signature, the wrong
+  sealed identifier, an unstapled app, and a zip that contains the
+  distribution payload instead of `Simulator Broker.app`.
 - public GitHub-hosted CI splits by machine: Ubuntu runs the managed-skill
   ownership check, `test:broker-core`, and `test:harness-adoption` with a
   10-minute budget; macOS runs `test:client` with a 15-minute budget. Neither
@@ -143,18 +145,21 @@ not reinstall a live machine.
    `notarytool` keychain profile), then `npm run package:cask-zip`.
 6. Pin `Casks/simulator-broker.rb` `sha256` to
    `Simulator-Broker-<version>.zip`.
-7. Open a pull request. After merge, create tag `v<version>` and wait
+7. Re-run `npm run agent:verify -- --profile spec-only` for the changed
+   paths so the pinned formula and cask checksums are in the verified
+   tree.
+8. Open a pull request. After merge, create tag `v<version>` and wait
    for `.github/workflows/release.yml` to finish or fail. If that job
    did not create the GitHub Release, create it with the operator-packed
    CLI tarball, npm tgz, and app zip. If the job created the release,
    `gh release upload` the app zip and `--clobber` CLI/npm assets whose
    hashes differ from the formula pins. Operator-packed checksums remain
    the Homebrew source of truth.
-8. Run `scripts/sync_homebrew_tap.sh` against a
+9. Run `scripts/sync_homebrew_tap.sh` against a
    `fiveonecode/homebrew-simulator-broker` checkout.
-9. Live Homebrew reinstall is a separate operator step: only when the
-   machine has zero leases and zero pins. Do not run
-   `host init --bootstrap-config`.
+10. Live Homebrew reinstall is a separate operator step: only when the
+    machine has zero leases and zero pins. Do not run
+    `host init --bootstrap-config`.
 
 `package:cask-zip` does not unlock a signing keychain, merge, tag, or
 run `brew`.
@@ -411,7 +416,7 @@ Add stronger profiles next for:
 - the installer prints the installed CLI path, app path when an app was installed, env helper path, any current-shell PATH warning, PATH persist result, and the next command (`command -v simbroker` after persist, or `source "<env-helper>"` when persist is skipped)
 - `bash scripts/install_local.sh --cli-only` installs the CLI runtime without invoking `xcodegen` or `xcodebuild` and without requiring an app bundle
 - `npm run package:cli` writes `artifacts/cli/simulator-broker-<version>-cli.tar.gz` plus a SHA-256 checksum and does not invoke XcodeGen or `xcodebuild`
-- `npm run package:cask-zip` writes `artifacts/distribution/Simulator-Broker-<version>.zip` plus a SHA-256 checksum from a Developer ID-signed, stapled `Simulator Broker.app` using `ditto -c -k --keepParent`. It runs `xcrun stapler validate` before writing the zip, and does not build, sign, notarize, staple, tag, or publish
+- `npm run package:cask-zip` writes `artifacts/distribution/Simulator-Broker-<version>.zip` plus a SHA-256 checksum from a Developer ID-signed, stapled `Simulator Broker.app` using `ditto -c -k --keepParent`. It verifies the sealed signature with `codesign --verify --deep --strict`, requires `CFBundleIdentifier`/`Identifier` `dev.codex.simulator-broker-app`, runs `xcrun stapler validate` before writing the zip, and does not build, sign, notarize, staple, tag, or publish
 - `.github/workflows/ci.yml` runs `test:broker-core` and
   `test:harness-adoption` on `ubuntu-latest` (10 minutes) and `test:client`
   on `macos-latest` (15 minutes). It does not run `npm run test:app` or

@@ -20,8 +20,11 @@ The signed app comes from npm run package:distribution:
 
 Notarize and staple that app first. This script only writes the app-only
 zip with ditto -c -k --keepParent. It refuses unsigned, ad-hoc, or
-non-Developer ID signatures, an app that xcrun stapler validate rejects,
-and a zip that contains the distribution payload instead of the app bundle.
+non-Developer ID signatures, a signature that codesign --verify --deep
+--strict rejects, an app whose CFBundleIdentifier is not
+dev.codex.simulator-broker-app, an app that xcrun stapler validate
+rejects, and a zip that contains the distribution payload instead of
+the app bundle.
 
 Options:
   --app <path>         Signed Simulator Broker.app to zip. Default: the
@@ -87,6 +90,43 @@ if [[ "$app_basename" != "Simulator Broker.app" ]]; then
   exit 1
 fi
 
+expected_bundle_id="dev.codex.simulator-broker-app"
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "package_cask_zip.sh requires python3 to read CFBundleIdentifier." >&2
+  exit 1
+fi
+
+info_plist="$app_path/Contents/Info.plist"
+if [[ ! -f "$info_plist" ]]; then
+  echo "Cask zip requires Contents/Info.plist in $app_basename" >&2
+  exit 1
+fi
+
+if ! bundle_id="$(python3 - "$info_plist" <<'PY'
+import plistlib
+import sys
+
+try:
+    with open(sys.argv[1], "rb") as handle:
+        plist = plistlib.load(handle)
+except Exception:
+    sys.exit(1)
+
+identifier = plist.get("CFBundleIdentifier")
+if not isinstance(identifier, str) or not identifier.strip():
+    sys.exit(1)
+sys.stdout.write(identifier.strip())
+PY
+)"; then
+  echo "Cask zip could not read CFBundleIdentifier from $info_plist" >&2
+  exit 1
+fi
+
+if [[ "$bundle_id" != "$expected_bundle_id" ]]; then
+  echo "Cask zip requires CFBundleIdentifier ${expected_bundle_id}, got: ${bundle_id}" >&2
+  exit 1
+fi
+
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "package_cask_zip.sh requires macOS ditto." >&2
   exit 1
@@ -107,12 +147,19 @@ if ! command -v xcrun >/dev/null 2>&1; then
   exit 1
 fi
 
+codesign_verify_output="$(mktemp "${TMPDIR:-/tmp}/simbroker-package-cask-zip-codesign-verify.XXXXXX")"
 codesign_output="$(mktemp "${TMPDIR:-/tmp}/simbroker-package-cask-zip-codesign.XXXXXX")"
 stapler_output="$(mktemp "${TMPDIR:-/tmp}/simbroker-package-cask-zip-stapler.XXXXXX")"
 cleanup() {
-  rm -f "$codesign_output" "$stapler_output"
+  rm -f "$codesign_verify_output" "$codesign_output" "$stapler_output"
 }
 trap cleanup EXIT
+
+if ! codesign --verify --deep --strict "$app_path" >"$codesign_verify_output" 2>&1; then
+  echo "Refusing to zip an app whose code signature does not verify. The bundle contents no longer match the embedded signature." >&2
+  cat "$codesign_verify_output" >&2 || true
+  exit 1
+fi
 
 if ! codesign -dv --verbose=4 "$app_path" >"$codesign_output" 2>&1; then
   echo "codesign could not read the app bundle. It is not a signed Simulator Broker.app." >&2
@@ -132,6 +179,12 @@ fi
 
 if ! grep -F 'Authority=Developer ID Application:' "$codesign_output" >/dev/null; then
   echo "Refusing to zip an app that is not signed with Developer ID Application." >&2
+  cat "$codesign_output" >&2 || true
+  exit 1
+fi
+
+if ! grep -Fx "Identifier=${expected_bundle_id}" "$codesign_output" >/dev/null; then
+  echo "Cask zip requires codesign Identifier ${expected_bundle_id}." >&2
   cat "$codesign_output" >&2 || true
   exit 1
 fi
