@@ -215,12 +215,19 @@ SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY='Developer ID Application: Example (TEAM
 npm run package:distribution
 ```
 
+After Developer ID notarization and stapling of
+`payload/app/Simulator Broker.app`, write the Homebrew cask zip:
+
+```bash
+npm run package:cask-zip
+```
+
 GitHub Releases attach the Alpha CLI tarball and the signed, notarized
 `Simulator-Broker-<version>.zip`. The Homebrew cask
 `fiveonecode/simulator-broker/simulator-broker` installs
-`Simulator Broker.app` from that zip. Reproduce the zip from
-`payload/app/Simulator Broker.app` after `npm run package:distribution`
-and Developer ID notarization.
+`Simulator Broker.app` from that zip. Reproduce the zip with
+`npm run package:cask-zip` from `payload/app/Simulator Broker.app` after
+`npm run package:distribution` and Developer ID notarization.
 
 ## Report a problem
 

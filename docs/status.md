@@ -51,6 +51,8 @@ This Alpha already includes:
   notarized GitHub Release zip when that zip is attached
 - local-debug packaging through `npm run package:local`
 - signed distribution packaging through `npm run package:distribution`
+- Homebrew cask zip through `npm run package:cask-zip` after Developer ID
+  notarization of the payload app
 - `simbroker project init` for `.simulator-broker/project.json`
   with version-agnostic iPhone UI requirements by default
 - `capacity check` and human-confirmed `capacity reconcile`

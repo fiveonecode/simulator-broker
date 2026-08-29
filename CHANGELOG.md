@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/package_cask_zip.sh` (`npm run package:cask-zip`) writes the
+  Homebrew cask zip `Simulator-Broker-<version>.zip` from a Developer
+  ID-signed `Simulator Broker.app` after `package:distribution` and
+  notarization. It does not build, sign, notarize, tag, or publish.
+
 ## [0.1.0-alpha.3] - 2026-08-29
 
 This tag is the first Homebrew CLI tarball, npm tarball, and notarized

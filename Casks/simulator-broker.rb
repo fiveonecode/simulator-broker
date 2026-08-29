@@ -15,6 +15,7 @@ cask "simulator-broker" do
     This cask installs Simulator Broker.app from the signed, notarized
     GitHub Release zip Simulator-Broker-#{version}.zip. Reproduce that
     zip from payload/app/Simulator Broker.app after
-    npm run package:distribution (Developer ID Application + notarization).
+    npm run package:distribution (Developer ID Application + notarization)
+    and npm run package:cask-zip.
   EOS
 end

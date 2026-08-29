@@ -19,6 +19,7 @@ globs:
   - Formula/**
   - packages/simbroker/**
   - scripts/package_cli.sh
+  - scripts/package_cask_zip.sh
   - scripts/package_npm.sh
   - scripts/sync_homebrew_tap.sh
 owner: spec-steward
@@ -53,6 +54,7 @@ allowed_paths:
   - Formula/**
   - packages/simbroker/**
   - scripts/package_cli.sh
+  - scripts/package_cask_zip.sh
   - scripts/package_npm.sh
   - scripts/sync_homebrew_tap.sh
 forbidden_paths: []

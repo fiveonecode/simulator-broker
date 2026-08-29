@@ -438,6 +438,7 @@ test("Homebrew formula points at the Alpha CLI tarball and the cask names a nota
   assert.equal(cask.includes("package:local"), false);
   assert.equal(cask.includes("package_local"), false);
   assert.ok(cask.includes("package:distribution") || cask.includes("package_distribution"));
+  assert.ok(cask.includes("package:cask-zip") || cask.includes("package_cask_zip"));
   assert.equal(cask.includes("not this zip"), false);
 });
 
@@ -507,4 +508,71 @@ test("package_cli.sh writes a runnable CLI tarball without tests or the app", ()
   assert.equal(fs.existsSync(path.join(root, "client/test")), false);
   assert.equal(fs.existsSync(path.join(root, "app")), false);
   assert.equal(fs.existsSync(path.join(root, "LICENSE")), true);
+});
+
+test("package_cask_zip.sh is the Homebrew cask zip path", () => {
+  const script = readRepoFile("scripts/package_cask_zip.sh");
+  const pkg = JSON.parse(readRepoFile("package.json"));
+  const spec = readRepoFile("spec/build-and-test.md");
+  const gettingStarted = readRepoFile("docs/getting-started.md");
+
+  assert.ok(pkg.scripts["package:cask-zip"].includes("package_cask_zip.sh"));
+  assert.ok(script.includes("ditto -c -k --keepParent"));
+  assert.ok(script.includes("Simulator Broker.app"));
+  assert.ok(script.includes("Developer ID Application"));
+  assert.equal(script.includes("package:local"), false);
+  assert.equal(/51Code|51code-developer-id/.test(script), false);
+  assert.ok(spec.includes("## Tagged Alpha ship"));
+  assert.ok(spec.includes("npm run package:cask-zip"));
+  assert.ok(gettingStarted.includes("npm run package:cask-zip"));
+});
+
+test("package_cask_zip.sh refuses a missing app", () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-cask-zip-missing-"));
+  const result = spawnSync(
+    "bash",
+    [
+      path.join(repoRoot, "scripts/package_cask_zip.sh"),
+      "--app",
+      path.join(outputDir, "Simulator Broker.app"),
+      "--output-dir",
+      outputDir,
+    ],
+    { encoding: "utf8", cwd: repoRoot },
+  );
+
+  assert.notEqual(result.status, 0, result.stdout + result.stderr);
+  assert.match(`${result.stdout}${result.stderr}`, /not found|does not exist|missing/i);
+});
+
+test("package_cask_zip.sh refuses an unsigned app bundle", () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-cask-zip-unsigned-"));
+  const app = path.join(outputDir, "Simulator Broker.app");
+  fs.mkdirSync(path.join(app, "Contents", "MacOS"), { recursive: true });
+  fs.writeFileSync(
+    path.join(app, "Contents", "Info.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleExecutable</key><string>SimulatorBrokerApp</string>
+  <key>CFBundleIdentifier</key><string>dev.codex.simulator-broker-app</string>
+  <key>CFBundleName</key><string>Simulator Broker</string>
+</dict></plist>
+`,
+  );
+  fs.writeFileSync(path.join(app, "Contents", "MacOS", "SimulatorBrokerApp"), "unsigned\n");
+  fs.chmodSync(path.join(app, "Contents", "MacOS", "SimulatorBrokerApp"), 0o755);
+
+  const result = spawnSync(
+    "bash",
+    [path.join(repoRoot, "scripts/package_cask_zip.sh"), "--app", app, "--output-dir", outputDir],
+    { encoding: "utf8", cwd: repoRoot },
+  );
+
+  assert.notEqual(result.status, 0, result.stdout + result.stderr);
+  assert.match(
+    `${result.stdout}${result.stderr}`,
+    /not signed|ad-hoc|Developer ID Application|codesign could not read/i,
+  );
+  assert.equal(fs.existsSync(path.join(outputDir, `Simulator-Broker-${version}.zip`)), false);
 });
