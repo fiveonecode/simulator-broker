@@ -8,9 +8,8 @@ body:
       value: |
         Simulator Broker is **Alpha**, **macOS-only**, and needs **Xcode**.
         It is maintenance-only infrastructure. The CLI installs through
-        Homebrew or the packable `simbroker` npm package. A signed,
-        notarized operator app zip is not attached to the current Alpha
-        release.
+        Homebrew or the packable `simbroker` npm package. The signed,
+        notarized operator app installs through the Homebrew cask.
 
         Maintainers may decline requests that add a feature, commercialization,
         or UX roadmap.

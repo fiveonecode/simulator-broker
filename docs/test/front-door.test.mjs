@@ -295,6 +295,12 @@ test("release workflow packages the CLI tarball on version tags", () => {
     false,
     "future release notes must not deny Homebrew and npm",
   );
+  assert.equal(
+    release.includes("operator app is not attached"),
+    false,
+    "tag release notes must not claim the notarized app zip is absent",
+  );
+  assert.ok(release.includes("brew install --cask fiveonecode/simulator-broker/simulator-broker"));
 });
 
 test("issue forms cover install failure, bug, and feature and state Alpha limits", () => {
@@ -314,6 +320,8 @@ test("issue forms cover install failure, bug, and feature and state Alpha limits
   assert.ok(install.includes(`simbroker-${version}.tgz`));
   assert.ok(install.includes("brew install --cask fiveonecode/simulator-broker/simulator-broker"));
   assert.equal(install.includes("operator app zip is not attached"), false);
+  assert.equal(feature.includes("operator app zip is not attached"), false);
+  assert.ok(feature.includes("Homebrew cask"));
   assert.ok(bug.includes("labels:"));
   assert.ok(feature.includes("enhancement"));
   for (const body of [install, bug, feature, config]) {

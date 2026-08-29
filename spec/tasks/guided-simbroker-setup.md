@@ -613,6 +613,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.31 | 2026-08-29 | `spec-steward`, `ios-dev` | Record Target as shipped on `v0.1.0-alpha.3` so the spec matches the tagged Homebrew, npm, and notarized-app artifacts that include guided setup |
 | 1.0.30 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on duplicate snapshot purpose IDs, give socket occupancy and parent-access blockers distinct IDs, and defer persistent state-directory creation until confirmation matches |
 | 1.0.29 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-socket service-socket paths before provisioning, and duplicate snapshot event IDs |
 | 1.0.28 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied unwritable `events.ndjson` and `brokerd.log`, dangling or unwritable service-socket destinations before provisioning, and duplicate snapshot active-lease IDs |
