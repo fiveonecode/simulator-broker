@@ -39,7 +39,7 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
 - `scripts/` — repo-owned helper scripts including the canonical
   `validate.sh` full-repository gate, app generation, repo-local install,
   CLI-only install (`install_local.sh --cli-only`), CLI tarball packaging
-  (`package_cli.sh`), npm CLI packing (`package_npm.sh`), Homebrew tap
+  (`package_cli.sh`), Homebrew cask zip (`package_cask_zip.sh`), npm CLI packing (`package_npm.sh`), Homebrew tap
   sync (`sync_homebrew_tap.sh`), distribution install, portable package creation, smoke
   verification, and harness bootstrap
 
