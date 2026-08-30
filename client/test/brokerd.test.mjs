@@ -1048,6 +1048,59 @@ test("worker bootstrap module loss marks the running service degraded", async (t
   assert.equal(snapshotWorkerStarts, 1);
 });
 
+test("scheduled idle reconciliation stays closed after runtime health fails", async (t) => {
+  const fixture = makeFixture();
+  applySimctlFixtureEnv(t, fixture);
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    serviceSocketPath: path.join(fixture.root, "idle-after-degraded.sock"),
+    stateRoot: fixture.stateRoot,
+  });
+  const missingWorkerUrl = pathToFileURL(path.join(fixture.root, "missing-brokerd-worker.mjs"));
+  let timerCallback = null;
+  let scheduledStarts = 0;
+  const idleErrors = [];
+  const service = await startBrokerService(paths, {
+    onIdleReconcileError(error) {
+      idleErrors.push(error);
+    },
+    runAppSnapshotWorker(snapshotOptions) {
+      return runServiceWorker({
+        options: snapshotOptions,
+        paths,
+        type: "app-snapshot",
+      }, {
+        workerUrl: missingWorkerUrl,
+      });
+    },
+    runScheduledIdleReconciliation() {
+      scheduledStarts += 1;
+      return { ok: true };
+    },
+    setIntervalFn(callback) {
+      timerCallback = callback;
+      return { unref() {} };
+    },
+  });
+  t.after(async () => service.shutdown({ exitProcess: false }));
+
+  assert.equal(typeof timerCallback, "function");
+  timerCallback();
+  await waitFor(() => scheduledStarts === 1);
+
+  const failedSnapshot = await requestService(fixture, {
+    requestPath: "/v1/app/snapshot",
+  });
+  assert.equal(failedSnapshot.statusCode, 409);
+  assert.equal(failedSnapshot.json.reasonCode, "service-runtime-incompatible");
+
+  timerCallback();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(scheduledStarts, 1);
+  assert.equal(idleErrors.length, 0);
+});
+
 test("a newer runtime rejects and restarts a stale daemon without losing leases", async (t) => {
   const fixture = makeFixture();
   const oldRuntime = copyBrokerRuntime(fixture.root, "runtime-old", "0.0.1-test");

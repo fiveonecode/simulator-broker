@@ -1067,7 +1067,10 @@ export async function startBrokerService(paths, options = {}) {
 
   function runObservedWorker(operation, work) {
     return Promise.resolve()
-      .then(work)
+      .then(() => {
+        assertServiceRuntimeHealthy();
+        return work();
+      })
       .catch((error) => {
         if (error?.serviceWorkerBootstrapFailure === true
           || error?.payload?.reasonCode === SERVICE_RUNTIME_INCOMPATIBLE_REASON_CODE) {
@@ -1493,10 +1496,16 @@ export async function startBrokerService(paths, options = {}) {
         if (activeIdleReconciliation !== null || shuttingDown) {
           return;
         }
+        if (inspectServiceRuntimeHealth().status !== "healthy") {
+          return;
+        }
         const scheduledIdleReconciliation = runSerializedIdleReconciliation("service-timer", {
           waitForLeaseMutationLock: false,
         }).catch((error) => {
-          if (error instanceof BrokerError && error.payload?.reasonCode === LEASE_MUTATION_LOCK_BUSY_REASON_CODE) {
+          if (error instanceof BrokerError && (
+            error.payload?.reasonCode === LEASE_MUTATION_LOCK_BUSY_REASON_CODE
+            || error.payload?.reasonCode === SERVICE_RUNTIME_INCOMPATIBLE_REASON_CODE
+          )) {
             return;
           }
           (options.onIdleReconcileError ?? console.error)(error);
