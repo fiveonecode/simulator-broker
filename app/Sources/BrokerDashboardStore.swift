@@ -630,7 +630,7 @@ final class BrokerDashboardStore {
         }
         try await applyGuidedSetup(plan)
       } catch is CancellationError {
-        _ = await refresh(silent: true)
+        await refreshAfterSetupCancellation()
         if generation == setupGeneration {
           pendingSetupConfirmation = nil
           setupPlan = nil
@@ -677,7 +677,7 @@ final class BrokerDashboardStore {
       do {
         try await applyGuidedSetup(setupPlan)
       } catch is CancellationError {
-        _ = await refresh(silent: true)
+        await refreshAfterSetupCancellation()
         if generation == setupGeneration {
           pendingSetupConfirmation = nil
           self.setupPlan = nil
@@ -1020,6 +1020,9 @@ final class BrokerDashboardStore {
       }
       if sameServiceAuthority(loadedState?.service, refreshedState.service) == false {
         serviceAuthorityEpoch += 1
+        if loadedState?.service != nil {
+          clearPendingMutationAffordances()
+        }
       }
       loadedState = refreshedState
       serviceStatusUnverified = false
@@ -1184,6 +1187,12 @@ final class BrokerDashboardStore {
     serviceAuthorityEpoch += 1
     serviceStatusUnverified = true
     clearPendingMutationAffordances()
+  }
+
+  private func refreshAfterSetupCancellation() async {
+    await Task { [weak self] in
+      _ = await self?.refresh(silent: true)
+    }.value
   }
 
   private func sameServiceAuthority(

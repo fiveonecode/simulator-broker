@@ -509,7 +509,13 @@ struct BrokerSetupView: View {
         ),
       ]
     case .serviceStatusUnverified:
-      return [formatter.command("service status --json")]
+      return [
+        formatter.serviceStatusCommand(
+          hostConfigPath: store.hostConfigPath,
+          stateRootPath: store.stateRootPath,
+          serviceSocketPath: store.serviceSocketPath
+        ),
+      ]
     }
   }
 
