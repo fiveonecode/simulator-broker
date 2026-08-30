@@ -389,8 +389,8 @@ function assertServiceRuntimeCompatible(probe) {
   });
 }
 
-async function serviceStatus(paths) {
-  const probe = await probeService(paths);
+async function serviceStatus(paths, { signal } = {}) {
+  const probe = await probeService(paths, { signal });
   if (probe) {
     assertServiceMatchesPaths(paths, probe);
   }
@@ -494,20 +494,24 @@ async function waitForSpawnedService(paths, child, { signal, timeoutMs = 5000 } 
   };
 }
 
-async function waitForServiceToStop(paths, { timeoutMs = 5000 } = {}) {
+async function waitForServiceToStop(paths, { signal, timeoutMs = 5000 } = {}) {
   const startedAt = Date.now();
+  const aborted = abortOutcome(signal);
   while (Date.now() - startedAt < timeoutMs) {
+    throwIfAborted(signal);
     try {
-      const probe = await probeService(paths, { timeoutMs: 250 });
+      const probe = await probeService(paths, { signal, timeoutMs: 250 });
       if (!probe) {
         return true;
       }
     } catch (error) {
+      throwIfAborted(signal);
       if (!(error instanceof BrokerError) || error.payload?.reasonCode !== "service-unavailable") {
         throw error;
       }
     }
-    await sleep(100);
+    await Promise.race([sleep(100), aborted]);
+    throwIfAborted(signal);
   }
   return false;
 }
@@ -537,7 +541,7 @@ async function startService(paths, { signal } = {}) {
         unchanged: true,
       };
     }
-    await stopService(paths);
+    await stopService(paths, { signal });
     restarted = true;
   }
 
@@ -609,8 +613,9 @@ async function startService(paths, { signal } = {}) {
   };
 }
 
-async function stopService(paths) {
-  const status = await serviceStatus(paths);
+async function stopService(paths, { signal } = {}) {
+  throwIfAborted(signal);
+  const status = await serviceStatus(paths, { signal });
   if (!status.running) {
     removeIfExists(paths.serviceMetadataPath);
     removeIfExists(paths.serviceSocketPath);
@@ -626,8 +631,10 @@ async function stopService(paths) {
   try {
     response = await requestServiceStop(paths, {
       expectedServiceIdentity: status.service,
+      signal,
     });
   } catch (error) {
+    throwIfAborted(signal);
     stopError = error;
     if (error instanceof BrokerError && error.payload?.reasonCode === "service-identity-mismatch") {
       throw error;
@@ -635,6 +642,7 @@ async function stopService(paths) {
   }
 
   const stopped = await waitForServiceToStop(paths, {
+    signal,
     timeoutMs: serviceStopTimeoutMs(paths, response),
   });
   if (!stopped && stopError) {
@@ -914,6 +922,7 @@ async function buildSetupPreview(paths, options) {
   }
 
   let running = false;
+  let serviceHealthy = false;
   if (corePreview.status !== "blocked") {
     const serviceArtifactBlockers = setupServiceArtifactBlockers(paths);
     if (serviceArtifactBlockers.length > 0) {
@@ -924,7 +933,9 @@ async function buildSetupPreview(paths, options) {
       };
     } else {
       try {
-        running = (await serviceStatus(paths)).running;
+        const status = await serviceStatus(paths);
+        running = status.running;
+        serviceHealthy = status.health?.status === "healthy";
       } catch (error) {
         corePreview = {
           ...corePreview,
@@ -941,6 +952,7 @@ async function buildSetupPreview(paths, options) {
     }
   }
   return completeSetupPreview(corePreview, prerequisites, {
+    serviceHealthy,
     serviceRunning: running,
     snapshotReady: setupSnapshotReady(paths, corePreview),
   });

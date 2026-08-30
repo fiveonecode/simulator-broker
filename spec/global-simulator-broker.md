@@ -2,7 +2,7 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.16.0`
+> **Version:** `0.16.1`
 > **Last Updated:** `2026-08-30`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
@@ -187,6 +187,13 @@ claim. The canonical health states are `healthy`, `degraded`, and
 | SB-SVC-RT-004 | Healthy status is HTTP `200`. `degraded` or `incompatible` status is HTTP `409`, uses reason `service-runtime-incompatible` and exit code `3`, and keeps `running: true` so clients distinguish a live unusable daemon from a stopped daemon. | `client/test/brokerd.test.mjs` status assertions; error-contract tests through `npm run test:client` |
 | SB-SVC-RT-005 | While unhealthy, only status and cooperative stop remain available. Command, snapshot, event-stream, and scheduled worker admission fail closed until restart. | `client/test/brokerd.test.mjs` module-loss and stale-runtime rejection cases |
 | SB-SVC-RT-006 | Explicit `simbroker service start` cooperatively stops an unhealthy or version-incompatible daemon, waits for its admitted workers, starts the installed runtime, and preserves file-backed leases, pins, registry, and events. | `client/test/brokerd.test.mjs` stale-runtime restart with active lease |
+
+Guided setup preview reports `ready` with service action `keep` only when the
+live daemon is healthy. A live `degraded` or `incompatible` daemon stays
+`running: true` and is finishing work with service action `start`, so confirmed
+apply uses the same cooperative restart path as `simbroker service start`.
+Verified by `client/test/setup-preflight.test.mjs` and the unhealthy-daemon
+setup cases in `client/test/simbroker.test.mjs`.
 
 Runtime health remains degraded after the first worker bootstrap failure even if
 files reappear. This keeps recovery deterministic: restore or reinstall the
@@ -580,6 +587,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.16.1 | 2026-08-30 | Guided setup treats a live unhealthy daemon as finishing work (`start`, not `ready`/`keep`) and honors cancellation while replacing it. |
 | 0.16.0 | 2026-08-30 | Added fail-closed daemon runtime health, exact client/daemon version compatibility, and explicit state-preserving restart recovery. |
 | 0.15.1 | 2026-08-24 | Clarified that guided setup apply timeout covers bounded rollback as well as provisioning and finishing stages. |
 | 0.15.0 | 2026-08-22 | Added the shared guided setup/runtime/confirmation/recovery/app contract and version-agnostic project scaffolding default. |

@@ -412,9 +412,11 @@ export function completeSetupPreview(corePreview, prerequisites, options = {}) {
   const blocked = corePreview.status === "blocked"
     || combinedPrerequisites.some((prerequisite) => prerequisite.status === "blocked");
   const serviceRunning = options.serviceRunning === true;
+  const serviceHealthy = options.serviceHealthy !== false;
+  const serviceKeepable = serviceRunning && serviceHealthy;
   const snapshotReady = options.snapshotReady === true;
   const finishingRequired = corePreview.host.configured
-    && (corePreview.status === "changes_required" || !serviceRunning || !snapshotReady);
+    && (corePreview.status === "changes_required" || !serviceKeepable || !snapshotReady);
   const status = blocked
     ? "blocked"
     : (corePreview.host.configured && !finishingRequired ? "ready" : "changes_required");
@@ -431,7 +433,7 @@ export function completeSetupPreview(corePreview, prerequisites, options = {}) {
       : (status === "blocked" ? blockedRecovery : corePreview.nextSteps),
     prerequisites: combinedPrerequisites,
     service: {
-      action: blocked ? "blocked" : (serviceRunning ? "keep" : "start"),
+      action: blocked ? "blocked" : (serviceKeepable ? "keep" : "start"),
       running: serviceRunning,
     },
     status,

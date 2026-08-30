@@ -704,6 +704,7 @@ export async function requestServiceStop(paths, options = {}) {
       body,
       method: "POST",
       requestPath: "/v1/service/stop",
+      signal: options.signal,
       timeoutMs: options.timeoutMs ?? 2000,
     });
   } catch (error) {

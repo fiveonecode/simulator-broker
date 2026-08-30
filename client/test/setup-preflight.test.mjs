@@ -422,3 +422,21 @@ test("core finishing work remains required when service and snapshot are already
   assert.equal(preview.status, "changes_required");
   assert.equal(preview.service.action, "keep");
 });
+
+test("an unhealthy live service is finishing work rather than ready/keep", () => {
+  const preview = completeSetupPreview({
+    host: { configured: true },
+    nextSteps: ["simbroker setup --apply --confirm plan"],
+    prerequisites: [],
+    service: { action: "keep", running: true },
+    status: "ready",
+  }, [], {
+    serviceHealthy: false,
+    serviceRunning: true,
+    snapshotReady: true,
+  });
+
+  assert.equal(preview.status, "changes_required");
+  assert.equal(preview.service.action, "start");
+  assert.equal(preview.service.running, true);
+});
