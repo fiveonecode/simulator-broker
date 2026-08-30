@@ -226,6 +226,22 @@ test("newcomer docs enforce one guided machine setup and version-agnostic projec
   );
 });
 
+test("installed app smoke is bound to correlated snapshot-decode evidence", () => {
+  const installSmoke = readRepoFile("scripts/install_smoke.sh");
+  const packageSmoke = readRepoFile("scripts/package_smoke.sh");
+  const evidenceVerifier = readRepoFile("scripts/installed_app_smoke_evidence.mjs");
+
+  assert.ok(installSmoke.includes("installed_app_smoke_evidence.mjs"));
+  assert.ok(installSmoke.includes("--style ndjson"));
+  assert.ok(installSmoke.includes("processImagePath =="));
+  assert.ok(installSmoke.includes("open --fresh --new -a"));
+  assert.ok(installSmoke.includes("--minimum-generated-at"));
+  assert.ok(installSmoke.includes("snapshotDecodeVerified"));
+  assert.ok(evidenceVerifier.includes("App launch prepared stateRoot="));
+  assert.ok(evidenceVerifier.includes("Refresh succeeded mode=manual snapshotGeneratedAt="));
+  assert.ok(packageSmoke.includes("install_smoke.sh"));
+});
+
 function headingSection(markdown, heading) {
   const marker = `\n## ${heading}\n`;
   const start = markdown.indexOf(marker);
