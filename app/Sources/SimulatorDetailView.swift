@@ -39,7 +39,13 @@ struct SimulatorDetailView: View {
         .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+      .frame(
+        minWidth: 0,
+        maxWidth: .infinity,
+        minHeight: 0,
+        maxHeight: .infinity,
+        alignment: .topLeading
+      )
       .groupBoxStyle(DashboardPanelStyle())
       .simulatorActionConfirmationDialogs(store: store)
       .sheet(item: $store.pendingCreatePinRequest, content: createPinSheet)
@@ -57,33 +63,50 @@ struct SimulatorDetailView: View {
       Text("\(simulator.alias) · \(simulator.deviceFamily) · iOS \(simulator.iosVersion)")
         .font(.subheadline)
         .foregroundStyle(.secondary)
-      HStack {
-        StatusPill(color: healthTint(simulator.health), title: simulator.health)
-        StatusPill(color: powerTint(simulator.powerState), title: simulator.powerState)
-        if lease != nil {
-          StatusPill(color: .blue, title: "Leased")
-        } else if pin != nil {
-          StatusPill(color: .orange, title: "Pinned")
-        } else {
-          StatusPill(color: .green, title: "Available")
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: 8) {
+          StatusPill(color: healthTint(simulator.health), title: simulator.health)
+          StatusPill(color: powerTint(simulator.powerState), title: simulator.powerState)
+          availabilityPill
+        }
+        .fixedSize(horizontal: true, vertical: false)
+
+        VStack(alignment: .leading, spacing: 8) {
+          StatusPill(color: healthTint(simulator.health), title: simulator.health)
+            .fixedSize(horizontal: true, vertical: false)
+          StatusPill(color: powerTint(simulator.powerState), title: simulator.powerState)
+            .fixedSize(horizontal: true, vertical: false)
+          availabilityPill
+            .fixedSize(horizontal: true, vertical: false)
         }
       }
+    }
+  }
+
+  @ViewBuilder
+  private var availabilityPill: some View {
+    if lease != nil {
+      StatusPill(color: .blue, title: "Leased")
+    } else if pin != nil {
+      StatusPill(color: .orange, title: "Pinned")
+    } else {
+      StatusPill(color: .green, title: "Available")
     }
   }
 
   private func identitySection(_ simulator: BrokerSimulator) -> some View {
     GroupBox("Identity") {
       VStack(alignment: .leading, spacing: 10) {
-        LabeledContent("Alias") { Text(simulator.alias) }
-        LabeledContent("Device family") { Text(simulator.deviceFamily) }
-        LabeledContent("Runtime") { Text("iOS \(simulator.iosVersion)") }
-        LabeledContent("Simulator ID") {
+        responsiveLabeledContent("Alias") { Text(simulator.alias) }
+        responsiveLabeledContent("Device family") { Text(simulator.deviceFamily) }
+        responsiveLabeledContent("Runtime") { Text("iOS \(simulator.iosVersion)") }
+        responsiveLabeledContent("Simulator ID") {
           Text(simulator.simulatorId)
             .font(.system(.body, design: .monospaced))
             .textSelection(.enabled)
         }
         if let driftReason = simulator.driftReason {
-          LabeledContent("Drift reason") { Text(driftReason) }
+          responsiveLabeledContent("Drift reason") { Text(driftReason) }
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -93,11 +116,11 @@ struct SimulatorDetailView: View {
   private func lifecycleSection(_ simulator: BrokerSimulator) -> some View {
     GroupBox("Lifecycle") {
       VStack(alignment: .leading, spacing: 10) {
-        LabeledContent("Booted") { Text(timestampDisplay(simulator.lastBootedAt) ?? "—") }
-        LabeledContent("Shutdown") { Text(timestampDisplay(simulator.lastShutdownAt) ?? "—") }
-        LabeledContent("Erased") { Text(timestampDisplay(simulator.lastErasedAt) ?? "—") }
-        LabeledContent("Repaired") { Text(timestampDisplay(simulator.lastRepairedAt) ?? "—") }
-        LabeledContent("Reset policy") { Text(simulator.resetPolicy ?? "none") }
+        responsiveLabeledContent("Booted") { Text(timestampDisplay(simulator.lastBootedAt) ?? "—") }
+        responsiveLabeledContent("Shutdown") { Text(timestampDisplay(simulator.lastShutdownAt) ?? "—") }
+        responsiveLabeledContent("Erased") { Text(timestampDisplay(simulator.lastErasedAt) ?? "—") }
+        responsiveLabeledContent("Repaired") { Text(timestampDisplay(simulator.lastRepairedAt) ?? "—") }
+        responsiveLabeledContent("Reset policy") { Text(simulator.resetPolicy ?? "none") }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -185,16 +208,16 @@ struct SimulatorDetailView: View {
     GroupBox("Active lease") {
       if let lease {
         VStack(alignment: .leading, spacing: 10) {
-          LabeledContent("Project") { Text(lease.projectName) }
-          LabeledContent("Purpose") { Text(lease.purposeId) }
-          LabeledContent("Actor") { Text("\(lease.actorType) · \(lease.actorId)") }
-          LabeledContent("Job") { Text(lease.jobId ?? "—") }
-          LabeledContent("Session dir") {
+          responsiveLabeledContent("Project") { Text(lease.projectName) }
+          responsiveLabeledContent("Purpose") { Text(lease.purposeId) }
+          responsiveLabeledContent("Actor") { Text("\(lease.actorType) · \(lease.actorId)") }
+          responsiveLabeledContent("Job") { Text(lease.jobId ?? "—") }
+          responsiveLabeledContent("Session dir") {
             Text(lease.sessionDir ?? "—")
               .font(.system(.body, design: .monospaced))
               .textSelection(.enabled)
           }
-          LabeledContent("Artifact") {
+          responsiveLabeledContent("Artifact") {
             Text(lease.artifactPath ?? "—")
               .font(.system(.body, design: .monospaced))
               .textSelection(.enabled)
@@ -213,12 +236,12 @@ struct SimulatorDetailView: View {
     GroupBox("Pin") {
       if let pin {
         VStack(alignment: .leading, spacing: 10) {
-          LabeledContent("Project") { Text(pin.projectName) }
-          LabeledContent("Purpose") { Text(pin.purposeId ?? "—") }
-          LabeledContent("Pinned by") { Text("\(pin.actorType) · \(pin.actorId)") }
-          LabeledContent("Created") { Text(timestampDisplay(pin.createdAt) ?? pin.createdAt) }
+          responsiveLabeledContent("Project") { Text(pin.projectName) }
+          responsiveLabeledContent("Purpose") { Text(pin.purposeId ?? "—") }
+          responsiveLabeledContent("Pinned by") { Text("\(pin.actorType) · \(pin.actorId)") }
+          responsiveLabeledContent("Created") { Text(timestampDisplay(pin.createdAt) ?? pin.createdAt) }
           if let note = pin.note, note.isEmpty == false {
-            LabeledContent("Note") { Text(note) }
+            responsiveLabeledContent("Note") { Text(note) }
           }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -227,6 +250,23 @@ struct SimulatorDetailView: View {
           .foregroundStyle(.secondary)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
+    }
+  }
+
+  private func responsiveLabeledContent<Content: View>(
+    _ title: String,
+    @ViewBuilder content: () -> Content
+  ) -> some View {
+    ViewThatFits(in: .horizontal) {
+      LabeledContent(title) {
+        content()
+      }
+      .fixedSize(horizontal: true, vertical: false)
+
+      LabeledContent(title) {
+        content()
+      }
+      .labeledContentStyle(VerticalDetailLabeledContentStyle())
     }
   }
 
@@ -304,5 +344,18 @@ struct SimulatorDetailView: View {
         message: "\(pin.projectName) keeps this alias pinned for \(pin.purposeId ?? "general use")."
       )
     }
+  }
+}
+
+private struct VerticalDetailLabeledContentStyle: LabeledContentStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    VStack(alignment: .leading, spacing: 4) {
+      configuration.label
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      configuration.content
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
