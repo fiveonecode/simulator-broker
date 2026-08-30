@@ -91,9 +91,11 @@ struct SimulatorsScreen: View {
           TableColumn("Status") { simulator in
             VStack(alignment: .leading, spacing: 6) {
               StatusPill(color: healthTint(simulator.health), title: simulator.health)
-                .fixedSize(horizontal: true, vertical: false)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
               StatusPill(color: powerTint(simulator.powerState), title: simulator.powerState)
-                .fixedSize(horizontal: true, vertical: false)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             }
           }
           .width(min: 120, ideal: 130, max: 140)
