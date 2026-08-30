@@ -530,14 +530,18 @@ describe("task completion gate", () => {
 
   it("rejects local machine paths in every new commit touching task paths", () => {
     const { repoRoot, sessionDir, taskFilePath } = createRepoFixture();
+    const relativeFixtureRoot = path.join(".", "synthetic-repo-root");
+    const syntheticHomePath = path.join(path.parse(path.resolve(relativeFixtureRoot)).root, "Users", "synthetic-user", ".codex", "private-task-session");
     const contextPack = makeContextPack();
     contextPack.verificationObligations = [];
     const contract = writeTaskSession(sessionDir, contextPack, repoRoot);
 
+    expect(path.isAbsolute(relativeFixtureRoot)).toBe(false);
+    expect(path.isAbsolute(syntheticHomePath)).toBe(true);
     commitTaskChange(
       repoRoot,
       taskFilePath,
-      makeStructuredCommitMessage("Leaky task commit", undefined, "Evidence at /Users/alice/.codex/private-task-session."),
+      makeStructuredCommitMessage("Leaky task commit", undefined, `Evidence at ${syntheticHomePath}.`),
     );
     commitTaskChange(repoRoot, taskFilePath);
     writeVerifyResult(sessionDir, "implementation", makeCurrentVerifyResult(repoRoot, contract, {
