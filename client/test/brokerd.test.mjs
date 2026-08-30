@@ -6,6 +6,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 import { BrokerError, resolveBrokerPaths } from "../../broker-core/index.mjs";
 import {
@@ -215,6 +216,44 @@ function runCliWithEnv(fixture, envOverrides, ...args) {
       ...process.env,
       ...fixture.simctl?.env,
       ...envOverrides,
+    },
+    killSignal: "SIGKILL",
+    timeout: CLI_TEST_TIMEOUT_MS,
+  });
+  return {
+    ...result,
+    json: result.stdout ? JSON.parse(result.stdout) : null,
+  };
+}
+
+function copyBrokerRuntime(root, name, version) {
+  const runtimeRoot = path.join(root, name);
+  fs.mkdirSync(runtimeRoot, { recursive: true });
+  fs.cpSync(path.resolve("broker-core"), path.join(runtimeRoot, "broker-core"), { recursive: true });
+  fs.cpSync(path.resolve("client"), path.join(runtimeRoot, "client"), { recursive: true });
+  writeJson(path.join(runtimeRoot, "package.json"), {
+    name: `simulator-broker-${name}`,
+    private: true,
+    version,
+  });
+  return {
+    cliPath: path.join(runtimeRoot, "client/bin/simbroker.mjs"),
+    root: runtimeRoot,
+    version,
+  };
+}
+
+function runRuntimeCli(fixture, runtime, ...args) {
+  const result = spawnSync(process.execPath, [
+    runtime.cliPath,
+    "--host-config", fixture.hostConfigPath,
+    "--state-root", fixture.stateRoot,
+    ...args,
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ...fixture.simctl?.env,
     },
     killSignal: "SIGKILL",
     timeout: CLI_TEST_TIMEOUT_MS,
@@ -962,6 +1001,140 @@ test("brokerd workers reject clean exits that send no result", async () => {
     (error) => error instanceof BrokerError
       && error.payload?.reasonCode === "internal-error",
   );
+});
+
+test("worker bootstrap module loss marks the running service degraded", async (t) => {
+  const fixture = makeFixture();
+  applySimctlFixtureEnv(t, fixture);
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    serviceSocketPath: path.join(fixture.root, "missing-worker.sock"),
+    stateRoot: fixture.stateRoot,
+  });
+  const missingWorkerUrl = pathToFileURL(path.join(fixture.root, "missing-brokerd-worker.mjs"));
+  let snapshotWorkerStarts = 0;
+  const service = await startBrokerService(paths, {
+    runAppSnapshotWorker: (snapshotOptions) => {
+      snapshotWorkerStarts += 1;
+      return runServiceWorker({
+        options: snapshotOptions,
+        paths,
+        type: "app-snapshot",
+      }, {
+        workerUrl: missingWorkerUrl,
+      });
+    },
+  });
+  t.after(async () => service.shutdown({ exitProcess: false }));
+
+  const failedSnapshot = await requestService(fixture, {
+    requestPath: "/v1/app/snapshot",
+  });
+  assert.equal(failedSnapshot.statusCode, 409);
+  assert.equal(failedSnapshot.json.reasonCode, "service-runtime-incompatible");
+
+  const status = await requestService(fixture, {
+    requestPath: "/v1/service/status",
+  });
+  assert.equal(status.statusCode, 409);
+  assert.equal(status.json.running, true);
+  assert.equal(status.json.health.status, "degraded");
+  assert.equal(status.json.reasonCode, "service-runtime-incompatible");
+
+  const rejectedRetry = await requestService(fixture, {
+    requestPath: "/v1/app/snapshot",
+  });
+  assert.equal(rejectedRetry.statusCode, 409);
+  assert.equal(snapshotWorkerStarts, 1);
+});
+
+test("a newer runtime rejects and restarts a stale daemon without losing leases", async (t) => {
+  const fixture = makeFixture();
+  const oldRuntime = copyBrokerRuntime(fixture.root, "runtime-old", "0.0.1-test");
+  const newRuntime = copyBrokerRuntime(fixture.root, "runtime-new", "0.0.2-test");
+  const leaseFile = path.join(fixture.root, "upgrade-lease.json");
+  const newBrokerdPath = path.join(newRuntime.root, "client/service/brokerd.mjs");
+  const parkedBrokerdPath = `${newBrokerdPath}.parked`;
+  t.after(() => {
+    if (fs.existsSync(parkedBrokerdPath) && !fs.existsSync(newBrokerdPath)) {
+      fs.renameSync(parkedBrokerdPath, newBrokerdPath);
+    }
+    for (const runtime of [newRuntime, oldRuntime]) {
+      const status = runRuntimeCli(fixture, runtime, "service", "status");
+      if (status.status === 0 && status.json?.running === true) {
+        runRuntimeCli(fixture, runtime, "service", "stop");
+      }
+    }
+  });
+
+  assert.equal(runRuntimeCli(fixture, oldRuntime, "host", "init").status, 0);
+  const oldStart = runRuntimeCli(fixture, oldRuntime, "service", "start");
+  assert.equal(oldStart.status, 0);
+  assert.equal(oldStart.json.service.runtimeVersion, oldRuntime.version);
+
+  const acquired = runRuntimeCli(
+    fixture,
+    oldRuntime,
+    "lease",
+    "acquire",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--actor-id",
+    "agent-runtime-upgrade",
+    "--actor-type",
+    "agent",
+    "--owner-pid",
+    String(process.pid),
+    "--lease-file",
+    leaseFile,
+  );
+  assert.equal(acquired.status, 0);
+
+  const staleStatus = runRuntimeCli(fixture, newRuntime, "service", "status");
+  assert.equal(staleStatus.status, 0);
+  assert.equal(staleStatus.json.running, true);
+  assert.equal(staleStatus.json.health.status, "incompatible");
+  assert.equal(staleStatus.json.health.actualRuntimeVersion, oldRuntime.version);
+  assert.equal(staleStatus.json.health.expectedRuntimeVersion, newRuntime.version);
+
+  const rejected = runRuntimeCli(fixture, newRuntime, "host", "status");
+  assert.equal(rejected.status, 3);
+  assert.equal(rejected.json.reasonCode, "service-runtime-incompatible");
+
+  const restarted = runRuntimeCli(fixture, newRuntime, "service", "start");
+  assert.equal(restarted.status, 0);
+  assert.equal(restarted.json.restarted, true);
+  assert.notEqual(restarted.json.service.pid, oldStart.json.service.pid);
+  assert.equal(restarted.json.service.runtimeVersion, newRuntime.version);
+
+  const afterRestart = runRuntimeCli(fixture, newRuntime, "host", "status");
+  assert.equal(afterRestart.status, 0);
+  assert.equal(afterRestart.json.transport, "service");
+  const alias = afterRestart.json.simulators.find((candidate) => candidate.alias === "ui-1");
+  assert.equal(alias.activeLeaseSummary.actorId, "agent-runtime-upgrade");
+
+  fs.renameSync(newBrokerdPath, parkedBrokerdPath);
+  const missingRuntimeStatus = await requestService(fixture, {
+    requestPath: "/v1/service/status",
+  });
+  assert.equal(missingRuntimeStatus.statusCode, 409);
+  assert.equal(missingRuntimeStatus.json.health.status, "incompatible");
+  assert.equal(missingRuntimeStatus.json.reasonCode, "service-runtime-incompatible");
+  fs.renameSync(parkedBrokerdPath, newBrokerdPath);
+
+  const recovered = runRuntimeCli(fixture, newRuntime, "service", "start");
+  assert.equal(recovered.status, 0);
+  assert.equal(recovered.json.restarted, true);
+  assert.notEqual(recovered.json.service.pid, restarted.json.service.pid);
+  const recoveredStatus = runRuntimeCli(fixture, newRuntime, "host", "status");
+  assert.equal(recoveredStatus.status, 0);
+  assert.equal(
+    recoveredStatus.json.simulators.find((candidate) => candidate.alias === "ui-1").activeLeaseSummary.actorId,
+    "agent-runtime-upgrade",
+  );
+  assert.equal(runRuntimeCli(fixture, newRuntime, "lease", "release", "--lease-file", leaseFile).status, 0);
 });
 
 test("brokerd reconciles immediately, every thirty seconds, refreshes snapshots, and cancels the timer", async (t) => {

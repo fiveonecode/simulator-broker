@@ -31,6 +31,9 @@ const SERVICE_COMMAND_BODY_MAX_BYTES = 64 * 1024;
 const SERVICE_LOCK_OWNER_PID_IDENTITY_TOLERANCE_MS = 15_000;
 const IDLE_RECONCILE_INTERVAL_MS = 30_000;
 const LEASE_MUTATION_LOCK_BUSY_REASON_CODE = "alias-busy";
+const SERVICE_RUNTIME_INCOMPATIBLE_REASON_CODE = "service-runtime-incompatible";
+const SERVICE_MODULE_PATH = url.fileURLToPath(import.meta.url);
+const SERVICE_RUNTIME_PACKAGE_PATH = path.resolve(path.dirname(SERVICE_MODULE_PATH), "../../package.json");
 
 function writeJsonAtomic(filePath, payload) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
@@ -190,6 +193,50 @@ function samePathIdentity(left, right) {
     && left.dev === right.dev
     && left.ino === right.ino
     && left.birthtimeMs === right.birthtimeMs;
+}
+
+function readRuntimeFileIdentity(filePath) {
+  const stats = fs.statSync(filePath);
+  if (!stats.isFile()) {
+    throw new Error(`Broker runtime path is not a regular file: ${filePath}`);
+  }
+  return {
+    birthtimeMs: stats.birthtimeMs,
+    ctimeMs: stats.ctimeMs,
+    dev: stats.dev,
+    ino: stats.ino,
+    mtimeMs: stats.mtimeMs,
+    size: stats.size,
+  };
+}
+
+function sameRuntimeFileIdentity(left, right) {
+  return left !== null
+    && right !== null
+    && left.dev === right.dev
+    && left.ino === right.ino
+    && left.birthtimeMs === right.birthtimeMs
+    && left.ctimeMs === right.ctimeMs
+    && left.mtimeMs === right.mtimeMs
+    && left.size === right.size;
+}
+
+function readServiceRuntimeDescriptor() {
+  const runtimePackage = JSON.parse(fs.readFileSync(SERVICE_RUNTIME_PACKAGE_PATH, "utf8"));
+  if (typeof runtimePackage?.version !== "string" || runtimePackage.version.trim() === "") {
+    throw new Error("Broker runtime package metadata does not contain a version.");
+  }
+  return {
+    moduleIdentity: readRuntimeFileIdentity(SERVICE_MODULE_PATH),
+    packageIdentity: readRuntimeFileIdentity(SERVICE_RUNTIME_PACKAGE_PATH),
+    version: runtimePackage.version,
+  };
+}
+
+function sameServiceRuntimeDescriptor(left, right) {
+  return left?.version === right?.version
+    && sameRuntimeFileIdentity(left?.moduleIdentity, right?.moduleIdentity)
+    && sameRuntimeFileIdentity(left?.packageIdentity, right?.packageIdentity);
 }
 
 function readPathTimestampMs(lockDir, ownerPath) {
@@ -769,9 +816,10 @@ function deserializeIdleReconciliationError(serialized) {
 
 export function runServiceWorker(workerPayload, {
   exitErrorMessage = "Broker service worker exited before completion.",
+  workerUrl = new URL("./brokerd.mjs", import.meta.url),
 } = {}) {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL("./brokerd.mjs", import.meta.url), {
+    const worker = new Worker(workerUrl, {
       workerData: workerPayload,
     });
     let settled = false;
@@ -790,7 +838,13 @@ export function runServiceWorker(workerPayload, {
       finish(reject, deserializeIdleReconciliationError(message?.error));
     });
     worker.once("error", (error) => {
-      finish(reject, error);
+      const bootstrapError = new BrokerError("Broker service worker could not load the installed runtime.", {
+        cause: error?.message ?? String(error),
+        reasonCode: SERVICE_RUNTIME_INCOMPATIBLE_REASON_CODE,
+        workerErrorCode: error?.code ?? null,
+      });
+      bootstrapError.serviceWorkerBootstrapFailure = true;
+      finish(reject, bootstrapError);
     });
     worker.once("exit", (code) => {
       finish(reject, new BrokerError(exitErrorMessage, {
@@ -871,6 +925,8 @@ async function runIdleReconciliationWorkerTask(data) {
 
 export async function startBrokerService(paths, options = {}) {
   ensurePrivateDir(paths.stateRoot);
+  const readRuntimeDescriptor = options.readServiceRuntimeDescriptor ?? readServiceRuntimeDescriptor;
+  const startupRuntime = readRuntimeDescriptor();
   const startupLockToken = acquireServiceStartLock(paths);
   let startupLockHeld = true;
   const releaseStartupLock = () => {
@@ -899,6 +955,7 @@ export async function startBrokerService(paths, options = {}) {
   const metadata = {
     hostConfigPath: paths.hostConfigPath,
     pid: process.pid,
+    runtimeVersion: startupRuntime.version,
     socketPath: paths.serviceSocketPath,
     startedAt,
     stateRoot: paths.stateRoot,
@@ -949,6 +1006,84 @@ export async function startBrokerService(paths, options = {}) {
     ?? ((request) => runBrokerCommandWorker(paths, request));
   const runSnapshotWorker = options.runAppSnapshotWorker
     ?? ((snapshotOptions) => runAppSnapshotWorker(paths, snapshotOptions));
+  let serviceHealth = {
+    runtimeVersion: startupRuntime.version,
+    status: "healthy",
+  };
+
+  function markServiceRuntimeUnhealthy(status, message, details = {}) {
+    if (serviceHealth.status !== "healthy") {
+      return serviceHealth;
+    }
+    serviceHealth = {
+      detectedAt: new Date().toISOString(),
+      error: message,
+      reasonCode: SERVICE_RUNTIME_INCOMPATIBLE_REASON_CODE,
+      recoveryCommand: "simbroker service start",
+      runtimeVersion: startupRuntime.version,
+      status,
+      ...details,
+    };
+    return serviceHealth;
+  }
+
+  function inspectServiceRuntimeHealth() {
+    if (serviceHealth.status !== "healthy") {
+      return serviceHealth;
+    }
+    let currentRuntime;
+    try {
+      currentRuntime = readRuntimeDescriptor();
+    } catch (error) {
+      return markServiceRuntimeUnhealthy(
+        "incompatible",
+        "The installed broker runtime is unavailable. Restart brokerd after restoring or reinstalling the CLI.",
+        { cause: error?.message ?? String(error) },
+      );
+    }
+    if (!sameServiceRuntimeDescriptor(startupRuntime, currentRuntime)) {
+      return markServiceRuntimeUnhealthy(
+        "incompatible",
+        "The installed broker runtime changed after brokerd started. Restart brokerd with the installed CLI.",
+        { observedRuntimeVersion: currentRuntime.version },
+      );
+    }
+    return serviceHealth;
+  }
+
+  function serviceRuntimeError(health = inspectServiceRuntimeHealth()) {
+    return new BrokerError(health.error ?? "Broker service runtime is incompatible with the running daemon.", {
+      ...health,
+      reasonCode: SERVICE_RUNTIME_INCOMPATIBLE_REASON_CODE,
+    });
+  }
+
+  function assertServiceRuntimeHealthy() {
+    const health = inspectServiceRuntimeHealth();
+    if (health.status !== "healthy") {
+      throw serviceRuntimeError(health);
+    }
+  }
+
+  function runObservedWorker(operation, work) {
+    return Promise.resolve()
+      .then(work)
+      .catch((error) => {
+        if (error?.serviceWorkerBootstrapFailure === true
+          || error?.payload?.reasonCode === SERVICE_RUNTIME_INCOMPATIBLE_REASON_CODE) {
+          const health = markServiceRuntimeUnhealthy(
+            "degraded",
+            `Broker service ${operation} worker could not load the installed runtime. Restart brokerd with the installed CLI.`,
+            {
+              cause: error?.payload?.cause ?? error?.message ?? String(error),
+              workerErrorCode: error?.payload?.workerErrorCode ?? error?.code ?? null,
+            },
+          );
+          throw serviceRuntimeError(health);
+        }
+        throw error;
+      });
+  }
 
   function trackActiveRequest(request, response) {
     const controller = new AbortController();
@@ -982,12 +1117,15 @@ export async function startBrokerService(paths, options = {}) {
   function runSerializedCommandWorker(request) {
     return runSerializedServiceWork(request, () => {
       assertCommandFreshForDispatch(paths, request);
-      return runCommandWorker(request);
+      return runObservedWorker("command", () => runCommandWorker(request));
     });
   }
 
   function runSerializedIdleReconciliation(source, args) {
-    return runSerializedServiceWork(null, () => runScheduledIdleReconciliation(source, args));
+    return runSerializedServiceWork(null, () => runObservedWorker(
+      "idle reconciliation",
+      () => runScheduledIdleReconciliation(source, args),
+    ));
   }
 
   function runTrackedAppSnapshotWorker(snapshotOptions) {
@@ -996,7 +1134,7 @@ export async function startBrokerService(paths, options = {}) {
         reasonCode: "service-unavailable",
       });
     }
-    const snapshotWorker = Promise.resolve().then(() => runSnapshotWorker(snapshotOptions));
+    const snapshotWorker = runObservedWorker("app snapshot", () => runSnapshotWorker(snapshotOptions));
     activeSnapshotWorkers.set(snapshotWorker, {
       drainDeadlineMilliseconds: appSnapshotDrainDeadlineMilliseconds(snapshotOptions),
     });
@@ -1124,12 +1262,29 @@ export async function startBrokerService(paths, options = {}) {
       }
 
       if (request.method === "GET" && requestUrl.pathname === "/v1/service/status") {
-        sendJson(response, 200, {
-          ok: true,
-          running: true,
-          service: metadata,
-        });
+        const health = inspectServiceRuntimeHealth();
+        if (health.status === "healthy") {
+          sendJson(response, 200, {
+            health,
+            ok: true,
+            running: true,
+            service: metadata,
+          });
+        } else {
+          const runtimeError = serviceRuntimeError(health);
+          sendJson(response, resolveBrokerHttpStatus(runtimeError.payload.reasonCode), {
+            ...runtimeError.payload,
+            health,
+            running: true,
+            service: metadata,
+          });
+        }
         return;
+      }
+
+      const isServiceStop = request.method === "POST" && requestUrl.pathname === "/v1/service/stop";
+      if (!isServiceStop) {
+        assertServiceRuntimeHealthy();
       }
 
       if (request.method === "GET" && requestUrl.pathname === "/v1/app/snapshot") {

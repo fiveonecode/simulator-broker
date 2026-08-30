@@ -36,6 +36,9 @@ A first extracted implementation slice now exists:
   version-agnostic project scaffold, lease acquire/release, zero-create rerun,
   and baseline-preserving cleanup
 - installer coverage for stopping a running service before replacing the installed runtime, restarting it after metadata is written, shell-safe env helper serialization, and default-location install metadata for custom prefixes without leaving smoke-run paths in a developer install
+- daemon runtime-health coverage for missing worker modules, replaced runtime
+  files, stale client/daemon versions, fail-closed CLI and app probes, explicit
+  restart recovery, and preservation of active file-backed leases
 - CLI-only install through `bash scripts/install_local.sh --cli-only`, which copies the Node runtime and writes `simbroker` without XcodeGen or an app build
 - PATH persistence after install: Homebrew prefix bin when that is the install location, otherwise one guarded login-profile snippet for the default `~/.local/bin` location; `--profile` overrides the profile path so tests never edit the operator login rc
 - Public first-run order is Homebrew CLI, optional Homebrew cask, then app
@@ -419,7 +422,7 @@ Add stronger profiles next for:
   grace-boundary eligibility, all safety exclusions, stale grace restart,
   mutation-lock serialization, shutdown failure repair state, and confirmed
   count-only cleanup
-- `npm run test:client` proves service lifecycle, concurrent clients, startup readiness before service metadata publication, restart safety, malformed service response handling, expected service identity validation for command dispatch and stop dispatch, NDJSON event streaming including stop with an active follower, service-backed lifecycle-control flows and boot readiness budgets against the fixture-backed `simctl` boundary, stable direct plus service-backed exit-code behavior, useful command help, direct/service capacity and idle parity, lazy daemon start, local-only scheduler limitation, immediate startup reconciliation, 30-second timer wiring, and snapshot refresh
+- `npm run test:client` proves service lifecycle, concurrent clients, startup readiness before service metadata publication, restart safety, missing-worker degradation, on-disk runtime replacement detection, exact client/daemon runtime compatibility, state-preserving explicit upgrade restart, malformed service response handling, expected service identity validation for command dispatch and stop dispatch, NDJSON event streaming including stop with an active follower, service-backed lifecycle-control flows and boot readiness budgets against the fixture-backed `simctl` boundary, stable direct plus service-backed exit-code behavior, useful command help, direct/service capacity and idle parity, lazy daemon start, local-only scheduler limitation, immediate startup reconciliation, 30-second timer wiring, and snapshot refresh
 - `npm run test:app` proves the XcodeGen project builds and the app decodes snapshots, filters pin candidates, bounds local CLI subprocesses, preserves refresh diagnostics after successful mutations whose snapshot reload fails, routes broker-command errors correctly, and drives Automatic shutdown apply, disable, preview, confirmation, cleanup, and refresh flows
 - the generated app test scheme receives a per-run temporary state root and
   host-config path from `scripts/test_app.sh`; the XCTest host never launches

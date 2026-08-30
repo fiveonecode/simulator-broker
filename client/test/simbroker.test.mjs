@@ -29,6 +29,7 @@ import { createDeviceRecord, createSimctlFixture } from "../../broker-core/test/
 
 const CLI_PATH = path.resolve("client/bin/simbroker.mjs");
 const CLI_TEST_TIMEOUT_MS = 60_000;
+const RUNTIME_VERSION = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8")).version;
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-cli-test-"));
@@ -3820,6 +3821,7 @@ test("CLI waits for the service identity probe before routing command requests",
           service: {
             hostConfigPath: fixture.hostConfigPath,
             pid: process.pid,
+            runtimeVersion: RUNTIME_VERSION,
             socketPath,
             stateRoot: fixture.stateRoot,
           },
@@ -3861,9 +3863,47 @@ test("CLI waits for the service identity probe before routing command requests",
   assert.deepEqual(commandBodies[0].expectedServiceIdentity, {
     hostConfigPath: fixture.hostConfigPath,
     pid: process.pid,
+    runtimeVersion: RUNTIME_VERSION,
     socketPath,
     stateRoot: fixture.stateRoot,
   });
+});
+
+test("CLI rejects a legacy daemon that does not report its runtime version", async (t) => {
+  const fixture = makeFixture();
+  const socketPath = path.join(fixture.root, "legacy-service.sock");
+  let commandRequests = 0;
+  const server = http.createServer((request, response) => {
+    if (request.url === "/v1/service/status") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(`${JSON.stringify({
+        ok: true,
+        running: true,
+        service: {
+          hostConfigPath: fixture.hostConfigPath,
+          pid: process.pid,
+          socketPath,
+          stateRoot: fixture.stateRoot,
+        },
+      })}\n`);
+      return;
+    }
+    if (request.url === "/v1/command") {
+      commandRequests += 1;
+    }
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end("{}\n");
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await listen(server, socketPath);
+
+  const result = await runCliAsync(fixture, {}, "--service-socket", socketPath, "host", "status");
+
+  assert.equal(result.status, 3);
+  assert.equal(result.json.reasonCode, "service-runtime-incompatible");
+  assert.equal(result.json.actualRuntimeVersion, null);
+  assert.equal(result.json.expectedRuntimeVersion, RUNTIME_VERSION);
+  assert.equal(commandRequests, 0);
 });
 
 test("service client rejects malformed JSON responses through BrokerError", async (t) => {

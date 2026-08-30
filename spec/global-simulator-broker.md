@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.15.1`
-> **Last Updated:** `2026-08-24`
+> **Version:** `0.16.0`
+> **Last Updated:** `2026-08-30`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -172,6 +172,29 @@ Current implementation slice:
 - service-backed commands observing the same real `simctl`-synchronized alias health and repair state as direct CLI mode
 - immediate idle reconciliation before the startup snapshot, non-overlapping
   reconciliation every 30 seconds, and snapshot refresh after every timer run
+
+#### Service runtime health contract
+
+`brokerd` health is a fail-closed runtime contract, not a process-liveness
+claim. The canonical health states are `healthy`, `degraded`, and
+`incompatible`.
+
+| ID | Requirement | Verifier |
+| --- | --- | --- |
+| SB-SVC-RT-001 | Service metadata includes the daemon `runtimeVersion`; a CLI accepts service-backed work only when that value exactly matches its installed runtime version. A missing version is incompatible. | `client/test/brokerd.test.mjs` stale-runtime rejection case; `client/test/simbroker.test.mjs` legacy-daemon rejection case |
+| SB-SVC-RT-002 | `brokerd` records its entrypoint and package-metadata identity at startup. Missing, replaced, or version-changed runtime files transition the daemon to `incompatible`. | `client/test/brokerd.test.mjs` installed-runtime loss case |
+| SB-SVC-RT-003 | A worker bootstrap or runtime-load failure transitions the daemon to `degraded`; it must not return a healthy status after that failure. | `client/test/brokerd.test.mjs` worker bootstrap module-loss case |
+| SB-SVC-RT-004 | Healthy status is HTTP `200`. `degraded` or `incompatible` status is HTTP `409`, uses reason `service-runtime-incompatible` and exit code `3`, and keeps `running: true` so clients distinguish a live unusable daemon from a stopped daemon. | `client/test/brokerd.test.mjs` status assertions; error-contract tests through `npm run test:client` |
+| SB-SVC-RT-005 | While unhealthy, only status and cooperative stop remain available. Command, snapshot, event-stream, and scheduled worker admission fail closed until restart. | `client/test/brokerd.test.mjs` module-loss and stale-runtime rejection cases |
+| SB-SVC-RT-006 | Explicit `simbroker service start` cooperatively stops an unhealthy or version-incompatible daemon, waits for its admitted workers, starts the installed runtime, and preserves file-backed leases, pins, registry, and events. | `client/test/brokerd.test.mjs` stale-runtime restart with active lease |
+
+Runtime health remains degraded after the first worker bootstrap failure even if
+files reappear. This keeps recovery deterministic: restore or reinstall the
+runtime if necessary, then run `simbroker service start`. The daemon does not
+self-exit because a live status and cooperative stop surface are required to
+recover without guessing at processes or deleting sockets. A crash between
+stop and restart is recoverable by rerunning the same start command; service
+restart is not a cross-process atomic operation.
 
 ### `client`
 
@@ -557,6 +580,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.16.0 | 2026-08-30 | Added fail-closed daemon runtime health, exact client/daemon version compatibility, and explicit state-preserving restart recovery. |
 | 0.15.1 | 2026-08-24 | Clarified that guided setup apply timeout covers bounded rollback as well as provisioning and finishing stages. |
 | 0.15.0 | 2026-08-22 | Added the shared guided setup/runtime/confirmation/recovery/app contract and version-agnostic project scaffolding default. |
 | 0.14.1 | 2026-08-18 | Help and doctor default to human-readable text; `--json` keeps the stable machine payload. |

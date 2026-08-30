@@ -51,6 +51,7 @@ const UNAVAILABLE_REASON_CODES = new Set([
   "service-stop-timeout",
   "service-command-expired",
   "service-identity-mismatch",
+  "service-runtime-incompatible",
   "service-unavailable",
   "setup-health-check-failed",
   "setup-prerequisite-failed",
