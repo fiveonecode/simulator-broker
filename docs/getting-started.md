@@ -16,7 +16,8 @@ A small public patch follows the public-patches track in
 
 - macOS 14 or newer with full Xcode and iOS Simulator support installed
 - Node.js 20 or newer on `PATH`
-- `xcodegen` on `PATH` only if you install the macOS app (example: `brew install xcodegen`)
+- `xcodegen` on `PATH` only if you build the macOS app from source (example:
+  `brew install xcodegen`)
 
 Repo-owned macOS app entrypoints fail fast when `xcodegen` or `xcodebuild` is
 missing or unusable. The CLI-only installer does not call them.
@@ -34,6 +35,18 @@ Homebrew clones
 [`fiveonecode/homebrew-simulator-broker`](https://github.com/fiveonecode/homebrew-simulator-broker)
 for the tap name `fiveonecode/simulator-broker`. `Formula/` and `Casks/`
 in this repository stay the source of truth.
+
+## Install the app with Homebrew
+
+```bash
+brew install --cask fiveonecode/simulator-broker/simulator-broker
+open -a "Simulator Broker"
+```
+
+This is the recommended app install. The cask downloads the signed, notarized
+`Simulator-Broker-<version>.zip` from
+[GitHub Releases](https://github.com/fiveonecode/simulator-broker/releases) and
+does not require XcodeGen. The app still needs the CLI installed separately.
 
 ## Install the CLI with npm
 
@@ -60,8 +73,15 @@ and writes a `simbroker` wrapper. It does not run XcodeGen or build the app.
 To install from a tagged Alpha without cloning, download
 `simulator-broker-<version>-cli.tar.gz` from
 [GitHub Releases](https://github.com/fiveonecode/simulator-broker/releases),
-extract it, and run `./bin/simbroker --help`. That archive is the Node CLI
-only.
+then run:
+
+```bash
+tar -xzf simulator-broker-0.1.0-alpha.3-cli.tar.gz
+./simulator-broker-0.1.0-alpha.3-cli/bin/simbroker --help
+```
+
+The archive is the Node CLI only and contains that versioned top-level
+directory.
 
 - If Homebrew is present and `$(brew --prefix)/bin` is writable, the wrapper
   is installed there so a new login shell already has it on `PATH`.
@@ -71,7 +91,7 @@ only.
 - `source "$HOME/Library/Application Support/SimulatorBroker/install/env.sh"`
   remains a fallback for the current shell.
 
-## Install the app from this checkout
+## Build the app from source (contributors)
 
 ```bash
 npm run install:local
@@ -81,12 +101,13 @@ open "$HOME/Applications/Simulator Broker.app"
 
 That path builds the Debug app, copies the CLI runtime, writes `simbroker`,
 and copies `Simulator Broker.app` to `~/Applications`. It also persists PATH
-the same way as the CLI-only installer.
+the same way as the CLI-only installer. This source-build path requires
+XcodeGen; the Homebrew cask does not.
 
 ## First-run host setup
 
-Do this after the Homebrew CLI and optional cask resolve, and before hello
-world. Homebrew does not create Simulator devices.
+Install the Homebrew CLI first and the app cask if you want the dashboard. Then
+do this before hello world. Homebrew does not create Simulator devices.
 
 1. Launch `Simulator Broker.app`.
 2. If it shows **Set Up This Mac**, click **Complete first-time setup**.
@@ -123,6 +144,15 @@ simbroker setup --apply --confirm <plan-id> --json
 
 `host init --bootstrap-config` remains available as an advanced compatibility
 command and retains its iOS 18 default, but it is not the newcomer setup path.
+
+After a lease is released, its Simulator may stay booted for fast reuse. This
+is expected: Automatic shutdown is off by default. Check the current policy or
+opt in with a human-chosen grace period:
+
+```bash
+simbroker idle status
+simbroker idle enable --grace-seconds <60-86400> --actor-type human --actor-id <operator-id>
+```
 
 Then register each repo you want the broker to know about:
 
@@ -163,20 +193,52 @@ simbroker host status
 simbroker lease release --lease-file /tmp/simbroker-hello-lease.json
 ```
 
-## Reinstalling
+## Reinstall with Homebrew
 
-Do not take the broker offline while it has an active lease.
+Do not take the broker offline while it has an active lease or pin. First
+inspect `simbroker host status --json`, wait until it reports none, then:
 
-1. Check `simbroker host status --json` for active leases.
-2. Stop the service with `simbroker service stop`.
-3. Quit `Simulator Broker.app`.
-4. Re-run `bash scripts/install_local.sh --cli-only` or `npm run install:local`.
-   Open a new login shell if `command -v simbroker` fails.
-5. Run `simbroker service start` and reopen the app.
+```bash
+simbroker service stop
+osascript -e 'quit app "Simulator Broker"'
+brew update
+brew reinstall fiveonecode/simulator-broker/simbroker
+brew reinstall --cask fiveonecode/simulator-broker/simulator-broker
+simbroker service start
+open -a "Simulator Broker"
+simbroker setup
+```
 
-The installer preserves host config and broker state. Finish by running
-`simbroker setup`; it verifies the existing host and safely restarts or refreshes
-only the missing later stages.
+Homebrew reinstall preserves
+`$HOME/Library/Application Support/SimulatorBroker/host-config.json` and the
+`state/` directory. `simbroker setup` verifies that existing data and repairs
+only missing setup stages. A source install can instead rerun
+`bash scripts/install_local.sh --cli-only` or `npm run install:local` after the
+same stop and quit steps.
+
+## Uninstall
+
+After active leases and pins are gone, remove the app, CLI, and tap with:
+
+```bash
+simbroker service stop
+osascript -e 'quit app "Simulator Broker"'
+brew uninstall --cask fiveonecode/simulator-broker/simulator-broker
+brew uninstall fiveonecode/simulator-broker/simbroker
+brew untap fiveonecode/simulator-broker
+```
+
+Those commands preserve host configuration and broker state under
+`$HOME/Library/Application Support/SimulatorBroker/`, so a later reinstall can
+reuse them. To intentionally reset all broker configuration, leases, pins, and
+event history too, run this only after uninstalling and after all leases end:
+
+```bash
+rm -rf "$HOME/Library/Application Support/SimulatorBroker"
+```
+
+That reset does not remove `.simulator-broker` files from repositories or
+delete Simulator devices from Xcode.
 
 ## Removing a stale project registration
 
@@ -199,8 +261,8 @@ active lease or pin.
   `~/.local/bin/simbroker`, `~/Applications/Simulator Broker.app`, and
   `~/Library/Application Support/SimulatorBroker/install`. Re-run
   `npm run install:local`.
-- Leave `~/Library/Application Support/SimulatorBroker/state` in place unless
-  you intend to reset live host state.
+- Leave `~/Library/Application Support/SimulatorBroker/host-config.json` and
+  `state/` in place unless you intend to reset live broker state.
 
 ## Local-debug and signed packaging
 

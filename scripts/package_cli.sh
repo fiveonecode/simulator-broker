@@ -68,9 +68,11 @@ cat > "$bundle/README.md" <<EOF
 Alpha CLI runtime. Node.js 20 or newer is required. Creating and running iOS
 Simulators still requires macOS and Xcode.
 
-Run:
+From the directory where you extracted the tarball, run:
 
-    ./bin/simbroker --help
+    ./${archive_name}/bin/simbroker --help
+
+If your shell is already inside ${archive_name}, run ./bin/simbroker --help.
 
 This archive is the Node CLI only. Homebrew installs it through
 Formula/simbroker.rb. The packable npm CLI is packages/simbroker

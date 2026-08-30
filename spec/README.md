@@ -57,6 +57,9 @@ This repo exists to develop a reusable local simulator broker:
 - the published onboarding docs now distinguish CLI-only install, repo-local contributor app+CLI install, local-debug portable bundling, and signed distribution packaging; a new login shell should resolve `simbroker` after install without sourcing `env.sh`
 - `CONTRIBUTING.md` publishes a public-patch track (Node.js 20 and the Node test suites, no harness session) and a labeled maintainer/agent harness track; `agent:complete` enforcement is unchanged
 - tagged Alpha `0.1.0-alpha.3` publishes a CLI tarball from `scripts/package_cli.sh`, the packable npm CLI, and a notarized operator app zip that include guided `simbroker setup`, and runs broker-core plus harness-adoption on GitHub-hosted Ubuntu and client tests on GitHub-hosted macOS; the macOS app suite and home-path public-surface scan are not on those jobs. Reproduce the cask zip with `scripts/package_cask_zip.sh` after Developer ID signing and notarization.
+- public pull-request CI and the tagged-release workflow run `npm run test:docs`
+  so archive paths, install guidance, and workflow gates cannot drift without a
+  failing check
 - GitHub issue forms cover install failure, bug, and feature; the pull-request
   template is a public-patch checklist and does not require a harness session
 - Homebrew formula `Formula/simbroker.rb` and packable npm CLI

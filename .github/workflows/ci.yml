@@ -1,5 +1,5 @@
 # Public Node test surface. GitHub-hosted Ubuntu does not see the operator
-# home path and has no Simulator, so it only runs broker-core, skill
+# home path and has no Simulator, so it runs docs, broker-core, skill
 # ownership, and harness-adoption. Client tests run on GitHub-hosted macOS.
 # Home-path public-surface scanning belongs to `npm test` on the operator
 # machine, not this workflow. Do not raise job budgets to hide hung waits.
@@ -31,6 +31,9 @@ jobs:
 
       - name: Managed skill ownership
         run: bash scripts/check_managed_skill_ownership.sh
+
+      - name: Public docs contract
+        run: npm run test:docs
 
       - name: broker-core tests
         run: npm run test:broker-core

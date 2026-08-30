@@ -37,8 +37,9 @@ This Alpha already includes:
   the contributor app+CLI path `npm run install:local`
 - tagged Alpha CLI tarball through `npm run package:cli` and GitHub Releases
 - public Node test CI: GitHub-hosted Ubuntu for broker-core and
-  harness-adoption, GitHub-hosted macOS for client tests. Home-path
-  public-surface scanning is `npm test` on the operator machine.
+  harness-adoption plus the public docs contract, GitHub-hosted macOS for
+  client tests. Tagged releases run the public docs contract before packaging.
+  Home-path public-surface scanning is `npm test` on the operator machine.
   `package_distribution.sh` payload-scan tests also stay on local Darwin
   `npm test`; GitHub CI skips them.
 - GitHub issue forms for install failure, bug, and feature, plus a light PR
@@ -60,8 +61,10 @@ This Alpha already includes:
 - sample consumer artifacts under `examples/harness-adoption/`
 - the `broker-harness-adoption` skill under `.agents/skills/broker-harness-adoption/`
 
-Automatic shutdown is unconfigured on a fresh install. Choose a duration in
-the app or CLI. Do not create or edit broker state files by hand.
+Automatic shutdown is unconfigured on a fresh install, so a released Simulator
+may remain booted for warm reuse. Check `simbroker idle status`; choose a
+duration in the app or enable one with `simbroker idle enable`. Do not create or
+edit broker state files by hand.
 
 Tracked-text public safety is checked with `npm run verify:public-surface`.
 For an extra machine-local denylist, create an ignored `.public-safety.local`

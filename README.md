@@ -27,10 +27,11 @@ If you only ever use one simulator by hand, you may not need this yet.
 
 ## Use it
 
-Install the Homebrew CLI and optional operator app, then run one guided machine
-setup. Homebrew does not create Simulator devices. `simbroker setup` first
-shows every prerequisite, the selected runtime, and the exact six-device plan;
-nothing changes until you confirm it. Node.js 20+ is still required at runtime.
+Install the CLI with Homebrew. Install the operator app with its Homebrew cask
+if you want the dashboard, then run one guided machine setup. Homebrew does not create
+Simulator devices. `simbroker setup` first shows every prerequisite, the selected
+runtime, and the exact six-device plan; nothing changes until you confirm it.
+Node.js 20+ is still required at runtime.
 
 ```bash
 brew install fiveonecode/simulator-broker/simbroker
@@ -48,11 +49,13 @@ brew install --cask fiveonecode/simulator-broker/simulator-broker
 
 That cask downloads `Simulator-Broker-<version>.zip` from
 [GitHub Releases](https://github.com/fiveonecode/simulator-broker/releases).
+It is the recommended app install and does not require XcodeGen.
 
-Open `Simulator Broker.app` and click **Complete first-time setup**, or use the
-same guided CLI flow:
+Open the app and click **Complete first-time setup**, or use the same guided CLI
+flow:
 
 ```bash
+open -a "Simulator Broker"
 simbroker setup
 ```
 
@@ -63,6 +66,15 @@ starts `brokerd`, refreshes the app snapshot, and verifies health. Rerun
 `simbroker setup` after an interruption; it safely finishes later stages without
 duplicating devices. For automation, use `simbroker setup --json`, then apply
 the returned `planId` with `--apply --confirm <plan-id> --json`.
+
+After a lease is released, its Simulator may stay booted for fast reuse. That
+is intentional: Automatic shutdown is off until a human enables it. Inspect or
+opt in with:
+
+```bash
+simbroker idle status
+simbroker idle enable --grace-seconds <60-86400> --actor-type human --actor-id <operator-id>
+```
 
 Other CLI install options:
 
@@ -86,8 +98,13 @@ and one guarded login-shell PATH line. Open a new terminal if this shell still
 cannot resolve `simbroker`. `source .../env.sh` remains a fallback.
 
 Xcode is still required to create and run iOS Simulators. Alpha CLI tarballs
-are also attached to those releases. Extract a tarball and run
-`./bin/simbroker --help`.
+are also attached to those releases. The archive contains a versioned top-level
+directory:
+
+```bash
+tar -xzf simulator-broker-0.1.0-alpha.3-cli.tar.gz
+./simulator-broker-0.1.0-alpha.3-cli/bin/simbroker --help
+```
 
 `simbroker` help and `simbroker doctor` print human-readable text by default.
 Pass `--json` for machine-readable payloads.
@@ -106,7 +123,8 @@ npm run build:app
 ```
 
 `install:local` builds the Debug app, installs the CLI, and copies
-`Simulator Broker.app` to `~/Applications`.
+`Simulator Broker.app` to `~/Applications`. XcodeGen is required only for this
+source-build path, not for the Homebrew cask.
 
 Contributor setup is in [CONTRIBUTING.md](CONTRIBUTING.md). A small public
 patch uses Node.js 20 and the Node test suites. Maintainers and agent runs

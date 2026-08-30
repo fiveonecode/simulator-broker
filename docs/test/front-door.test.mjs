@@ -14,6 +14,7 @@ function readRepoFile(relativePath) {
 
 const packageJson = JSON.parse(readRepoFile("package.json"));
 const version = packageJson.version;
+const cliArchiveDirectory = `simulator-broker-${version}-cli`;
 
 function firstScreen(markdown) {
   const lines = markdown.split(/\r?\n/);
@@ -104,6 +105,78 @@ test("README Use it orders Homebrew CLI, cask, guided setup, then hello world", 
   assert.ok(/repair_needed/.test(gettingHello));
 });
 
+test("newcomer app guidance uses the cask and keeps XcodeGen source-build-only", () => {
+  const readme = readRepoFile("README.md");
+  const gettingStarted = readRepoFile("docs/getting-started.md");
+  const cask = headingSection(gettingStarted, "Install the app with Homebrew");
+  const sourceBuild = headingSection(gettingStarted, "Build the app from source (contributors)");
+
+  assert.ok(cask.includes("brew install --cask fiveonecode/simulator-broker/simulator-broker"));
+  assert.ok(cask.includes('open -a "Simulator Broker"'));
+  assert.match(cask, /recommended app install/i);
+  assert.match(cask, /does not require XcodeGen/i);
+  assert.ok(sourceBuild.includes("npm run install:local"));
+  assert.match(sourceBuild, /requires\s+XcodeGen/i);
+  assert.ok(
+    gettingStarted.indexOf("## Install the app with Homebrew")
+      < gettingStarted.indexOf("## Build the app from source (contributors)"),
+    "the cask must appear before the contributor source-build path",
+  );
+  assert.match(readme, /XcodeGen is required only for this\s+source-build path, not for the Homebrew cask/i);
+});
+
+test("released CLI archive guidance enters its versioned top-level directory", () => {
+  const readme = readRepoFile("README.md");
+  const gettingStarted = readRepoFile("docs/getting-started.md");
+  const extractCommand = `tar -xzf simulator-broker-${version}-cli.tar.gz`;
+  const helpCommand = `./${cliArchiveDirectory}/bin/simbroker --help`;
+
+  for (const body of [readme, gettingStarted]) {
+    assert.ok(body.includes(extractCommand));
+    assert.ok(body.includes(helpCommand));
+    assert.equal(body.includes("`./bin/simbroker --help`"), false);
+  }
+});
+
+test("newcomer docs explain warm reuse and opt-in Automatic shutdown", () => {
+  const readme = readRepoFile("README.md");
+  const gettingStarted = readRepoFile("docs/getting-started.md");
+  const status = readRepoFile("docs/status.md");
+
+  for (const body of [readme, gettingStarted, status]) {
+    assert.match(body, /remain booted|stay booted|warm reuse/i);
+    assert.match(body, /Automatic shutdown/i);
+    assert.ok(body.includes("simbroker idle status"));
+  }
+  for (const body of [readme, gettingStarted]) {
+    assert.ok(
+      body.includes(
+        "simbroker idle enable --grace-seconds <60-86400> --actor-type human --actor-id <operator-id>",
+      ),
+    );
+  }
+});
+
+test("Homebrew reinstall and uninstall preserve state unless reset is explicit", () => {
+  const gettingStarted = readRepoFile("docs/getting-started.md");
+  const reinstall = headingSection(gettingStarted, "Reinstall with Homebrew");
+  const uninstall = headingSection(gettingStarted, "Uninstall");
+
+  assert.ok(reinstall.includes("simbroker service stop"));
+  assert.ok(reinstall.includes("brew reinstall fiveonecode/simulator-broker/simbroker"));
+  assert.ok(reinstall.includes("brew reinstall --cask fiveonecode/simulator-broker/simulator-broker"));
+  assert.ok(reinstall.includes("simbroker service start"));
+  assert.ok(reinstall.includes("simbroker setup"));
+  assert.ok(uninstall.includes("brew uninstall --cask fiveonecode/simulator-broker/simulator-broker"));
+  assert.ok(uninstall.includes("brew uninstall fiveonecode/simulator-broker/simbroker"));
+  assert.ok(uninstall.includes("brew untap fiveonecode/simulator-broker"));
+  assert.ok(uninstall.includes("$HOME/Library/Application Support/SimulatorBroker/"));
+  assert.ok(uninstall.includes('rm -rf "$HOME/Library/Application Support/SimulatorBroker"'));
+  assert.match(uninstall, /preserve host configuration and broker state/i);
+  assert.match(uninstall, /does not remove `.simulator-broker` files/i);
+  assert.match(uninstall, /or\s+delete Simulator devices from Xcode/i);
+});
+
 test("newcomer docs enforce one guided machine setup and version-agnostic project defaults", () => {
   const readme = readRepoFile("README.md");
   const gettingStarted = readRepoFile("docs/getting-started.md");
@@ -164,6 +237,25 @@ function headingSection(markdown, heading) {
   return markdown.slice(bodyStart, next === -1 ? markdown.length : next);
 }
 
+function workflowJobSection(workflow, jobId) {
+  const marker = `  ${jobId}:\n`;
+  const start = workflow.indexOf(marker);
+  assert.notEqual(start, -1, `workflow must define job ${jobId}`);
+  const bodyStart = start + marker.length;
+  const nextJobOffset = workflow.slice(bodyStart).search(/\n  [a-zA-Z0-9_-]+:\n/);
+  return workflow.slice(bodyStart, nextJobOffset === -1 ? undefined : bodyStart + nextJobOffset);
+}
+
+function assertWorkflowJobRunsExactCommand(workflow, jobId, command) {
+  const job = workflowJobSection(workflow, jobId);
+  const count = job
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line === `run: ${command}`)
+    .length;
+  assert.equal(count, 1, `${jobId} must run ${command} exactly once`);
+}
+
 test("CONTRIBUTING leads with a public Node-20 patch track that does not require the harness", () => {
   const contributing = readRepoFile("CONTRIBUTING.md");
   const human = headingSection(contributing, "Public patches");
@@ -184,8 +276,9 @@ test("CONTRIBUTING leads with a public Node-20 patch track that does not require
   );
   assert.ok(human.includes("npm run test:docs"), "public track must name test:docs");
   assert.ok(
-    human.includes("does not run") && human.includes("npm run test:docs"),
-    "public track must not claim Ubuntu CI runs test:docs",
+    human.includes("GitHub-hosted Ubuntu CI runs")
+      && human.includes("`test:harness-adoption` plus `npm run test:docs`"),
+    "public track must say Ubuntu CI runs test:docs",
   );
   assert.equal(human.includes("You do not need to run `agent:context`"), true);
   assert.equal(human.includes("$HOME/.codex"), false);
@@ -237,7 +330,9 @@ test("README advertises GitHub Releases and the public Node CI badge", () => {
 
   assert.ok(readme.includes("actions/workflows/ci.yml/badge.svg"));
   assert.ok(readme.includes("github.com/fiveonecode/simulator-broker/releases"));
-  assert.ok(readme.includes("./bin/simbroker --help"));
+  assert.ok(readme.includes(`tar -xzf simulator-broker-${version}-cli.tar.gz`));
+  assert.ok(readme.includes(`./${cliArchiveDirectory}/bin/simbroker --help`));
+  assert.equal(readme.includes("`./bin/simbroker --help`"), false);
   assert.equal(readme.includes("or GitHub Release yet"), false);
   assert.equal(readme.includes("There is no Homebrew formula or npm package yet."), false);
   assert.ok(readme.includes("brew install fiveonecode/simulator-broker/simbroker"));
@@ -265,6 +360,7 @@ test("public CI splits Ubuntu core suites from macOS client tests and skips the 
   assert.match(ci, /timeout-minutes:\s*10/);
   assert.match(ci, /timeout-minutes:\s*15/);
   assert.equal(ci.includes("npm run verify:public-surface"), false);
+  assertWorkflowJobRunsExactCommand(ci, "node-ubuntu", "npm run test:docs");
   assert.ok(ci.includes("npm run test:broker-core"));
   const clientTestRun = ci
     .split("\n")
@@ -284,6 +380,7 @@ test("release workflow packages the CLI tarball on version tags", () => {
   const release = readRepoFile(".github/workflows/release.yml");
 
   assert.ok(release.includes("tags:"));
+  assertWorkflowJobRunsExactCommand(release, "release", "npm run test:docs");
   assert.ok(release.includes("npm run package:cli"));
   assert.ok(release.includes("npm run package:npm"));
   assert.ok(release.includes("artifacts/npm/simbroker-${version}.tgz"));
@@ -301,6 +398,33 @@ test("release workflow packages the CLI tarball on version tags", () => {
     "tag release notes must not claim the notarized app zip is absent",
   );
   assert.ok(release.includes("brew install --cask fiveonecode/simulator-broker/simulator-broker"));
+});
+
+test("public PR and tagged-release docs gates fail closed when the command is missing", () => {
+  const ci = readRepoFile(".github/workflows/ci.yml");
+  const release = readRepoFile(".github/workflows/release.yml");
+
+  assert.match(ci, /^  pull_request:\s*$/m);
+  assert.match(release, /^    tags:\s*$/m);
+  assertWorkflowJobRunsExactCommand(ci, "node-ubuntu", "npm run test:docs");
+  assertWorkflowJobRunsExactCommand(release, "release", "npm run test:docs");
+  assert.ok(
+    release.indexOf("run: npm run test:docs") < release.indexOf("npm run package:cli"),
+    "the tagged-release docs gate must run before packaging",
+  );
+
+  const ciWithoutDocs = ci.replace("run: npm run test:docs", "run: npm run test:broker-core");
+  const releaseWithoutDocs = release.replace("run: npm run test:docs", "run: npm run test:broker-core");
+  assert.notEqual(ciWithoutDocs, ci, "negative CI fixture must remove the docs command");
+  assert.notEqual(releaseWithoutDocs, release, "negative release fixture must remove the docs command");
+  assert.throws(
+    () => assertWorkflowJobRunsExactCommand(ciWithoutDocs, "node-ubuntu", "npm run test:docs"),
+    /node-ubuntu must run npm run test:docs exactly once/,
+  );
+  assert.throws(
+    () => assertWorkflowJobRunsExactCommand(releaseWithoutDocs, "release", "npm run test:docs"),
+    /release must run npm run test:docs exactly once/,
+  );
 });
 
 test("issue forms cover install failure, bug, and feature and state Alpha limits", () => {
@@ -500,7 +624,7 @@ test("package_cli.sh writes a runnable CLI tarball without tests or the app", ()
   const extract = spawnSync("tar", ["-xzf", tarball, "-C", extractDir], { encoding: "utf8" });
   assert.equal(extract.status, 0, extract.stderr);
 
-  const root = path.join(extractDir, `simulator-broker-${version}-cli`);
+  const root = path.join(extractDir, cliArchiveDirectory);
   const help = spawnSync(path.join(root, "bin/simbroker"), ["--help"], { encoding: "utf8" });
   assert.equal(help.status, 0, help.stderr);
   assert.ok(help.stdout.includes("simbroker") || help.stderr.includes("simbroker"));
@@ -508,6 +632,9 @@ test("package_cli.sh writes a runnable CLI tarball without tests or the app", ()
   assert.equal(fs.existsSync(path.join(root, "client/test")), false);
   assert.equal(fs.existsSync(path.join(root, "app")), false);
   assert.equal(fs.existsSync(path.join(root, "LICENSE")), true);
+  const packagedReadme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+  assert.ok(packagedReadme.includes(`./${cliArchiveDirectory}/bin/simbroker --help`));
+  assert.equal(packagedReadme.includes("`./bin/simbroker --help`"), false);
 });
 
 test("package_cask_zip.sh is the Homebrew cask zip path", () => {
