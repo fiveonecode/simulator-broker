@@ -54,6 +54,13 @@ final class BrokerOnboardingCommandsTests: XCTestCase {
     )
   }
 
+  func testUnverifiedStatusCopyExplainsExactStatusThenRefresh() {
+    XCTAssertEqual(
+      BrokerUnverifiedStatusCopy.manualFallbackText,
+      "Check exact service status without mutating it, then refresh the dashboard."
+    )
+  }
+
   func testMissingCLICopyLeadsWithHomebrewFormulaAndRefresh() {
     XCTAssertEqual(
       BrokerMissingCLISetupCopy.brewInstallCommand,

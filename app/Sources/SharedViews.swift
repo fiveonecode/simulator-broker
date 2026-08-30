@@ -516,13 +516,10 @@ struct BrokerSetupView: View {
         ),
       ]
     case .serviceStatusUnverified:
-      return [
-        formatter.serviceStatusCommand(
-          hostConfigPath: store.hostConfigPath,
-          stateRootPath: store.stateRootPath,
-          serviceSocketPath: store.serviceSocketPath
-        ),
-      ]
+      if let command = store.unverifiedServiceStatusFallbackCommand {
+        return [command]
+      }
+      return []
     }
   }
 
@@ -540,7 +537,7 @@ struct BrokerSetupView: View {
     case .needsSnapshotRefresh:
       return "The same setup command safely refreshes and verifies broker state."
     case .serviceStatusUnverified:
-      return "Check exact service status without mutating it, then refresh the dashboard."
+      return BrokerUnverifiedStatusCopy.manualFallbackText
     case .ready:
       return "Rerunning setup verifies the existing healthy machine without expanding its pool."
     }

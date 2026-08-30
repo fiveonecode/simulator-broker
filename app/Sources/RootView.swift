@@ -205,22 +205,31 @@ struct RootView: View {
       || store.startupState == .serviceStatusUnverified
       || store.serviceRequiresRestart
     {
-      if store.canOfferReadOnlyFinishSetup {
-        StatusMessageCard(
-          color: .orange,
-          message: store.serviceAvailabilityMessage,
-          symbolName: "bolt.slash.fill",
-          actionTitle: "Finish setup",
-          onAction: resumeGuidedSetup,
-          onDismiss: nil
-        )
-      } else {
-        StatusMessageCard(
-          color: .orange,
-          message: store.serviceAvailabilityMessage,
-          symbolName: store.serviceStatusUnverified ? "arrow.clockwise.circle" : "bolt.slash.fill",
-          onDismiss: nil
-        )
+      VStack(alignment: .leading, spacing: 10) {
+        if store.canOfferReadOnlyFinishSetup {
+          StatusMessageCard(
+            color: .orange,
+            message: store.serviceAvailabilityMessage,
+            symbolName: "bolt.slash.fill",
+            actionTitle: "Finish setup",
+            onAction: resumeGuidedSetup,
+            onDismiss: nil
+          )
+        } else {
+          StatusMessageCard(
+            color: .orange,
+            message: store.serviceAvailabilityMessage,
+            symbolName: store.serviceStatusUnverified ? "arrow.clockwise.circle" : "bolt.slash.fill",
+            onDismiss: nil
+          )
+        }
+        if let command = store.unverifiedServiceStatusFallbackCommand {
+          Text(BrokerUnverifiedStatusCopy.manualFallbackText)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+          BrokerCommandSnippetView(command: command)
+        }
       }
     }
   }

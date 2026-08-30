@@ -74,6 +74,11 @@ struct BrokerCLIInvocationFormatter {
   }
 }
 
+enum BrokerUnverifiedStatusCopy {
+  static let manualFallbackText =
+    "Check exact service status without mutating it, then refresh the dashboard."
+}
+
 enum BrokerMissingCLISetupCopy {
   static let brewInstallCommand = "brew install fiveonecode/simulator-broker/simbroker"
   static let refreshActionTitle = "Refresh"
