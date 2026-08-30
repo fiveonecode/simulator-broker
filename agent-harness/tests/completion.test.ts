@@ -61,11 +61,13 @@ function populateLongRunningArtifacts(sessionDir: string, evaluationOverrides: P
     deliverables: ["Implement the required harness change."],
     implementationSlices: ["Update session artifacts and completion logic."],
     objective: "Land the requested long-running harness improvement.",
+    risks: ["A new close-out rule can reject existing empty risk lists until agents document an evidence-based entry."],
     verificationPlan: ["npm run agent:verify -- --profile implementation --paths <files>"],
   });
   writeSessionHandoff(sessionDir, {
     ...readSessionHandoff(sessionDir),
     nextSteps: ["Finalize verification and close the task session."],
+    openRisks: ["Presence validation cannot judge the quality of the stated residual risk."],
     status: "in-progress",
     summary: "Long-running session is active and resumable.",
   });
@@ -353,6 +355,39 @@ describe("task completion gate", () => {
 
     expect(result.status).toBe("passed");
     expect(result.sessionArtifactResults.every((entry) => entry.satisfied)).toBe(true);
+    rmSync(repoRoot, { force: true, recursive: true });
+  });
+
+  it("fails a long-running session until plan and handoff risk accounting is explicit", () => {
+    const { repoRoot, sessionDir, taskFilePath } = createRepoFixture();
+    const contextPack = makeContextPack("broker-core/index.mjs", "long-running");
+    contextPack.verificationObligations = [];
+
+    const contract = writeTaskSession(sessionDir, contextPack, repoRoot);
+    populateLongRunningArtifacts(sessionDir);
+    writeTaskPlan(sessionDir, {
+      ...readTaskPlan(sessionDir),
+      risks: [],
+    });
+    writeSessionHandoff(sessionDir, {
+      ...readSessionHandoff(sessionDir),
+      openRisks: [],
+    });
+    commitTaskChange(repoRoot, taskFilePath);
+    writeVerifyResult(sessionDir, "implementation", makeCurrentVerifyResult(repoRoot, contract, {
+      profileId: "implementation",
+      proofKind: "code",
+    }));
+
+    const result = evaluateTaskCompletion(sessionDir, repoRoot, readTaskContract(sessionDir), loadSessionVerifyResults(sessionDir));
+
+    expect(result.status).toBe("failed");
+    expect(result.sessionArtifactResults.find((entry) => entry.artifactId === "task-plan")?.details).toContain(
+      "Task plan must include at least one risk entry or an explicit none-with-basis entry.",
+    );
+    expect(result.sessionArtifactResults.find((entry) => entry.artifactId === "session-handoff")?.details).toContain(
+      "Session handoff must include at least one residual-risk entry or an explicit none-with-basis entry.",
+    );
     rmSync(repoRoot, { force: true, recursive: true });
   });
 
