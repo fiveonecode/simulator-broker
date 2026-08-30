@@ -373,16 +373,15 @@ actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
       && liveService.runtimeVersion == service.runtimeVersion
 
     guard selectedIdentityMatches else {
-      if result.requiresRestart {
-        throw BrokerSnapshotLoaderError.unverifiedServiceStatus(
-          "brokerd restart status did not match the selected runtime identity."
-        )
-      }
-      return nil
+      throw BrokerSnapshotLoaderError.unverifiedServiceStatus(
+        "brokerd status did not match the selected runtime identity."
+      )
     }
 
     guard result.requiresRestart || liveService.runtimeVersion == expectedRuntimeVersion else {
-      return nil
+      throw BrokerSnapshotLoaderError.unverifiedServiceStatus(
+        "brokerd status reported an incompatible runtime version without restart-required status."
+      )
     }
 
     return result

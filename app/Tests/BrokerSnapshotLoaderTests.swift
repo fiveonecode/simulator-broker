@@ -436,7 +436,7 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     } catch let error as BrokerSnapshotLoaderError {
       XCTAssertEqual(
         error.localizedDescription,
-        "Failed to verify brokerd status: brokerd restart status did not match the selected runtime identity."
+        "Failed to verify brokerd status: brokerd status did not match the selected runtime identity."
       )
     } catch {
       XCTFail("Expected BrokerSnapshotLoaderError, got \(error)")
@@ -513,7 +513,7 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     }
   }
 
-  func testLoaderIgnoresServiceMetadataWhenLiveStatusReportsDifferentIdentity() async throws {
+  func testLoaderFailsClosedWhenHealthyLiveStatusReportsDifferentSelectedIdentity() async throws {
     let tempRoot = try makeTempRoot()
     let paths = BrokerRuntimePaths(
       stateRoot: tempRoot.appending(path: "state"),
@@ -536,24 +536,85 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
       to: paths.serviceMetadataURL
     )
 
-    let loadedState = try await FileBrokerSnapshotLoader(
-      paths: paths,
-      processIdentifierExists: { pid in pid == 12345 },
-      serviceStatusProbe: { service in
+    let selectedService = BrokerServiceMetadata(
+      hostConfigPath: paths.hostConfigURL.path,
+      pid: 12345,
+      socketPath: socketURL.path,
+      startedAt: "2026-04-10T00:00:00Z",
+      stateRoot: paths.stateRoot.path,
+      transport: "unix-http",
+      runtimeVersion: runtimeVersion
+    )
+    let mismatchedServices: [(String, BrokerServiceMetadata)] = [
+      (
+        "state root",
         BrokerServiceMetadata(
-          hostConfigPath: service.hostConfigPath,
-          pid: service.pid,
-          socketPath: service.socketPath,
-          startedAt: service.startedAt,
+          hostConfigPath: selectedService.hostConfigPath,
+          pid: selectedService.pid,
+          socketPath: selectedService.socketPath,
+          startedAt: selectedService.startedAt,
           stateRoot: "/tmp/other-simbroker-state",
-          transport: service.transport,
-          runtimeVersion: service.runtimeVersion
+          transport: selectedService.transport,
+          runtimeVersion: selectedService.runtimeVersion
         )
-      },
-      expectedRuntimeVersion: runtimeVersion
-    ).load()
+      ),
+      (
+        "host config",
+        BrokerServiceMetadata(
+          hostConfigPath: "/tmp/other-host-config.json",
+          pid: selectedService.pid,
+          socketPath: selectedService.socketPath,
+          startedAt: selectedService.startedAt,
+          stateRoot: selectedService.stateRoot,
+          transport: selectedService.transport,
+          runtimeVersion: selectedService.runtimeVersion
+        )
+      ),
+      (
+        "socket",
+        BrokerServiceMetadata(
+          hostConfigPath: selectedService.hostConfigPath,
+          pid: selectedService.pid,
+          socketPath: "/tmp/other-broker.sock",
+          startedAt: selectedService.startedAt,
+          stateRoot: selectedService.stateRoot,
+          transport: selectedService.transport,
+          runtimeVersion: selectedService.runtimeVersion
+        )
+      ),
+      (
+        "recorded runtime",
+        BrokerServiceMetadata(
+          hostConfigPath: selectedService.hostConfigPath,
+          pid: selectedService.pid,
+          socketPath: selectedService.socketPath,
+          startedAt: selectedService.startedAt,
+          stateRoot: selectedService.stateRoot,
+          transport: selectedService.transport,
+          runtimeVersion: "other-recorded-runtime"
+        )
+      ),
+    ]
 
-    XCTAssertNil(loadedState.service)
+    for (identityField, mismatchedService) in mismatchedServices {
+      do {
+        _ = try await FileBrokerSnapshotLoader(
+          paths: paths,
+          processIdentifierExists: { pid in pid == 12345 },
+          serviceStatusProbe: { _ in mismatchedService },
+          expectedRuntimeVersion: runtimeVersion
+        ).load()
+        XCTFail("Expected healthy \(identityField) mismatch to remain unverified")
+      } catch let error as BrokerSnapshotLoaderError {
+        XCTAssertEqual(
+          error.localizedDescription,
+          "Failed to verify brokerd status: brokerd status did not match the selected runtime identity.",
+          identityField
+        )
+      } catch {
+        XCTFail("Expected BrokerSnapshotLoaderError for \(identityField), got \(error)")
+      }
+    }
   }
 
   func testLoaderAcceptsServiceMetadataWhenLiveStatusMatchesRuntime() async throws {
@@ -622,7 +683,7 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     XCTAssertNil(loadedState.service)
   }
 
-  func testLoaderIgnoresServiceMetadataFromDifferentRuntimeVersion() async throws {
+  func testLoaderFailsClosedWhenHealthyStatusClaimsAnUnexpectedRuntimeVersion() async throws {
     let tempRoot = try makeTempRoot()
     let paths = BrokerRuntimePaths(
       stateRoot: tempRoot.appending(path: "state"),
@@ -644,14 +705,22 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
       to: paths.serviceMetadataURL
     )
 
-    let loadedState = try await FileBrokerSnapshotLoader(
-      paths: paths,
-      processIdentifierExists: { _ in true },
-      serviceStatusProbe: { service in service },
-      expectedRuntimeVersion: runtimeVersion
-    ).load()
-
-    XCTAssertNil(loadedState.service)
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        processIdentifierExists: { _ in true },
+        serviceStatusProbe: { service in service },
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected an unexpected healthy runtime version to remain unverified")
+    } catch let error as BrokerSnapshotLoaderError {
+      XCTAssertEqual(
+        error.localizedDescription,
+        "Failed to verify brokerd status: brokerd status reported an incompatible runtime version without restart-required status."
+      )
+    } catch {
+      XCTFail("Expected BrokerSnapshotLoaderError, got \(error)")
+    }
   }
 
   func testLoaderIgnoresServiceMetadataThatDoesNotMatchConfiguredSocket() async throws {

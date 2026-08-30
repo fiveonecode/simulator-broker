@@ -703,6 +703,33 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertTrue(invocations.isEmpty)
   }
 
+  func testLiveServiceIdentityMismatchRevokesAuthorityAndDoesNotOfferServiceStart() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let readyState = makeLoadedState(snapshot: snapshot)
+    let mismatchError = BrokerSnapshotLoaderError.unverifiedServiceStatus(
+      "brokerd status did not match the selected runtime identity."
+    )
+    let store = BrokerDashboardStore(
+      loader: FailingSnapshotLoader(error: mismatchError),
+      commandClient: RecordingCommandClient(),
+      runtimePaths: readyState.paths
+    )
+    store.loadedState = readyState
+
+    store.refreshNow()
+    try await waitUntil {
+      store.isRefreshing == false && store.lastErrorMessage == mismatchError.localizedDescription
+    }
+
+    XCTAssertEqual(store.loadedState?.snapshot?.generatedAt, snapshot.generatedAt)
+    XCTAssertNil(store.loadedState?.service)
+    XCTAssertTrue(store.serviceStatusUnverified)
+    XCTAssertEqual(store.startupState, .serviceStatusUnverified)
+    XCTAssertFalse(store.canSendCommands)
+    XCTAssertFalse(store.canStartBrokerService)
+    XCTAssertFalse(store.canOfferReadOnlyFinishSetup)
+  }
+
   func testRefreshFailureDismissesGuidedSetupConfirmationAndBlocksLocalApply() async throws {
     let snapshot = try loadFixture(named: "busy-snapshot")
     let loadedState = makeLoadedState(snapshot: snapshot)
@@ -2614,6 +2641,68 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertEqual(store.startupState, .ready)
   }
 
+  func testStoppingStoreWhileGuidedSetupRecoveryIsSuspendedDiscardsItsResultAfterRestart() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let originalService = try XCTUnwrap(loadedState.service)
+    let restartedService = BrokerServiceMetadata(
+      hostConfigPath: originalService.hostConfigPath,
+      pid: originalService.pid + 1,
+      socketPath: originalService.socketPath,
+      startedAt: "2026-08-30T15:45:00Z",
+      stateRoot: originalService.stateRoot,
+      transport: originalService.transport,
+      runtimeVersion: originalService.runtimeVersion
+    )
+    let loader = ControlledSnapshotLoader()
+    let localRunner = CancellableApplyLocalCommandRunner(plan: try makeSetupPlan())
+    let store = BrokerDashboardStore(
+      loader: loader,
+      commandClient: RecordingCommandClient(),
+      localCommandRunner: localRunner,
+      runtimePaths: loadedState.paths,
+      refreshInterval: .seconds(60)
+    )
+    store.loadedState = loadedState
+
+    store.requestGuidedSetup()
+    try await waitUntil { store.setupPhase == .awaitingConfirmation }
+    store.confirmGuidedSetup()
+    try await waitUntil { await localRunner.applyStarted() }
+    let stoppedSetupTask = store.stopGuidedSetup()
+    try await waitUntil { await loader.pendingCount() == 1 }
+
+    store.stop()
+    store.start()
+    defer { store.stop() }
+    try await waitUntil { await loader.pendingCount() == 2 }
+
+    await loader.resumePending(
+      at: 0,
+      with: makeLoadedState(snapshot: snapshot, service: restartedService)
+    )
+    await stoppedSetupTask?.value
+
+    XCTAssertEqual(store.loadedState?.service?.pid, originalService.pid)
+    XCTAssertEqual(store.loadedState?.snapshot?.generatedAt, snapshot.generatedAt)
+    XCTAssertFalse(store.serviceStatusUnverified)
+    XCTAssertNil(store.lastErrorMessage)
+    let pendingAfterDiscardedRecovery = await loader.pendingCount()
+    XCTAssertEqual(pendingAfterDiscardedRecovery, 1)
+
+    await loader.resumePending(
+      at: 0,
+      with: makeLoadedState(snapshot: snapshot, service: restartedService)
+    )
+    try await waitUntil {
+      store.isRefreshing == false && store.loadedState?.service?.pid == restartedService.pid
+    }
+
+    XCTAssertTrue(store.canSendCommands)
+    XCTAssertFalse(store.serviceStatusUnverified)
+    XCTAssertNil(store.lastErrorMessage)
+  }
+
   func testUnverifiedStatusFallbackCommandPreservesSelectedBrokerPathsWithCachedSnapshot() async throws {
     let runtimePaths = BrokerRuntimePaths(
       stateRoot: URL(fileURLWithPath: "/tmp/state root"),
@@ -2976,6 +3065,50 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertNotNil(store.loadedState?.service)
     XCTAssertTrue(store.canSendCommands)
     XCTAssertEqual(store.startupState, .ready)
+    XCTAssertNil(store.lastErrorMessage)
+  }
+
+  func testStoppedRefreshCannotClearRestartedRefreshSpinnerAfterSuspendedLoad() async throws {
+    let originalState = makeLoadedState(
+      snapshot: try loadFixture(named: "busy-snapshot", generatedAt: "2026-04-09T10:00:00Z")
+    )
+    let restartedState = makeLoadedState(
+      snapshot: try loadFixture(named: "busy-snapshot", generatedAt: "2026-04-09T10:30:00Z")
+    )
+    let loader = ControlledSnapshotLoader()
+    let store = BrokerDashboardStore(
+      loader: loader,
+      commandClient: RecordingCommandClient(),
+      runtimePaths: originalState.paths,
+      refreshInterval: .seconds(60)
+    )
+    store.loadedState = originalState
+
+    store.start()
+    try await waitUntil { await loader.pendingCount() == 1 && store.isRefreshing }
+    let stoppedRefreshTask = store.stop()
+    XCTAssertFalse(store.isRefreshing)
+
+    store.start()
+    defer { store.stop() }
+    try await waitUntil { await loader.pendingCount() == 2 && store.isRefreshing }
+
+    await loader.resumePending(at: 0, with: restartedState)
+    await stoppedRefreshTask?.value
+
+    XCTAssertTrue(store.isRefreshing)
+    XCTAssertEqual(store.loadedState?.snapshot?.generatedAt, originalState.snapshot?.generatedAt)
+    let pendingAfterStoppedRefresh = await loader.pendingCount()
+    XCTAssertEqual(pendingAfterStoppedRefresh, 1)
+
+    await loader.resumePending(at: 0, with: restartedState)
+    try await waitUntil {
+      store.isRefreshing == false
+        && store.loadedState?.snapshot?.generatedAt == restartedState.snapshot?.generatedAt
+    }
+
+    XCTAssertTrue(store.canSendCommands)
+    XCTAssertFalse(store.serviceStatusUnverified)
     XCTAssertNil(store.lastErrorMessage)
   }
 

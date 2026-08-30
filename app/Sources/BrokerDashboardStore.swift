@@ -1048,8 +1048,13 @@ final class BrokerDashboardStore {
   private func refresh(
     silent: Bool = false,
     preservingGuidedSetup: Bool = false,
-    expectedSetupGeneration: Int? = nil
+    expectedSetupGeneration: Int? = nil,
+    expectedStopGeneration: Int? = nil
   ) async -> BrokerRefreshOutcome {
+    let lifecycleGeneration = expectedStopGeneration ?? storeStopGeneration
+    guard lifecycleGeneration == storeStopGeneration else {
+      return .discarded
+    }
     if let expectedSetupGeneration, expectedSetupGeneration != setupGeneration {
       return .discarded
     }
@@ -1061,7 +1066,7 @@ final class BrokerDashboardStore {
       isRefreshing = true
     }
     defer {
-      if silent == false {
+      if silent == false, lifecycleGeneration == storeStopGeneration {
         visibleRefreshCount = max(0, visibleRefreshCount - 1)
         isRefreshing = visibleRefreshCount > 0
       }
@@ -1070,6 +1075,10 @@ final class BrokerDashboardStore {
     logRefreshStart(mode: refreshMode)
     do {
       let refreshedState = try await loader.load()
+      guard lifecycleGeneration == storeStopGeneration else {
+        completeRefresh(generation: generation, with: .discarded)
+        return .discarded
+      }
       try Task.checkCancellation()
       if let expectedSetupGeneration, expectedSetupGeneration != setupGeneration {
         completeRefresh(generation: generation, with: .discarded)
@@ -1093,6 +1102,10 @@ final class BrokerDashboardStore {
       completeRefresh(generation: generation, with: .succeeded)
       return .succeeded
     } catch is CancellationError {
+      guard lifecycleGeneration == storeStopGeneration else {
+        completeRefresh(generation: generation, with: .discarded)
+        return .discarded
+      }
       if let expectedSetupGeneration, expectedSetupGeneration != setupGeneration {
         completeRefresh(generation: generation, with: .discarded)
         return .discarded
@@ -1105,6 +1118,10 @@ final class BrokerDashboardStore {
       completeRefresh(generation: generation, with: .discarded)
       return .discarded
     } catch {
+      guard lifecycleGeneration == storeStopGeneration else {
+        completeRefresh(generation: generation, with: .discarded)
+        return .discarded
+      }
       if let expectedSetupGeneration, expectedSetupGeneration != setupGeneration {
         completeRefresh(generation: generation, with: .discarded)
         return .discarded
@@ -1351,7 +1368,8 @@ final class BrokerDashboardStore {
       _ = await self.refresh(
         silent: true,
         preservingGuidedSetup: true,
-        expectedSetupGeneration: expectedSetupGeneration
+        expectedSetupGeneration: expectedSetupGeneration,
+        expectedStopGeneration: expectedStopGeneration
       )
     }
     await recoveryRefreshTask.value
