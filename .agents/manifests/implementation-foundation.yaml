@@ -6,6 +6,7 @@ globs:
   - scripts/install_distribution.sh
   - scripts/install_local.sh
   - scripts/install_smoke.sh
+  - scripts/installed_app_smoke_evidence.mjs
   - scripts/package_distribution.sh
   - scripts/package_local.sh
   - scripts/package_smoke.sh
@@ -30,6 +31,7 @@ allowed_paths:
   - scripts/install_distribution.sh
   - scripts/install_local.sh
   - scripts/install_smoke.sh
+  - scripts/installed_app_smoke_evidence.mjs
   - scripts/package_distribution.sh
   - scripts/package_local.sh
   - scripts/package_smoke.sh

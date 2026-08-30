@@ -31,7 +31,7 @@ A first extracted implementation slice now exists:
 - app project generation atomically derives an ignored Swift runtime-version constant and explicit app `Info.plist` compatibility key from the root `package.json`; both are separate from bundle marketing/build metadata and are regenerated before every supported build or test entrypoint
 - the macOS app emits unified `Logger` telemetry for startup, refresh, setup, broker actions, and override-required command outcomes
 - the repo-owned macOS entrypoints now fail fast with actionable messages when `xcodegen` or `xcodebuild` is missing or misconfigured
-- local install smoke coverage for a fresh-machine-style bootstrap, service start, lease acquire, app snapshot flow, installed-app launch proof, simulator cleanup that preserves preexisting simulators, and restoration of preexisting default install metadata
+- local install smoke coverage for a fresh-machine-style bootstrap, service start, lease acquire, app snapshot flow, and correlated installed-app snapshot-decode proof, plus simulator cleanup that preserves preexisting simulators and restoration of preexisting default install metadata
 - guided setup coverage for prerequisite preview, exact plan extraction,
   confirmed six-device apply, service/snapshot/doctor readiness,
   version-agnostic project scaffold, lease acquire/release, zero-create rerun,
@@ -139,7 +139,7 @@ A first extracted implementation slice now exists:
   leave Homebrew pointing at a workflow rebuild that has a different
   hash. The app zip is an operator-signed notarized attach for this
   Alpha, produced with `npm run package:cask-zip` after notarization.
-- local-debug portable bundle support through a zip bundle plus package-smoke verification of the bundled install path and installed-app launch proof
+- local-debug portable bundle support through a zip bundle plus package-smoke verification of the bundled install path and correlated installed-app snapshot-decode proof
 - a separate Release distribution packaging path that requires operator-supplied signing inputs, runs `codesign` plus `spctl`, optionally notarizes with `notarytool`, and writes a readiness summary JSON
 - executable `agent-harness/` changes now route through the implementation
   profile, which includes the harness TypeScript build and Vitest suite
@@ -340,6 +340,7 @@ npm run test:app:focus -- SimulatorBrokerAppTests/BrokerSnapshotLoaderTests --re
 npm run test:broker-core
 npm run test:client
 npm run test:docs
+node --test docs/test/installed-app-smoke-evidence.test.mjs
 npm run test:harness-adoption
 npm run verify:public-surface
 bash scripts/check_managed_skill_ownership.sh
@@ -466,18 +467,19 @@ Add stronger profiles next for:
   `.github/pull_request_template.md` is a public-patch checklist that does not
   require `agent:context` or a task session directory
 - `host init --bootstrap-config` writes a warning that real Simulator devices will be created before it calls `simctl` create
-- `npm run test:install-smoke` proves a fresh-machine-style install can bootstrap host config, scaffold a repo, start the service, acquire a lease, generate an app snapshot from the installed CLI, launch the installed app bundle against the smoke fixture, assert the `SimulatorBrokerApp` process stays alive, restore any preexisting default install metadata including symlink target contents, and clean up only the simulators provisioned by the smoke run afterward
+- `node --test docs/test/installed-app-smoke-evidence.test.mjs` proves the installed-app evidence verifier accepts the known unified-log preamble, valid NDJSON, and count sentinel; correlates one exact PID, canonical executable, state root, and a valid snapshot `generatedAt` equal to or newer than the prepared lower bound; rejects wrong or split identities, earlier/invalid/`none` generations, missing evidence, and malformed complete records; accepts a newer valid generation; and ignores only an unterminated final line during polling
+- `npm run test:install-smoke` proves a fresh-machine-style install can bootstrap host config, scaffold a repo, start the service, acquire a lease, start a bounded exact-path unified-log capture, prepare a snapshot-generation lower bound with the installed CLI immediately before launch, use a fresh-window launch, launch exactly one installed app process for the canonical bundle executable, and prove that same live PID reports the exact state root plus a successful manual refresh for that prepared-or-newer snapshot generation. Its summary must set `launchVerified`, `snapshotDecodeVerified`, and `refreshVerified` to `true`; cleanup revalidates executable identity before stopping only that PID, restores any preexisting default install metadata including symlink target contents, and deletes only simulators provisioned by the smoke run
 - `npm run package:distribution` builds the app in `Release`, requires operator-supplied `SIMBROKER_DISTRIBUTION_TEAM_ID` plus `SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY`, optionally consumes `SIMBROKER_NOTARYTOOL_PROFILE`, verifies the app's embedded expected runtime version exactly matches `package.json` before staging or signing, and writes a machine-readable readiness summary under `artifacts/distribution/`
 - when notarization credentials are unavailable, `npm run package:distribution` still writes the summary JSON and tells the operator to rerun with `SIMBROKER_NOTARYTOOL_PROFILE` instead of implying the archive is Gatekeeper-ready
 - `npm run package:distribution` returns non-zero after writing its summary JSON when the artifact is still unsigned, unstapled, unnotarized, or rejected by `spctl`
-- `npm run test:package-smoke` proves the zipped local-debug portable bundle can be unpacked, installed through its bundled `install.sh`, and complete the same host-bootstrap, repo-scaffold, lease, snapshot, installed-app launch, process-proof, and cleanup flow as the repo-local installer
+- `npm run test:package-smoke` proves the zipped local-debug portable bundle can be unpacked, installed through its bundled `install.sh`, and delegate to the same host-bootstrap, repo-scaffold, lease, snapshot, exact-process snapshot-decode evidence, and cleanup flow as the repo-local installer
 - `implementation` verification passes for implementation-owned changes
 - `spec-only` verification passes for spec or harness changes
 - task-session closeout rejects stale required verification and committed path drift outside selected manifest constraints
 - README and `spec/harness-integration.md` now describe a no-hidden-step onboarding path: CLI-only install, persisted PATH, then repo onboarding commands. The env helper remains a current-shell fallback
 - manual CLI and service smoke artifacts are captured in the active session dir when a task changes the CLI, service, or broker core
 - manual app smoke artifacts include key window captures for overview, empty-state, simulator detail, destructive confirmation, and override-required remediation scenarios in addition to visibility states
-- app overview, simulator detail, and no-snapshot states may be launched deterministically for review with `open -na /path/to/SimulatorBrokerApp.app --args --state-root <root> [--host-config <path>] [--cli-path <path>] [--pane <pane>] [--simulator-alias <alias>]`
+- app overview, simulator detail, and no-snapshot states may be launched deterministically for review with `open --fresh --new -a /path/to/SimulatorBrokerApp.app --args --state-root <root> [--host-config <path>] [--cli-path <path>] [--pane <pane>] [--simulator-alias <alias>]`
 - onboarding work should capture install-smoke logs, installed-app screenshot evidence, and the corresponding screenshot-review artifact in the active session dir
 - when a task changes the service or CLI authority path, capture durable test logs such as `test-client.log` and `npm-test.log` in the active session dir
 - `agent:complete` passes after a structured task commit and clean close-out

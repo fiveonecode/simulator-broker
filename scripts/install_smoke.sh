@@ -5,12 +5,16 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 artifact_dir=""
 distribution_zip=""
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/simbroker-install-smoke.XXXXXX")"
+tmp_root="$(cd "$tmp_root" && pwd -P)"
 bin_dir=""
 app_path=""
 state_root=""
 lease_file=""
 host_config_path=""
-app_process_name="SimulatorBrokerApp"
+app_executable_path=""
+app_log_capture_path=""
+app_log_stream_pid=""
+app_evidence_path=""
 launched_app_pids_path="$tmp_root/launched-app-pids.txt"
 lease_acquired=0
 lease_released=0
@@ -38,12 +42,30 @@ find_installable_distribution_bundle_root() {
   find "$distribution_root" -mindepth 1 -maxdepth 1 -type d -exec test -x '{}/install.sh' \; -print | head -n 1
 }
 
+app_process_identity_matches() {
+  local pid="$1"
+  local observed_command
+
+  [[ -n "$app_executable_path" ]] || return 1
+  observed_command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  [[ "$observed_command" == "$app_executable_path" || "$observed_command" == "$app_executable_path "* ]]
+}
+
+stop_app_log_stream() {
+  [[ -n "$app_log_stream_pid" ]] || return 0
+  if kill -0 "$app_log_stream_pid" >/dev/null 2>&1; then
+    kill "$app_log_stream_pid" >/dev/null 2>&1 || true
+  fi
+  wait "$app_log_stream_pid" >/dev/null 2>&1 || true
+  app_log_stream_pid=""
+}
+
 stop_launched_app() {
-  [[ -f "$launched_app_pids_path" ]] || return 0
+  [[ -f "$launched_app_pids_path" && -n "$app_executable_path" ]] || return 0
 
   while IFS= read -r pid; do
     [[ -z "$pid" ]] && continue
-    if kill -0 "$pid" >/dev/null 2>&1; then
+    if app_process_identity_matches "$pid"; then
       kill "$pid" >/dev/null 2>&1 || true
     fi
   done < "$launched_app_pids_path"
@@ -53,7 +75,7 @@ stop_launched_app() {
     local remaining=0
     while IFS= read -r pid; do
       [[ -z "$pid" ]] && continue
-      if kill -0 "$pid" >/dev/null 2>&1; then
+      if app_process_identity_matches "$pid"; then
         remaining=1
         break
       fi
@@ -68,31 +90,80 @@ stop_launched_app() {
 
   while IFS= read -r pid; do
     [[ -z "$pid" ]] && continue
-    if kill -0 "$pid" >/dev/null 2>&1; then
+    if app_process_identity_matches "$pid"; then
       kill -9 "$pid" >/dev/null 2>&1 || true
     fi
   done < "$launched_app_pids_path"
 }
 
 collect_app_pids() {
-  pgrep -x "$app_process_name" || true
+  local pid
+  local observed_command
+
+  ps -axo pid=,command= | while read -r pid observed_command; do
+    if [[ "$observed_command" == "$app_executable_path" || "$observed_command" == "$app_executable_path "* ]]; then
+      printf '%s\n' "$pid"
+    fi
+  done | sort -n
+}
+
+collect_app_process_records() {
+  local pid
+  local elapsed
+  local observed_command
+
+  [[ -n "$app_executable_path" ]] || return 0
+  ps -axo pid=,etime=,command= | while read -r pid elapsed observed_command; do
+    if [[ "$observed_command" == "$app_executable_path" || "$observed_command" == "$app_executable_path "* ]]; then
+      printf '%s %s %s\n' "$pid" "$elapsed" "$observed_command"
+    fi
+  done
 }
 
 capture_app_failure_logs() {
   local process_snapshot_path
-  local failure_log_path
   process_snapshot_path="$(artifact_path installed-app-processes.log)"
-  failure_log_path="$(artifact_path installed-app-launch.log)"
+  collect_app_process_records > "$process_snapshot_path" 2>/dev/null || true
+}
 
-  ps -axo pid,etime,command | grep "[S]imulatorBrokerApp" > "$process_snapshot_path" 2>/dev/null || true
+start_app_log_stream() {
+  local readiness_deadline=$((SECONDS + 5))
+  local predicate
 
-  if [[ -x /usr/bin/log ]]; then
-    /usr/bin/log show \
-      --last 2m \
-      --style compact \
-      --predicate "process == \"$app_process_name\"" \
-      > "$failure_log_path" 2>/dev/null || true
+  if [[ ! -x /usr/bin/log ]]; then
+    echo "Installed app snapshot proof requires /usr/bin/log." >&2
+    return 1
   fi
+
+  app_log_capture_path="$(artifact_path installed-app-unified.ndjson)"
+  : > "$app_log_capture_path"
+  predicate="subsystem == \"dev.codex.simulator-broker-app\" AND (category == \"AppLifecycle\" OR category == \"Refresh\") AND processImagePath == \"$app_executable_path\""
+  LC_ALL=C /usr/bin/log stream \
+    --level info \
+    --style ndjson \
+    --timeout 40 \
+    --predicate "$predicate" \
+    > "$app_log_capture_path" 2>&1 &
+  app_log_stream_pid=$!
+
+  while [[ "$SECONDS" -lt "$readiness_deadline" ]]; do
+    if ! kill -0 "$app_log_stream_pid" >/dev/null 2>&1; then
+      wait "$app_log_stream_pid" >/dev/null 2>&1 || true
+      echo "Installed app unified-log stream exited before subscription readiness." >&2
+      return 1
+    fi
+    if [[ -s "$app_log_capture_path" ]] \
+      && grep -Fq "Filtering the log data using " "$app_log_capture_path" \
+      && grep -Fq "dev.codex.simulator-broker-app" "$app_log_capture_path" \
+      && grep -Fq "$app_executable_path" "$app_log_capture_path"
+    then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  echo "Installed app unified-log stream did not publish its subscription preamble." >&2
+  return 1
 }
 
 record_simulator_inventory() {
@@ -191,19 +262,53 @@ cleanup_broker_resources() {
 
 launch_installed_app_smoke() {
   local app_path="$1"
+  local minimum_generated_at
+  local bundle_executable
+  local executable_candidate
+  local evidence_candidate_path="$tmp_root/installed-app-evidence-candidate.json"
+  local evidence_error_path
+  local evidence_deadline
+  local evidence_status
   local launch_start_file="$tmp_root/app-pids-before.txt"
   local launch_current_file="$tmp_root/app-pids-after.txt"
   local launch_deadline=$((SECONDS + 15))
+  local launched_pid
+  local new_pid_count
   local open_log_path
   open_log_path="$(artifact_path installed-app-open.log)"
+  evidence_error_path="$(artifact_path installed-app-evidence-error.log)"
+  app_evidence_path="$(artifact_path installed-app-snapshot-evidence.json)"
+
+  bundle_executable="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$app_path/Contents/Info.plist")"
+  executable_candidate="$app_path/Contents/MacOS/$bundle_executable"
+  if [[ ! -x "$executable_candidate" ]]; then
+    echo "Installed app bundle executable is missing or not executable: $executable_candidate" >&2
+    return 1
+  fi
+  app_executable_path="$(node -e '
+    const fs = require("node:fs");
+    process.stdout.write(fs.realpathSync(process.argv[1]));
+  ' "$executable_candidate")"
 
   : > "$launch_start_file"
   : > "$launch_current_file"
   : > "$launched_app_pids_path"
+  : > "$evidence_error_path"
 
   collect_app_pids > "$launch_start_file"
+  start_app_log_stream
+  log_command app-snapshot simbroker app snapshot
+  minimum_generated_at="$(node -e '
+    const fs = require("node:fs");
+    const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    if (typeof payload.generatedAt !== "string" || payload.generatedAt.length === 0 || payload.generatedAt === "none") {
+      throw new Error("Prepared app snapshot does not have a usable generatedAt value.");
+    }
+    process.stdout.write(payload.generatedAt);
+  ' "$(artifact_path app-snapshot.json)")"
+  cp "$state_root/app-snapshot.json" "$(artifact_path installed-app-canonical-snapshot-at-launch.json)"
 
-  if ! open -na "$app_path" --args --state-root "$state_root" --host-config "$host_config_path" > "$open_log_path" 2>&1; then
+  if ! open --fresh --new -a "$app_path" --args --state-root "$state_root" --host-config "$host_config_path" > "$open_log_path" 2>&1; then
     capture_app_failure_logs
     echo "Failed to open installed app bundle: $app_path" >&2
     return 1
@@ -212,8 +317,14 @@ launch_installed_app_smoke() {
   while [[ "$SECONDS" -lt "$launch_deadline" ]]; do
     collect_app_pids > "$launch_current_file"
     grep -Fxv -f "$launch_start_file" "$launch_current_file" > "$launched_app_pids_path" || true
+    new_pid_count="$(wc -l < "$launched_app_pids_path" | tr -d '[:space:]')"
 
-    if [[ -s "$launched_app_pids_path" ]]; then
+    if [[ "$new_pid_count" -gt 1 ]]; then
+      capture_app_failure_logs
+      echo "Installed app launch smoke found more than one new process for the canonical executable." >&2
+      return 1
+    fi
+    if [[ "$new_pid_count" -eq 1 ]]; then
       break
     fi
 
@@ -222,23 +333,75 @@ launch_installed_app_smoke() {
 
   if [[ ! -s "$launched_app_pids_path" ]]; then
     capture_app_failure_logs
-    echo "Installed app launch smoke did not create a new $app_process_name process." >&2
+    echo "Installed app launch smoke did not create one new process for the canonical executable." >&2
+    return 1
+  fi
+
+  launched_pid="$(tr -d '[:space:]' < "$launched_app_pids_path")"
+  if ! app_process_identity_matches "$launched_pid"; then
+    capture_app_failure_logs
+    echo "Installed app process identity changed before verification: $launched_pid" >&2
     return 1
   fi
 
   sleep 2
 
-  while IFS= read -r pid; do
-    [[ -z "$pid" ]] && continue
-    if ! kill -0 "$pid" >/dev/null 2>&1; then
+  if ! app_process_identity_matches "$launched_pid"; then
+    capture_app_failure_logs
+    echo "Installed app process exited before smoke verification completed: $launched_pid" >&2
+    return 1
+  fi
+
+  evidence_deadline=$((SECONDS + 15))
+  while [[ "$SECONDS" -lt "$evidence_deadline" ]]; do
+    if ! kill -0 "$app_log_stream_pid" >/dev/null 2>&1; then
       capture_app_failure_logs
-      echo "Installed app process exited before smoke verification completed: $pid" >&2
+      wait "$app_log_stream_pid" >/dev/null 2>&1 || true
+      echo "Installed app unified-log stream exited before snapshot proof completed." >&2
       return 1
     fi
-  done < "$launched_app_pids_path"
+
+    if node "$repo_root/scripts/installed_app_smoke_evidence.mjs" \
+      --log "$app_log_capture_path" \
+      --process-id "$launched_pid" \
+      --process-image-path "$app_executable_path" \
+      --state-root "$state_root" \
+      --minimum-generated-at "$minimum_generated_at" \
+      --allow-incomplete-final-line \
+      > "$evidence_candidate_path" 2> "$evidence_error_path"
+    then
+      if ! kill -0 "$app_log_stream_pid" >/dev/null 2>&1; then
+        capture_app_failure_logs
+        echo "Installed app unified-log stream exited while snapshot proof was being accepted." >&2
+        return 1
+      fi
+      if ! app_process_identity_matches "$launched_pid"; then
+        capture_app_failure_logs
+        echo "Installed app process identity changed while snapshot proof was being accepted: $launched_pid" >&2
+        return 1
+      fi
+      cp "$evidence_candidate_path" "$app_evidence_path"
+      stop_app_log_stream
+      return 0
+    else
+      evidence_status=$?
+      if [[ "$evidence_status" -ne 2 ]]; then
+        capture_app_failure_logs
+        echo "Installed app unified-log evidence was malformed or could not be verified." >&2
+        return 1
+      fi
+      cp "$evidence_candidate_path" "$app_evidence_path"
+    fi
+    sleep 0.2
+  done
+
+  capture_app_failure_logs
+  echo "Installed app did not emit correlated snapshot-decode proof before the deadline." >&2
+  return 1
 }
 
 cleanup() {
+  stop_app_log_stream
   stop_launched_app
   cleanup_broker_resources
 
@@ -300,12 +463,10 @@ log_command() {
 }
 
 install_mode="repo-worktree"
-distribution_archive_json="null"
 snapshot_default_install_metadata
 
 if [[ -n "$distribution_zip" ]]; then
   install_mode="portable-bundle"
-  distribution_archive_json="\"$distribution_zip\""
   distribution_root="$tmp_root/distribution"
   ditto -x -k "$distribution_zip" "$distribution_root"
   distribution_bundle_root="$(find_installable_distribution_bundle_root "$distribution_root")"
@@ -369,7 +530,6 @@ log_command lease-acquire simbroker lease acquire \
   --owner-pid "$$" \
   --lease-file "$lease_file"
 lease_acquired=1
-log_command app-snapshot simbroker app snapshot
 
 test -x "$bin_dir/simbroker"
 test -d "$app_path"
@@ -396,31 +556,70 @@ node -e '
 log_command service-stop simbroker service stop
 service_stopped=1
 
-launch_pids_json="$(node -e '
+node -e '
   const fs = require("node:fs");
-  const pids = fs.readFileSync(process.argv[1], "utf8")
+  const [
+    summaryPath,
+    appPath,
+    appExecutablePath,
+    binPath,
+    hostConfigPath,
+    installMode,
+    leaseFile,
+    launchedPidsPath,
+    projectFilePath,
+    repoPath,
+    stateRoot,
+    distributionArchive,
+    tmpRoot,
+    evidencePath,
+    logCapturePath,
+  ] = process.argv.slice(1);
+  const evidence = JSON.parse(fs.readFileSync(evidencePath, "utf8"));
+  if (evidence.snapshotDecodeVerified !== true || evidence.refreshVerified !== true || evidence.launchPreparedVerified !== true) {
+    throw new Error("Installed app evidence did not prove snapshot decoding.");
+  }
+  const launchPids = fs.readFileSync(launchedPidsPath, "utf8")
     .split(/\n+/)
     .map((value) => value.trim())
     .filter(Boolean)
     .map((value) => Number(value));
-  process.stdout.write(JSON.stringify(pids));
-' "$launched_app_pids_path")"
-
-cat > "$summary_path" <<EOF
-{
-  "appPath": "$app_path",
-  "binPath": "$bin_dir/simbroker",
-  "hostConfigPath": "$host_config_path",
-  "installMode": "$install_mode",
-  "leaseFile": "$lease_file",
-  "launchPids": $launch_pids_json,
-  "launchVerified": true,
-  "projectFilePath": "$repo_path/.simulator-broker/project.json",
-  "repoPath": "$repo_path",
-  "stateRoot": "$state_root",
-  "distributionArchive": $distribution_archive_json,
-  "tmpRoot": "$tmp_root"
-}
-EOF
+  const summary = {
+    appPath,
+    appExecutablePath,
+    binPath,
+    hostConfigPath,
+    installMode,
+    leaseFile,
+    launchPids,
+    launchVerified: true,
+    snapshotDecodeVerified: true,
+    refreshVerified: true,
+    projectFilePath,
+    repoPath,
+    stateRoot,
+    distributionArchive: distributionArchive.length === 0 ? null : distributionArchive,
+    tmpRoot,
+    evidencePath,
+    logCapturePath,
+    evidence,
+  };
+  fs.writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
+' \
+  "$summary_path" \
+  "$app_path" \
+  "$app_executable_path" \
+  "$bin_dir/simbroker" \
+  "$host_config_path" \
+  "$install_mode" \
+  "$lease_file" \
+  "$launched_app_pids_path" \
+  "$repo_path/.simulator-broker/project.json" \
+  "$repo_path" \
+  "$state_root" \
+  "$distribution_zip" \
+  "$tmp_root" \
+  "$app_evidence_path" \
+  "$app_log_capture_path"
 
 cat "$summary_path"
