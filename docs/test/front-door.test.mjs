@@ -256,6 +256,31 @@ function assertWorkflowJobRunsExactCommand(workflow, jobId, command) {
   assert.equal(count, 1, `${jobId} must run ${command} exactly once`);
 }
 
+function assertHostedNodeActionContract(
+  workflow,
+  { checkoutCount, setupNodeCount, nodeVersion },
+) {
+  assert.deepEqual(
+    [...workflow.matchAll(/actions\/checkout@(v\d+)/g)].map((match) => match[1]),
+    Array(checkoutCount).fill("v7"),
+    `every checkout step must use v7, with exactly ${checkoutCount} step(s)`,
+  );
+  assert.deepEqual(
+    [...workflow.matchAll(/actions\/setup-node@(v\d+)/g)].map((match) => match[1]),
+    Array(setupNodeCount).fill("v7"),
+    `every setup-node step must use v7, with exactly ${setupNodeCount} step(s)`,
+  );
+  const setupStepPattern = new RegExp(
+    `uses: actions/setup-node@v7\\n\\s+with:\\n\\s+node-version: ["']${nodeVersion}["']\\n\\s+package-manager-cache: false`,
+    "g",
+  );
+  assert.equal(
+    (workflow.match(setupStepPattern) ?? []).length,
+    setupNodeCount,
+    `every setup-node v7 step must test on Node ${nodeVersion} with implicit package-manager caching disabled`,
+  );
+}
+
 test("CONTRIBUTING leads with a public Node-20 patch track that does not require the harness", () => {
   const contributing = readRepoFile("CONTRIBUTING.md");
   const human = headingSection(contributing, "Public patches");
@@ -355,6 +380,11 @@ test("CHANGELOG and package.json name the Alpha version", () => {
 test("public CI splits Ubuntu core suites from macOS client tests and skips the app suite", () => {
   const ci = readRepoFile(".github/workflows/ci.yml");
 
+  assertHostedNodeActionContract(ci, {
+    checkoutCount: 2,
+    setupNodeCount: 2,
+    nodeVersion: "20",
+  });
   assert.ok(ci.includes("runs-on: ubuntu-latest"));
   assert.ok(ci.includes("runs-on: macos-latest"));
   assert.match(ci, /timeout-minutes:\s*10/);
@@ -379,6 +409,11 @@ test("public CI splits Ubuntu core suites from macOS client tests and skips the 
 test("release workflow packages the CLI tarball on version tags", () => {
   const release = readRepoFile(".github/workflows/release.yml");
 
+  assertHostedNodeActionContract(release, {
+    checkoutCount: 1,
+    setupNodeCount: 1,
+    nodeVersion: "20",
+  });
   assert.ok(release.includes("tags:"));
   assertWorkflowJobRunsExactCommand(release, "release", "npm run test:docs");
   assert.ok(release.includes("npm run package:cli"));
@@ -398,6 +433,32 @@ test("release workflow packages the CLI tarball on version tags", () => {
     "tag release notes must not claim the notarized app zip is absent",
   );
   assert.ok(release.includes("brew install --cask fiveonecode/simulator-broker/simulator-broker"));
+});
+
+test("on-demand OCR review uses the maintained hosted action runtime contract", () => {
+  const ocr = readRepoFile(".github/workflows/ocr-review.yml");
+
+  assert.ok(ocr.includes("runs-on: ubuntu-latest"));
+  assertHostedNodeActionContract(ocr, {
+    checkoutCount: 2,
+    setupNodeCount: 1,
+    nodeVersion: "22",
+  });
+});
+
+test("hosted workflow action contract fails closed when setup-node caching becomes implicit", () => {
+  const ci = readRepoFile(".github/workflows/ci.yml");
+  const implicitCache = ci.replace("          package-manager-cache: false\n", "");
+
+  assert.notEqual(implicitCache, ci, "negative fixture must remove one explicit cache setting");
+  assert.throws(
+    () => assertHostedNodeActionContract(implicitCache, {
+      checkoutCount: 2,
+      setupNodeCount: 2,
+      nodeVersion: "20",
+    }),
+    /every setup-node v7 step must test on Node 20 with implicit package-manager caching disabled/,
+  );
 });
 
 test("public PR and tagged-release docs gates fail closed when the command is missing", () => {
