@@ -1328,6 +1328,7 @@ export function executeBrokerCommand(paths, request) {
 
   switch (`${request.group}:${request.command}`) {
     case "help:global":
+    case "help:setup":
     case "help:host":
     case "help:project":
     case "help:lease":
