@@ -2,12 +2,15 @@ import SwiftUI
 
 struct RootView: View {
   @Bindable var store: BrokerDashboardStore
+  let viewportHeight: CGFloat
 
   var body: some View {
     NavigationSplitView {
       navigationList
+        .frame(height: viewportHeight)
     } detail: {
       detailContent
+        .frame(height: viewportHeight)
     }
     .toolbar {
       toolbarContent
@@ -63,14 +66,20 @@ struct RootView: View {
 
   @ViewBuilder
   private var dashboardContent: some View {
-    Group {
-      if store.snapshot == nil {
-        BrokerSetupView(store: store)
-      } else {
-        selectedScreen
+    GeometryReader { proxy in
+      Group {
+        if store.snapshot == nil {
+          BrokerSetupView(store: store)
+        } else {
+          selectedScreen
+        }
       }
+      .frame(
+        width: proxy.size.width,
+        height: proxy.size.height,
+        alignment: .topLeading
+      )
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 
   @ViewBuilder

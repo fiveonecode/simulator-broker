@@ -42,23 +42,22 @@ private struct BrokerDashboardWindowRoot: View {
 
   var body: some View {
     GeometryReader { proxy in
-      RootView(store: store)
-        .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+      RootView(store: store, viewportHeight: proxy.size.height)
     }
-    .frame(minWidth: 1200, minHeight: 760)
-    .task {
-      bootstrapSceneRestorationIfNeeded()
-      store.start()
-    }
-    .onChange(of: store.sceneRestorationState) { _, newValue in
-      guard hasBootstrappedSceneRestoration else {
-        return
+      .frame(minWidth: 1200, minHeight: 760)
+      .task {
+        bootstrapSceneRestorationIfNeeded()
+        store.start()
       }
-      persistSceneRestorationState(newValue)
-    }
-    .onDisappear {
-      store.stop()
-    }
+      .onChange(of: store.sceneRestorationState) { _, newValue in
+        guard hasBootstrappedSceneRestoration else {
+          return
+        }
+        persistSceneRestorationState(newValue)
+      }
+      .onDisappear {
+        store.stop()
+      }
   }
 
   private func bootstrapSceneRestorationIfNeeded() {
