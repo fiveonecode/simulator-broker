@@ -38,6 +38,7 @@ enum BrokerStartupState: Equatable {
 }
 
 private enum BrokerRefreshOutcome {
+  case discarded
   case failed(any Error)
   case succeeded
   case superseded(by: Int)
@@ -621,23 +622,27 @@ final class BrokerDashboardStore {
         setupPlan = nil
         pendingSetupConfirmation = nil
         if plan.status == .ready {
-          try await requireRefreshAfterMutation()
+          try await requireRefreshAfterMutation(
+            preservingGuidedSetup: true,
+            expectedSetupGeneration: generation
+          )
+          try Task.checkCancellation()
           try requireLiveServiceAfterSetupRefresh()
           setupPhase = .idle
           lastErrorMessage = nil
           setActionMessage("Setup complete — brokerd is running and all managed simulators are healthy.")
           return
         }
-        try await applyGuidedSetup(plan)
+        try await applyGuidedSetup(plan, expectedSetupGeneration: generation)
       } catch is CancellationError {
-        await refreshAfterSetupCancellation()
+        await refreshAfterSetupCancellation(expectedSetupGeneration: generation)
         if generation == setupGeneration {
           pendingSetupConfirmation = nil
           setupPlan = nil
           setupPhase = .idle
         }
       } catch {
-        _ = await refresh(silent: true)
+        _ = await refresh(silent: true, expectedSetupGeneration: generation)
         if generation == setupGeneration {
           setupPhase = setupPlan == nil ? .idle : .awaitingConfirmation
           lastActionMessage = nil
@@ -675,16 +680,16 @@ final class BrokerDashboardStore {
         }
       }
       do {
-        try await applyGuidedSetup(setupPlan)
+        try await applyGuidedSetup(setupPlan, expectedSetupGeneration: generation)
       } catch is CancellationError {
-        await refreshAfterSetupCancellation()
+        await refreshAfterSetupCancellation(expectedSetupGeneration: generation)
         if generation == setupGeneration {
           pendingSetupConfirmation = nil
           self.setupPlan = nil
           setupPhase = .idle
         }
       } catch {
-        _ = await refresh(silent: true)
+        _ = await refresh(silent: true, expectedSetupGeneration: generation)
         if generation == setupGeneration {
           setupPhase = .awaitingConfirmation
           lastActionMessage = nil
@@ -704,9 +709,12 @@ final class BrokerDashboardStore {
     isApplyingAction = false
   }
 
-  func stopGuidedSetup() {
-    guard setupPhase == .applying else { return }
-    setupTask?.cancel()
+  @discardableResult
+  func stopGuidedSetup() -> Task<Void, Never>? {
+    guard setupPhase == .applying else { return nil }
+    let task = setupTask
+    task?.cancel()
+    return task
   }
 
   func applyIdlePolicy(graceSeconds: Int) async throws {
@@ -995,7 +1003,14 @@ final class BrokerDashboardStore {
   }
 
   @discardableResult
-  private func refresh(silent: Bool = false) async -> BrokerRefreshOutcome {
+  private func refresh(
+    silent: Bool = false,
+    preservingGuidedSetup: Bool = false,
+    expectedSetupGeneration: Int? = nil
+  ) async -> BrokerRefreshOutcome {
+    if let expectedSetupGeneration, expectedSetupGeneration != setupGeneration {
+      return .discarded
+    }
     let refreshMode = silent ? "silent" : "manual"
     refreshGeneration += 1
     let generation = refreshGeneration
@@ -1013,16 +1028,17 @@ final class BrokerDashboardStore {
     logRefreshStart(mode: refreshMode)
     do {
       let refreshedState = try await loader.load()
+      if let expectedSetupGeneration, expectedSetupGeneration != setupGeneration {
+        completeRefresh(generation: generation, with: .discarded)
+        return .discarded
+      }
       guard generation == refreshGeneration else {
         let outcome = BrokerRefreshOutcome.superseded(by: refreshGeneration)
         completeRefresh(generation: generation, with: outcome)
         return outcome
       }
       if sameServiceAuthority(loadedState?.service, refreshedState.service) == false {
-        serviceAuthorityEpoch += 1
-        if loadedState?.service != nil {
-          clearPendingMutationAffordances()
-        }
+        advanceServiceAuthorityEpoch(preservingGuidedSetup: preservingGuidedSetup)
       }
       loadedState = refreshedState
       serviceStatusUnverified = false
@@ -1032,17 +1048,30 @@ final class BrokerDashboardStore {
       completeRefresh(generation: generation, with: .succeeded)
       return .succeeded
     } catch {
+      if let expectedSetupGeneration, expectedSetupGeneration != setupGeneration {
+        completeRefresh(generation: generation, with: .discarded)
+        return .discarded
+      }
       guard generation == refreshGeneration else {
         let outcome = BrokerRefreshOutcome.superseded(by: refreshGeneration)
         completeRefresh(generation: generation, with: outcome)
         return outcome
       }
-      let hostConfigurationCouldAuthorizeService = loadedState?.tooling.hostConfigExists == true
-        || FileManager.default.fileExists(atPath: runtimePaths.hostConfigURL.path)
-      if let loadedState, hostConfigurationCouldAuthorizeService {
-        revokeCachedServiceAuthority(preserving: loadedState)
-      } else if loadedState == nil, hostConfigurationCouldAuthorizeService {
-        markServiceStatusUnverified()
+      if let partialFailure = error as? BrokerSnapshotPartialLoadError,
+        partialFailure.recoveredState.service == nil
+      {
+        acceptConfirmedServiceAbsence(
+          partialFailure.recoveredState,
+          preservingGuidedSetup: preservingGuidedSetup
+        )
+      } else {
+        let hostConfigurationCouldAuthorizeService = loadedState?.tooling.hostConfigExists == true
+          || FileManager.default.fileExists(atPath: runtimePaths.hostConfigURL.path)
+        if let loadedState, hostConfigurationCouldAuthorizeService {
+          revokeCachedServiceAuthority(preserving: loadedState)
+        } else if loadedState == nil, hostConfigurationCouldAuthorizeService {
+          markServiceStatusUnverified()
+        }
       }
       logRefreshFailure(mode: refreshMode, error: error)
       lastErrorMessage = error.localizedDescription
@@ -1057,12 +1086,22 @@ final class BrokerDashboardStore {
     }
   }
 
-  private func requireRefreshAfterMutation(silent: Bool = false) async throws {
-    var outcome = await refresh(silent: silent)
+  private func requireRefreshAfterMutation(
+    silent: Bool = false,
+    preservingGuidedSetup: Bool = false,
+    expectedSetupGeneration: Int? = nil
+  ) async throws {
+    var outcome = await refresh(
+      silent: silent,
+      preservingGuidedSetup: preservingGuidedSetup,
+      expectedSetupGeneration: expectedSetupGeneration
+    )
     var followedGenerations: Set<Int> = []
 
     while true {
       switch outcome {
+      case .discarded:
+        throw CancellationError()
       case .succeeded:
         return
       case .superseded(by: let generation):
@@ -1184,9 +1223,30 @@ final class BrokerDashboardStore {
   }
 
   private func markServiceStatusUnverified() {
-    serviceAuthorityEpoch += 1
+    advanceServiceAuthorityEpoch()
     serviceStatusUnverified = true
-    clearPendingMutationAffordances()
+  }
+
+  private func acceptConfirmedServiceAbsence(
+    _ recoveredState: BrokerLoadedState,
+    preservingGuidedSetup: Bool
+  ) {
+    if sameServiceAuthority(loadedState?.service, nil) == false {
+      advanceServiceAuthorityEpoch(preservingGuidedSetup: preservingGuidedSetup)
+    }
+    self.loadedState = BrokerLoadedState(
+      paths: recoveredState.paths,
+      tooling: recoveredState.tooling,
+      service: nil,
+      snapshot: loadedState?.snapshot
+    )
+    serviceStatusUnverified = false
+    synchronizeSelections()
+  }
+
+  private func advanceServiceAuthorityEpoch(preservingGuidedSetup: Bool = false) {
+    serviceAuthorityEpoch += 1
+    clearPendingMutationAffordances(preservingGuidedSetup: preservingGuidedSetup)
   }
 
   private func refreshAfterSetupCancellation() async {
@@ -1215,11 +1275,13 @@ final class BrokerDashboardStore {
     }
   }
 
-  private func clearPendingMutationAffordances() {
+  private func clearPendingMutationAffordances(preservingGuidedSetup: Bool = false) {
     idleCleanupPreviewGeneration += 1
     pendingIdleCleanupRequest = nil
     clearPendingSimulatorPrompts()
-    if setupPhase == .previewing || setupPhase == .awaitingConfirmation {
+    if preservingGuidedSetup == false,
+      setupPhase == .previewing || setupPhase == .awaitingConfirmation
+    {
       cancelGuidedSetup()
     }
   }
@@ -1230,6 +1292,18 @@ final class BrokerDashboardStore {
     pendingLifecycleRequest = nil
     pendingOverrideRequest = nil
     pendingReleaseLeaseRequest = nil
+  }
+
+  private func refreshAfterSetupCancellation(expectedSetupGeneration: Int) async {
+    let recoveryRefreshTask = Task { @MainActor [weak self] in
+      guard let self else { return }
+      _ = await self.refresh(
+        silent: true,
+        preservingGuidedSetup: true,
+        expectedSetupGeneration: expectedSetupGeneration
+      )
+    }
+    await recoveryRefreshTask.value
   }
 
   private func canPresentSimulatorPrompt(for alias: String) -> Bool {
@@ -1338,7 +1412,10 @@ final class BrokerDashboardStore {
     return plan
   }
 
-  private func applyGuidedSetup(_ plan: BrokerSetupPlan) async throws {
+  private func applyGuidedSetup(
+    _ plan: BrokerSetupPlan,
+    expectedSetupGeneration: Int
+  ) async throws {
     let cliURL = try requireCLIURL()
     setupPhase = .applying
     var arguments = [
@@ -1363,7 +1440,10 @@ final class BrokerDashboardStore {
     guard response.status == "ready" else {
       throw BrokerCLICommandError.invalidJSONResponse(cliURL)
     }
-    try await requireRefreshAfterMutation()
+    try await requireRefreshAfterMutation(
+      preservingGuidedSetup: true,
+      expectedSetupGeneration: expectedSetupGeneration
+    )
     try requireLiveServiceAfterSetupRefresh()
     setupPlan = nil
     pendingSetupConfirmation = nil

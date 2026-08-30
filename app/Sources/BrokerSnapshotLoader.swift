@@ -235,6 +235,15 @@ enum BrokerSnapshotLoaderError: LocalizedError {
   }
 }
 
+struct BrokerSnapshotPartialLoadError: LocalizedError, Sendable {
+  let recoveredState: BrokerLoadedState
+  let message: String
+
+  var errorDescription: String? {
+    message
+  }
+}
+
 protocol BrokerSnapshotLoading: Sendable {
   func load() async throws -> BrokerLoadedState
 }
@@ -266,14 +275,28 @@ actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
     let installMetadata = try decodeIfPresent(BrokerInstallMetadata.self, from: paths.installMetadataURL)
     let hostConfigExists = FileManager.default.fileExists(atPath: paths.hostConfigURL.path)
     let service = try await loadServiceMetadata()
-    let snapshot = try loadSnapshot(hostConfigExists: hostConfigExists)
+    let tooling = BrokerToolingState(
+      cliPath: resolveCLIPath(installMetadata: installMetadata),
+      hostConfigExists: hostConfigExists,
+      installMetadata: installMetadata
+    )
+    let snapshot: BrokerAppSnapshot?
+    do {
+      snapshot = try loadSnapshot(hostConfigExists: hostConfigExists)
+    } catch {
+      throw BrokerSnapshotPartialLoadError(
+        recoveredState: BrokerLoadedState(
+          paths: paths,
+          tooling: tooling,
+          service: service,
+          snapshot: nil
+        ),
+        message: error.localizedDescription
+      )
+    }
     return BrokerLoadedState(
       paths: paths,
-      tooling: BrokerToolingState(
-        cliPath: resolveCLIPath(installMetadata: installMetadata),
-        hostConfigExists: hostConfigExists,
-        installMetadata: installMetadata
-      ),
+      tooling: tooling,
       service: service,
       snapshot: snapshot
     )

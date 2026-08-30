@@ -150,6 +150,49 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     XCTAssertNil(loadedState.service)
   }
 
+  func testLoaderCarriesConfirmedServiceAbsenceThroughUnreadableSnapshot() async throws {
+    let tempRoot = try makeTempRoot()
+    let paths = BrokerRuntimePaths(
+      stateRoot: tempRoot.appending(path: "state"),
+      hostConfigURL: tempRoot.appending(path: "host-config.json")
+    )
+    try Data("{}".utf8).write(to: paths.hostConfigURL)
+    try FileManager.default.createDirectory(at: paths.stateRoot, withIntermediateDirectories: true)
+    try Data("not-json".utf8).write(to: paths.snapshotURL)
+
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected unreadable snapshot failure")
+    } catch let error as BrokerSnapshotPartialLoadError {
+      XCTAssertNil(error.recoveredState.service)
+      XCTAssertNil(error.recoveredState.snapshot)
+      XCTAssertTrue(error.recoveredState.tooling.hostConfigExists)
+      XCTAssertTrue(error.localizedDescription.contains("app-snapshot.json"))
+    }
+  }
+
+  func testLoaderCarriesValidatedLiveServiceThroughUnreadableSnapshot() async throws {
+    let paths = try makeLiveServicePaths()
+    try Data("not-json".utf8).write(to: paths.snapshotURL)
+
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        processIdentifierExists: { pid in pid == 12345 },
+        serviceStatusProbe: { service in service },
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected unreadable snapshot failure")
+    } catch let error as BrokerSnapshotPartialLoadError {
+      XCTAssertEqual(error.recoveredState.service?.pid, 12345)
+      XCTAssertNil(error.recoveredState.snapshot)
+      XCTAssertTrue(error.localizedDescription.contains("app-snapshot.json"))
+    }
+  }
+
   func testLoaderFailsClosedWhenServiceStatusProbeTimesOut() async throws {
     let paths = try makeLiveServicePaths()
 

@@ -24,7 +24,7 @@ struct RootView: View {
         errorMessage: store.lastErrorMessage,
         onCancel: store.cancelGuidedSetup,
         onConfirm: store.confirmGuidedSetup,
-        onStop: store.stopGuidedSetup,
+        onStop: { _ = store.stopGuidedSetup() },
         phase: store.setupPhase,
         plan: plan
       )
@@ -169,7 +169,7 @@ struct RootView: View {
         message: "Finishing setup: starting brokerd, refreshing the snapshot, and verifying Simulator health.",
         symbolName: "gearshape.2",
         actionTitle: store.setupPhase == .applying ? "Stop" : nil,
-        onAction: store.setupPhase == .applying ? { store.stopGuidedSetup() } : nil
+        onAction: store.setupPhase == .applying ? { _ = store.stopGuidedSetup() } : nil
       )
     }
   }

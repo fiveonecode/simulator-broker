@@ -509,6 +509,60 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertFalse(invocations[0].arguments.contains("--apply"))
   }
 
+  func testUnreadableSnapshotWithConfirmedServiceAbsencePreservesRecovery() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let readyState = makeLoadedState(snapshot: snapshot)
+    let confirmedAbsentState = makeLoadedState(snapshot: nil, service: nil)
+    let error = BrokerSnapshotPartialLoadError(
+      recoveredState: confirmedAbsentState,
+      message: "Failed to read app-snapshot.json"
+    )
+    let store = BrokerDashboardStore(
+      loader: FailingSnapshotLoader(error: error),
+      commandClient: RecordingCommandClient(),
+      runtimePaths: readyState.paths
+    )
+    store.loadedState = readyState
+
+    store.refreshNow()
+    try await waitUntil {
+      store.isRefreshing == false && store.lastErrorMessage == error.localizedDescription
+    }
+
+    XCTAssertNil(store.loadedState?.service)
+    XCTAssertEqual(store.loadedState?.snapshot?.generatedAt, snapshot.generatedAt)
+    XCTAssertFalse(store.serviceStatusUnverified)
+    XCTAssertEqual(store.startupState, .readOnlySnapshot)
+    XCTAssertTrue(store.canStartBrokerService)
+    XCTAssertTrue(store.canOfferReadOnlyFinishSetup)
+  }
+
+  func testUnreadableSnapshotWithValidatedLiveServiceRemainsUnverified() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let readyState = makeLoadedState(snapshot: snapshot)
+    let error = BrokerSnapshotPartialLoadError(
+      recoveredState: makeLoadedState(snapshot: nil),
+      message: "Failed to read app-snapshot.json"
+    )
+    let store = BrokerDashboardStore(
+      loader: FailingSnapshotLoader(error: error),
+      commandClient: RecordingCommandClient(),
+      runtimePaths: readyState.paths
+    )
+    store.loadedState = readyState
+
+    store.refreshNow()
+    try await waitUntil {
+      store.isRefreshing == false && store.lastErrorMessage == error.localizedDescription
+    }
+
+    XCTAssertNil(store.loadedState?.service)
+    XCTAssertEqual(store.loadedState?.snapshot?.generatedAt, snapshot.generatedAt)
+    XCTAssertTrue(store.serviceStatusUnverified)
+    XCTAssertEqual(store.startupState, .serviceStatusUnverified)
+    XCTAssertFalse(store.canStartBrokerService)
+  }
+
   func testRefreshFailureDismissesGuidedSetupConfirmationAndBlocksLocalApply() async throws {
     let snapshot = try loadFixture(named: "busy-snapshot")
     let loadedState = makeLoadedState(snapshot: snapshot)
@@ -767,6 +821,88 @@ final class BrokerDashboardStoreTests: XCTestCase {
 
     let requests = await commandClient.requests()
     XCTAssertTrue(requests.isEmpty)
+  }
+
+  func testServiceIdentityChangeDismissesPendingMutationsAndDelayedIdlePreview() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let originalService = try XCTUnwrap(loadedState.service)
+    let restartedService = BrokerServiceMetadata(
+      hostConfigPath: originalService.hostConfigPath,
+      pid: originalService.pid + 1,
+      socketPath: originalService.socketPath,
+      startedAt: "2026-08-30T14:15:00Z",
+      stateRoot: originalService.stateRoot,
+      transport: originalService.transport,
+      runtimeVersion: originalService.runtimeVersion
+    )
+    let restartedState = makeLoadedState(snapshot: snapshot, service: restartedService)
+    let commandClient = DeferredCommandClient(
+      response: BrokerCommandEnvelope(
+        currentHolder: nil,
+        eligibleCount: 2,
+        error: nil,
+        exitCode: nil,
+        ok: true,
+        planId: "stale-cleanup-plan",
+        reasonCode: nil,
+        requiredConfirmationFields: nil,
+        status: "changes_required",
+        unchanged: nil
+      )
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: restartedState),
+      commandClient: commandClient,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+    store.selectedPane = .overview
+
+    store.requestIdleCleanup()
+    try await waitUntil { await commandClient.hasPendingSend() }
+
+    let lease = try XCTUnwrap(store.readModel?.lease(for: "ui-1"))
+    store.pendingClearPinRequest = BrokerPendingClearPinRequest(alias: "manual-1")
+    store.pendingCreatePinRequest = BrokerPendingCreatePinRequest(alias: "ui-1")
+    store.pendingLifecycleRequest = BrokerPendingLifecycleRequest(action: .erase, alias: "ui-1")
+    store.pendingOverrideRequest = BrokerLifecycleOverrideRequest(
+      action: .repair,
+      alias: "ui-1",
+      currentHolder: BrokerLeaseSummary(
+        actorId: lease.actorId,
+        actorType: lease.actorType,
+        jobId: lease.jobId,
+        leaseId: lease.leaseId,
+        projectId: lease.projectId,
+        purposeId: lease.purposeId
+      )
+    )
+    store.pendingReleaseLeaseRequest = BrokerPendingLeaseReleaseRequest(lease: lease)
+    store.pendingIdleCleanupRequest = BrokerPendingIdleCleanupRequest(
+      eligibleCount: 1,
+      planId: "already-staged-plan"
+    )
+
+    store.refreshNow()
+    try await waitUntil {
+      store.isRefreshing == false && store.loadedState?.service?.pid == restartedService.pid
+    }
+
+    XCTAssertNil(store.pendingClearPinRequest)
+    XCTAssertNil(store.pendingCreatePinRequest)
+    XCTAssertNil(store.pendingLifecycleRequest)
+    XCTAssertNil(store.pendingOverrideRequest)
+    XCTAssertNil(store.pendingReleaseLeaseRequest)
+    XCTAssertNil(store.pendingIdleCleanupRequest)
+
+    await commandClient.release()
+    try await waitUntil { store.isApplyingAction == false }
+
+    XCTAssertNil(store.pendingIdleCleanupRequest)
+    XCTAssertNil(store.lastErrorMessage)
+    let requests = await commandClient.requests()
+    XCTAssertEqual(requests.count, 1)
   }
 
   func testIdleCleanupAcceptsSuccessfulFallbackRefreshAfterCommittedCommand() async throws {
@@ -1484,36 +1620,129 @@ final class BrokerDashboardStoreTests: XCTestCase {
   }
 
   func testStoppingGuidedSetupClearsStalePlanWithoutPresentingCancellationAsFailure() async throws {
-    let runtimePaths = BrokerRuntimePaths(
-      stateRoot: URL(fileURLWithPath: "/tmp/simbroker-stop-state"),
-      hostConfigURL: URL(fileURLWithPath: "/tmp/simbroker-stop-host.json"),
-      configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker")
-    )
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
     let setupPlan = try makeSetupPlan()
     let localRunner = CancellableApplyLocalCommandRunner(plan: setupPlan)
-    let loadedState = BrokerLoadedState(
-      paths: runtimePaths,
-      tooling: BrokerToolingState(cliPath: runtimePaths.configuredCLIURL, hostConfigExists: false, installMetadata: nil),
-      service: nil,
-      snapshot: nil
-    )
+    let loader = CancellationSensitiveSnapshotLoader(state: loadedState)
     let store = BrokerDashboardStore(
-      loader: StubSnapshotLoader(state: loadedState),
+      loader: loader,
       commandClient: RecordingCommandClient(),
       localCommandRunner: localRunner,
-      runtimePaths: runtimePaths
+      runtimePaths: loadedState.paths
     )
+    store.loadedState = loadedState
 
     store.requestGuidedSetup()
     try await waitUntil { await MainActor.run { store.setupPhase == .awaitingConfirmation } }
     store.confirmGuidedSetup()
     try await waitUntil { await localRunner.applyStarted() }
     store.stopGuidedSetup()
-    try await waitUntil { await MainActor.run { store.setupPhase == .idle && store.isApplyingAction == false } }
+    try await waitUntil {
+      let loadCount = await loader.loadCount()
+      return loadCount == 1 && store.setupPhase == .idle && store.isApplyingAction == false
+    }
 
     XCTAssertNil(store.setupPlan)
     XCTAssertNil(store.pendingSetupConfirmation)
     XCTAssertNil(store.lastErrorMessage)
+    XCTAssertFalse(store.serviceStatusUnverified)
+    let refreshInheritedCancellation = await loader.observedCancellation()
+    XCTAssertFalse(refreshInheritedCancellation)
+  }
+
+  func testReplacingGuidedSetupDoesNotLetCancelledRefreshPoisonReplacementPreview() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let setupPlan = try makeSetupPlan()
+    let localRunner = ReplaceableSetupLocalCommandRunner(plan: setupPlan)
+    let loader = CancellationSensitiveSnapshotLoader(state: loadedState)
+    let store = BrokerDashboardStore(
+      loader: loader,
+      commandClient: RecordingCommandClient(),
+      localCommandRunner: localRunner,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+
+    store.requestGuidedSetup()
+    try await waitUntil { store.setupPhase == .awaitingConfirmation }
+    store.confirmGuidedSetup()
+    try await waitUntil { await localRunner.applyStarted() }
+
+    store.requestGuidedSetup()
+    try await waitUntil {
+      let invocationCount = await localRunner.invocationCount()
+      return invocationCount == 3 && store.setupPhase == .awaitingConfirmation
+    }
+
+    XCTAssertEqual(store.setupPlan?.planId, setupPlan.planId)
+    XCTAssertEqual(store.pendingSetupConfirmation, setupPlan.planId)
+    XCTAssertNil(store.lastErrorMessage)
+    XCTAssertFalse(store.serviceStatusUnverified)
+    XCTAssertTrue(store.canSendCommands)
+    let refreshInheritedCancellation = await loader.observedCancellation()
+    XCTAssertFalse(refreshInheritedCancellation)
+    let loadCount = await loader.loadCount()
+    XCTAssertEqual(loadCount, 0)
+    let applyWasCancelled = await localRunner.applyWasCancelled()
+    XCTAssertTrue(applyWasCancelled)
+
+    store.cancelGuidedSetup()
+  }
+
+  func testLateCancelledSetupRecoveryCannotOverwriteReplacementSetup() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let originalService = try XCTUnwrap(loadedState.service)
+    let restartedService = BrokerServiceMetadata(
+      hostConfigPath: originalService.hostConfigPath,
+      pid: originalService.pid + 1,
+      socketPath: originalService.socketPath,
+      startedAt: "2026-08-30T14:00:00Z",
+      stateRoot: originalService.stateRoot,
+      transport: originalService.transport,
+      runtimeVersion: originalService.runtimeVersion
+    )
+    let setupPlan = try makeSetupPlan()
+    let localRunner = ReplaceableSetupLocalCommandRunner(plan: setupPlan)
+    let loader = ControlledSnapshotLoader()
+    let store = BrokerDashboardStore(
+      loader: loader,
+      commandClient: RecordingCommandClient(),
+      localCommandRunner: localRunner,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+
+    store.requestGuidedSetup()
+    try await waitUntil { store.setupPhase == .awaitingConfirmation }
+    store.confirmGuidedSetup()
+    try await waitUntil { await localRunner.applyStarted() }
+    let stoppedSetupTask = store.stopGuidedSetup()
+    try await waitUntil { await loader.pendingCount() == 1 }
+
+    store.requestGuidedSetup()
+    try await waitUntil {
+      let invocationCount = await localRunner.invocationCount()
+      return invocationCount == 3 && store.setupPhase == .awaitingConfirmation
+    }
+
+    await loader.resumePending(
+      at: 0,
+      with: makeLoadedState(snapshot: snapshot, service: restartedService)
+    )
+    await stoppedSetupTask?.value
+
+    XCTAssertEqual(store.loadedState?.service?.pid, originalService.pid)
+    XCTAssertEqual(store.setupPlan?.planId, setupPlan.planId)
+    XCTAssertEqual(store.pendingSetupConfirmation, setupPlan.planId)
+    XCTAssertEqual(store.setupPhase, .awaitingConfirmation)
+    XCTAssertNil(store.lastErrorMessage)
+    XCTAssertFalse(store.serviceStatusUnverified)
+    XCTAssertTrue(store.canSendCommands)
+
+    store.cancelGuidedSetup()
   }
 
   func testGuidedSetupApplyFailureRefreshesAndPreservesRecoveryPlan() async throws {
@@ -2771,6 +3000,54 @@ private actor CancellableApplyLocalCommandRunner: BrokerLocalCommandRunning {
   }
 }
 
+private actor ReplaceableSetupLocalCommandRunner: BrokerLocalCommandRunning {
+  private var didCancelApply = false
+  private var didStartApply = false
+  private var invocations = 0
+  private let plan: BrokerSetupPlan
+
+  init(plan: BrokerSetupPlan) {
+    self.plan = plan
+  }
+
+  func run(cliPath: URL, arguments: [String]) async throws -> BrokerCLICommandEnvelope {
+    invocations += 1
+    if invocations == 2 {
+      didStartApply = true
+      do {
+        try await Task.sleep(for: .seconds(30))
+      } catch {
+        if error is CancellationError {
+          didCancelApply = true
+        }
+        throw error
+      }
+    }
+    return BrokerCLICommandEnvelope(
+      error: nil,
+      exitCode: 0,
+      ok: true,
+      reasonCode: nil,
+      setupPlan: plan,
+      started: nil,
+      status: "changes_required",
+      unchanged: nil
+    )
+  }
+
+  func applyStarted() -> Bool {
+    didStartApply
+  }
+
+  func applyWasCancelled() -> Bool {
+    didCancelApply
+  }
+
+  func invocationCount() -> Int {
+    invocations
+  }
+}
+
 private actor DeferredPreviewLocalCommandRunner: BrokerLocalCommandRunning {
   private let plan: BrokerSetupPlan
   private var previewContinuation: CheckedContinuation<Void, Never>?
@@ -3001,6 +3278,33 @@ private actor FailingSnapshotLoader: BrokerSnapshotLoading {
 
   func loadCount() -> Int {
     count
+  }
+}
+
+private actor CancellationSensitiveSnapshotLoader: BrokerSnapshotLoading {
+  private var cancellationObserved = false
+  private var count = 0
+  private let state: BrokerLoadedState
+
+  init(state: BrokerLoadedState) {
+    self.state = state
+  }
+
+  func load() async throws -> BrokerLoadedState {
+    count += 1
+    if Task.isCancelled {
+      cancellationObserved = true
+      throw CancellationError()
+    }
+    return state
+  }
+
+  func loadCount() -> Int {
+    count
+  }
+
+  func observedCancellation() -> Bool {
+    cancellationObserved
   }
 }
 

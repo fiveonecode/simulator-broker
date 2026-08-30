@@ -366,7 +366,9 @@ struct BrokerSetupView: View {
             ProgressView()
               .controlSize(.small)
             if store.setupPhase == .applying {
-              Button("Stop", role: .destructive, action: store.stopGuidedSetup)
+              Button("Stop", role: .destructive) {
+                _ = store.stopGuidedSetup()
+              }
             }
           }
         }
