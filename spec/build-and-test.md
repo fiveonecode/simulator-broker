@@ -46,9 +46,15 @@ A first extracted implementation slice now exists:
   Homebrew does not create simulators. Hello world requires setup ready and a
   passing `capacity check --purpose agent-ui-session` (`purposes[].status`, not
   top-level `status`). `unavailable` stops at reconcile; `repair_needed` stops
-  at doctor plus `simulators repair --alias <alias>`
+  at doctor plus `simulators repair --alias <alias>`. The cask is the default
+  app install and does not require XcodeGen; XcodeGen is source-build-only.
+  Released Simulators intentionally remain warm after lease release while the
+  opt-in idle policy is absent; newcomer guidance names `idle status` and the
+  human-attributed `idle enable` command without choosing a duration
 - `scripts/package_cli.sh` packages the Node CLI runtime into a versioned
-  tarball without XcodeGen or an app build
+  top-level directory inside a tarball without XcodeGen or an app build;
+  newcomer commands invoke
+  `./simulator-broker-<version>-cli/bin/simbroker`, not `./bin/simbroker`
 - `Formula/simbroker.rb` installs that GitHub Release tarball through Homebrew.
   `brew install fiveonecode/simulator-broker/simbroker` clones
   `fiveonecode/homebrew-simulator-broker`. `scripts/sync_homebrew_tap.sh`
@@ -73,9 +79,10 @@ A first extracted implementation slice now exists:
   sealed identifier, an unstapled app, and a zip that contains the
   distribution payload instead of `Simulator Broker.app`.
 - public GitHub-hosted CI splits by machine: Ubuntu runs the managed-skill
-  ownership check, `test:broker-core`, and `test:harness-adoption` with a
-  10-minute budget; macOS runs `test:client` with a 15-minute budget. Neither
-  job runs `test:app` or `verify:public-surface`. Home-path leak scanning
+  ownership check, `test:docs`, `test:broker-core`, and
+  `test:harness-adoption` with a 10-minute budget; macOS runs `test:client`
+  with a 15-minute budget. Neither job runs `test:app` or
+  `verify:public-surface`. Home-path leak scanning
   uses `os.homedir()` of the current machine, so GitHub-hosted runners would
   search for `/home/runner` or `/Users/runner`, not the operator home. The
   full-repo scan stays on local `npm test`. Do not raise those budgets to
@@ -168,8 +175,10 @@ Codex Autopilot is a separate origin-default-branch gate. It runs only the
 command in `autopilot.yml` (`npm test`). Autopilot does not read `.agents` or
 `WORKFLOW.md` as its contract. Missing origin `autopilot.yml` is not skip.
 Local full-repo validation remains `./scripts/validate.sh`. GitHub-hosted CI
-stays the split Ubuntu/macOS jobs and still does not run `test:app` or
-`verify:public-surface`.
+stays the split Ubuntu/macOS jobs, and both public pull requests and tagged
+releases run `npm run test:docs`. Pull-request CI still does not run
+`test:app` or `verify:public-surface`; the release workflow also does not run
+`test:app`.
 
 Generated agent harness commands:
 
@@ -255,6 +264,14 @@ it, remove only its stale local registration with `simbroker project forget
 
 `npm run package:local` is the local-debug bundle path for local development convenience. It is not the primary contributor onboarding path and it is not a Gatekeeper-ready distribution artifact.
 
+For users rather than contributors, the canonical app install is
+`brew install --cask fiveonecode/simulator-broker/simulator-broker`; it does
+not require XcodeGen. Ordinary Homebrew reinstall and uninstall stop the
+service first and preserve `host-config.json` plus `state/`. Deleting the full
+`$HOME/Library/Application Support/SimulatorBroker` directory is an explicit
+reset step only and does not delete repo-local configuration or Xcode Simulator
+devices.
+
 Contributor install troubleshooting:
 
 - if `command -v simbroker` resolves to a repo checkout path instead of `"$HOME/.local/bin/simbroker"`, the machine is still using a dev wrapper rather than the installed runtime
@@ -305,6 +322,7 @@ npm run test:app:focus -- SimulatorBrokerAppTests/BrokerDashboardStoreTests
 npm run test:app:focus -- SimulatorBrokerAppTests/BrokerSnapshotLoaderTests --result-bundle-path "$PWD/artifacts/app-test.xcresult"
 npm run test:broker-core
 npm run test:client
+npm run test:docs
 npm run test:harness-adoption
 npm run verify:public-surface
 bash scripts/check_managed_skill_ownership.sh
@@ -417,9 +435,11 @@ Add stronger profiles next for:
 - `bash scripts/install_local.sh --cli-only` installs the CLI runtime without invoking `xcodegen` or `xcodebuild` and without requiring an app bundle
 - `npm run package:cli` writes `artifacts/cli/simulator-broker-<version>-cli.tar.gz` plus a SHA-256 checksum and does not invoke XcodeGen or `xcodebuild`
 - `npm run package:cask-zip` writes `artifacts/distribution/Simulator-Broker-<version>.zip` plus a SHA-256 checksum from a Developer ID-signed, stapled `Simulator Broker.app` using `ditto -c -k --keepParent`. It verifies the sealed signature with `codesign --verify --deep --strict`, requires `CFBundleIdentifier`/`Identifier` `dev.codex.simulator-broker-app`, runs `xcrun stapler validate` before writing the zip, and does not build, sign, notarize, staple, tag, or publish
-- `.github/workflows/ci.yml` runs `test:broker-core` and
-  `test:harness-adoption` on `ubuntu-latest` (10 minutes) and `test:client`
-  on `macos-latest` (15 minutes). It does not run `npm run test:app` or
+- `.github/workflows/ci.yml` runs `test:docs`, `test:broker-core`, and
+  `test:harness-adoption` on `ubuntu-latest` (10 minutes) and `test:client` on
+  `macos-latest` (15 minutes). `.github/workflows/release.yml` runs
+  `test:docs` after tag/version validation and before package creation. These
+  workflows do not run `npm run test:app`; pull-request CI does not run
   `npm run verify:public-surface`
 - `.github/ISSUE_TEMPLATE/` ships install-failure, bug, and feature forms, and
   `.github/pull_request_template.md` is a public-patch checklist that does not

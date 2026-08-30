@@ -31,6 +31,9 @@ jobs:
             exit 1
           fi
 
+      - name: Public docs contract
+        run: npm run test:docs
+
       - name: Public Node test surface
         run: |
           npm run verify:public-surface
