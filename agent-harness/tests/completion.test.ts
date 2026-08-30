@@ -530,7 +530,7 @@ describe("task completion gate", () => {
 
   it("rejects local machine paths in every new commit touching task paths", () => {
     const { repoRoot, sessionDir, taskFilePath } = createRepoFixture();
-    const syntheticHomePath = path.join(path.parse(repoRoot).root, "Users", "synthetic-user", ".codex", "private-task-session");
+    const syntheticHomePath = path.join(path.parse(path.resolve(repoRoot)).root, "Users", "synthetic-user", ".codex", "private-task-session");
     const contextPack = makeContextPack();
     contextPack.verificationObligations = [];
     const contract = writeTaskSession(sessionDir, contextPack, repoRoot);
