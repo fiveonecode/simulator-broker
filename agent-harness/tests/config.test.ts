@@ -17,6 +17,21 @@ import {
   validateVerifyProfiles,
 } from "../src/lib/config.js";
 
+const COMPLEX_SYSTEMS_INSTRUCTION_MARKERS = [
+  "https://how.complexsystems.fail",
+  "latent faults and degraded operation",
+  "defense combinations, near misses, and recovery paths",
+  "single root cause or blame an operator",
+  "Record residual risk",
+  "possible new coupling and failure mode",
+  "recurring or high-consequence risk",
+  "reduces net coupling and operational complexity",
+] as const;
+
+function getMissingComplexSystemsInstructionMarkers(source: string): string[] {
+  return COMPLEX_SYSTEMS_INSTRUCTION_MARKERS.filter((marker) => source.includes(marker) === false);
+}
+
 describe("agent harness config", () => {
   const repoRoot = getRepoRoot();
 
@@ -98,6 +113,21 @@ describe("agent harness config", () => {
     const claudeSource = readFileSync(`${repoRoot}/CLAUDE.md`, "utf8");
 
     expect(agentsSource).toBe(claudeSource);
+  });
+
+  it("anchors the compact complex-system failure discipline in shared instructions", () => {
+    const agentsSource = readFileSync(`${repoRoot}/AGENTS.md`, "utf8");
+
+    expect(getMissingComplexSystemsInstructionMarkers(agentsSource)).toEqual([]);
+  });
+
+  it("rejects incomplete complex-system failure guidance", () => {
+    const agentsSource = readFileSync(`${repoRoot}/AGENTS.md`, "utf8");
+    const incompleteSource = agentsSource.replace("latent faults and degraded operation", "degraded operation");
+
+    expect(getMissingComplexSystemsInstructionMarkers(incompleteSource)).toEqual([
+      "latent faults and degraded operation",
+    ]);
   });
 
   it("rejects symlinks when listing artifact files", () => {

@@ -27,6 +27,17 @@ Use local operator-provided context if available. Do not commit private/local co
 9. Run `npm run agent:complete -- --session-dir <dir>` before claiming completion. If it reports `blocked`, the task is incomplete/blocked, not done.
 10. Report exact verification commands, pass/fail outcomes, artifact paths, and the closing commit SHA.
 
+## Complex-System Failure Discipline
+
+For reliability, safety, incident, and recovery work, apply [How Complex Systems Fail](https://how.complexsystems.fail):
+
+- Model failure as an interaction among conditions, including latent faults and degraded operation.
+- Examine defense combinations, near misses, and recovery paths; a nominal success or one reproduced failure is not enough evidence.
+- Do not stop at a single root cause or blame an operator; explain how conditions and defenses combined.
+- Record residual risk and the conditions under which it remains.
+- Treat every safety change as a possible new coupling and failure mode, and test the changed defense combination.
+- Add a safeguard only for a recurring or high-consequence risk, and only when it reduces net coupling and operational complexity.
+
 ## Harness Commands
 
 - `npm run agent:catalog`

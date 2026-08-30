@@ -779,6 +779,7 @@ function renderTaskPlanMarkdown(plan: TaskPlan): string {
     ...listToMarkdown(plan.verificationPlan),
     "",
     "## Risks",
+    "Document interacting conditions, degraded or latent state, and change-induced coupling; if none is known, state that with the evidence basis.",
     ...listToMarkdown(plan.risks),
     "",
     "## Assumptions",
@@ -821,6 +822,7 @@ function renderSessionHandoffMarkdown(handoff: SessionHandoff): string {
     ...listToMarkdown(handoff.nextSteps),
     "",
     "## Open Risks",
+    "Document residual risk and recovery evidence; if none is known, state that with the evidence basis.",
     ...listToMarkdown(handoff.openRisks),
     "",
     "## Resume Commands",
@@ -1088,6 +1090,7 @@ function validateTaskPlanArtifact(
     ...(plan.objective.trim().length > 0 ? [] : ["Task plan objective must be populated."]),
     ...(plan.deliverables.length > 0 ? [] : ["Task plan must list at least one deliverable."]),
     ...(plan.verificationPlan.length > 0 ? [] : ["Task plan must include at least one verification step."]),
+    ...(plan.risks.length > 0 ? [] : ["Task plan must include at least one risk entry or an explicit none-with-basis entry."]),
   ];
 
   return {
@@ -1114,6 +1117,7 @@ function validateSessionHandoffArtifact(
     ...(handoff.summary.trim().length > 0 ? [] : ["Session handoff summary must be populated."]),
     ...(handoff.status !== "not-started" ? [] : ["Session handoff status must move past not-started."]),
     ...(handoff.nextSteps.length > 0 ? [] : ["Session handoff must include at least one next step."]),
+    ...(handoff.openRisks.length > 0 ? [] : ["Session handoff must include at least one residual-risk entry or an explicit none-with-basis entry."]),
   ];
 
   return {
