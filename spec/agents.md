@@ -39,6 +39,28 @@ Maintainers and agent runs still use `agent:context` / `agent:verify` /
 Shared names supplied by the managed-global baseline are not committed under
 project skill roots. Project-local skills remain source-owned in this repository.
 
+## Complex-system failure discipline
+Related: `AGENTS.md`, `CLAUDE.md`, `agent-harness/src/lib/task-session.ts`, `agent-harness/tests/config.test.ts`, `agent-harness/tests/completion.test.ts`
+
+Reliability, safety, incident, and recovery work follows the learning model in
+[How Complex Systems Fail](https://how.complexsystems.fail). This is a focused
+analysis and evidence contract, not a requirement to add layers or redesign a
+working subsystem.
+
+| ID | Requirement | Verifier |
+|----|-------------|----------|
+| SB-AG-CS-001 | Analysis must model failure as interacting conditions, including latent faults and degraded operation, rather than stop at one root cause or blame an operator. | Shared-instruction contract test in `agent-harness/tests/config.test.ts`; review evidence |
+| SB-AG-CS-002 | Verification must examine relevant defense combinations, near misses, and recovery paths in addition to nominal success. | Routed verification plan and review evidence |
+| SB-AG-CS-003 | Long-running plans and handoffs must explicitly document risk and residual risk, including the conditions under which it remains. | `agent:complete`; positive and negative completion tests in `agent-harness/tests/completion.test.ts` |
+| SB-AG-CS-004 | Every safety change must be treated as a possible new coupling and failure mode. Add a safeguard only for a recurring or high-consequence risk and only when it reduces net coupling and operational complexity. | Shared-instruction contract test; review evidence |
+
+For a `long-running` session, `task-plan.json` `risks` and
+`session-handoff.json` `openRisks` each contain at least one explicit entry. If
+no risk is known, the entry says so and records the evidence basis; an empty
+list is not evidence. The completion gate checks presence deterministically,
+while review checks the substance. This keeps the mechanism small and avoids a
+fragile semantic verifier.
+
 ## macOS app workflow contract
 
 - `script/build_and_run.sh` is the canonical macOS app kill/build/run entrypoint for local work.
@@ -102,7 +124,7 @@ Operational rules:
 - `agent:complete` also enforces a clean close-out: no new uncommitted task changes, no malformed task commit messages, no changed paths outside the selected manifest path constraints, and no leftover untracked junk outside allowlisted local artifact paths.
 - `agent:verify` records the task-tree fingerprint for the declared paths, and `agent:complete` rejects required verification proof when the fingerprint is missing or those paths changed after the passing run.
 - `agent:complete` evaluates forbidden path constraints per selected manifest, so a path forbidden by any selected manifest fails close-out even when another selected manifest allows it.
-- For `long-running` sessions, `agent:complete` requires populated `task-plan`, `session-handoff`, and `advisory-evaluation` artifacts.
+- For `long-running` sessions, `agent:complete` requires populated `task-plan`, `session-handoff`, and `advisory-evaluation` artifacts, including explicit plan risk and handoff residual-risk entries.
 - Every meaningful task commit must use a structured git message with `Why:`, `Changed:`, `Verification:`, `Affected:`, `Refs:`, and `Session:` sections. Commit messages are durable public output: use repo-relative paths, GitHub URLs, commit SHAs, and public task artifact labels such as `task-sessions/<session-name>`; never include machine-local or parent-relative paths. `agent:complete` rejects detected local-path forms in every new commit touching task paths.
 - Normal Symphony runs must use the repo-owned `WORKFLOW.md`, may not edit its
   protected validation paths from an ordinary implementation task, and stop at
