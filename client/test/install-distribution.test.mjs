@@ -490,6 +490,93 @@ test("install_distribution persists PATH once to an isolated profile", () => {
   assert.equal(fs.existsSync(envMarker), false);
 });
 
+test("install_distribution uses an existing Bash login profile idempotently", () => {
+  const root = makeTempDir();
+  const payloadRoot = stageCliOnlyPayload(root);
+  const prefix = path.join(root, "prefix");
+  const bashProfile = path.join(root, ".bash_profile");
+  const fallbackProfile = path.join(root, ".profile");
+  fs.writeFileSync(bashProfile, "# existing Bash login setup\n");
+
+  const runInstall = () => spawnSync("bash", [
+    path.resolve("scripts/install_distribution.sh"),
+    "--payload-root",
+    payloadRoot,
+    "--prefix",
+    prefix,
+    "--cli-only",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      SHELL: "/bin/bash",
+    },
+  });
+
+  const first = runInstall();
+  assert.equal(first.status, 0, first.stderr);
+  const second = runInstall();
+  assert.equal(second.status, 0, second.stderr);
+
+  const profileText = fs.readFileSync(bashProfile, "utf8");
+  assert.match(profileText, /^# existing Bash login setup$/m);
+  assert.equal(countPathBlocks(profileText), 1);
+  assert.equal(fs.existsSync(fallbackProfile), false);
+
+  const loginShell = spawnSync("bash", ["--login", "-c", "command -v simbroker"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      PATH: "/usr/bin:/bin",
+      SHELL: "/bin/bash",
+    },
+  });
+  assert.equal(loginShell.status, 0, loginShell.stderr);
+  assert.equal(loginShell.stdout.trim(), path.join(root, ".local", "bin", "simbroker"));
+});
+
+test("install_distribution falls back to .profile for Bash without .bash_profile", () => {
+  const root = makeTempDir();
+  const payloadRoot = stageCliOnlyPayload(root);
+  const prefix = path.join(root, "prefix");
+  const bashProfile = path.join(root, ".bash_profile");
+  const fallbackProfile = path.join(root, ".profile");
+
+  const result = spawnSync("bash", [
+    path.resolve("scripts/install_distribution.sh"),
+    "--payload-root",
+    payloadRoot,
+    "--prefix",
+    prefix,
+    "--cli-only",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      SHELL: "/bin/bash",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.existsSync(bashProfile), false);
+  assert.equal(countPathBlocks(fs.readFileSync(fallbackProfile, "utf8")), 1);
+
+  const loginShell = spawnSync("bash", ["--login", "-c", "command -v simbroker"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      PATH: "/usr/bin:/bin",
+      SHELL: "/bin/bash",
+    },
+  });
+  assert.equal(loginShell.status, 0, loginShell.stderr);
+  assert.equal(loginShell.stdout.trim(), path.join(root, ".local", "bin", "simbroker"));
+});
+
 test("install_distribution does not edit a login profile for a custom bin-dir unless --profile is set", () => {
   const root = makeTempDir();
   const payloadRoot = stageCliOnlyPayload(root);

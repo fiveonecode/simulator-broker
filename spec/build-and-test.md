@@ -41,7 +41,11 @@ A first extracted implementation slice now exists:
   files, stale client/daemon versions, fail-closed CLI and app probes, explicit
   restart recovery, and preservation of active file-backed leases
 - CLI-only install through `bash scripts/install_local.sh --cli-only`, which copies the Node runtime and writes `simbroker` without XcodeGen or an app build
-- PATH persistence after install: Homebrew prefix bin when that is the install location, otherwise one guarded login-profile snippet for the default `~/.local/bin` location; `--profile` overrides the profile path so tests never edit the operator login rc
+- PATH persistence after install: Homebrew prefix bin when that is the install
+  location, otherwise one guarded login-profile snippet for the default
+  `~/.local/bin` location. The default profile is `~/.zprofile` for zsh, an
+  existing `~/.bash_profile` for Bash, or `~/.profile` otherwise; `--profile`
+  overrides the profile path so tests never edit the operator login rc
 - Public first-run order is Homebrew CLI, optional Homebrew cask, then app
   **Complete first-time setup** or `simbroker setup`. The shared guided flow
   previews prerequisites/newest compatible runtime/six devices, confirms an

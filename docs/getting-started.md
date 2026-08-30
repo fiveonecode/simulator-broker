@@ -86,8 +86,9 @@ directory.
 - If Homebrew is present and `$(brew --prefix)/bin` is writable, the wrapper
   is installed there so a new login shell already has it on `PATH`.
 - Otherwise the wrapper is installed to `~/.local/bin` and the installer
-  appends one guarded PATH snippet to your login profile (`~/.zprofile` on
-  zsh). The snippet is idempotent.
+  appends one guarded PATH snippet to your login profile: `~/.zprofile` on
+  zsh, an existing `~/.bash_profile` on Bash, or `~/.profile` otherwise. The
+  snippet is idempotent.
 - `source "$HOME/Library/Application Support/SimulatorBroker/install/env.sh"`
   remains a fallback for the current shell.
 
