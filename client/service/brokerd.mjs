@@ -505,17 +505,29 @@ function normalizedServiceIdentityPath(value) {
   return typeof value === "string" && value.trim() !== "" ? path.resolve(value) : null;
 }
 
-function serviceIdentitySnapshot(service) {
-  return {
+function serviceIdentitySnapshot(service, { includeRuntimeVersion = false } = {}) {
+  const snapshot = {
     hostConfigPath: normalizedServiceIdentityPath(service?.hostConfigPath),
     socketPath: normalizedServiceIdentityPath(service?.socketPath),
     stateRoot: normalizedServiceIdentityPath(service?.stateRoot),
   };
+  if (includeRuntimeVersion) {
+    snapshot.runtimeVersion = typeof service?.runtimeVersion === "string" && service.runtimeVersion.trim() !== ""
+      ? service.runtimeVersion
+      : null;
+  }
+  return snapshot;
 }
 
-function assertExpectedServiceIdentity(metadata, expectedServiceIdentity) {
+function assertExpectedServiceIdentity(metadata, expectedServiceIdentity, { requireRuntimeVersion = false } = {}) {
   if (expectedServiceIdentity === undefined || expectedServiceIdentity === null) {
-    return;
+    if (!requireRuntimeVersion) {
+      return;
+    }
+    expectedServiceIdentity = {
+      ...metadata,
+      runtimeVersion: null,
+    };
   }
   if (typeof expectedServiceIdentity !== "object" || Array.isArray(expectedServiceIdentity)) {
     throw new BrokerError("expectedServiceIdentity must be an object when provided.", {
@@ -523,8 +535,9 @@ function assertExpectedServiceIdentity(metadata, expectedServiceIdentity) {
     });
   }
 
-  const expected = serviceIdentitySnapshot(expectedServiceIdentity);
-  const actual = serviceIdentitySnapshot(metadata);
+  const snapshotOptions = { includeRuntimeVersion: requireRuntimeVersion };
+  const expected = serviceIdentitySnapshot(expectedServiceIdentity, snapshotOptions);
+  const actual = serviceIdentitySnapshot(metadata, snapshotOptions);
   const mismatchedFields = Object.keys(expected)
     .sort()
     .filter((field) => actual[field] !== expected[field]);
@@ -1311,7 +1324,9 @@ export async function startBrokerService(paths, options = {}) {
             reasonCode: "invalid-command-request",
           });
         }
-        assertExpectedServiceIdentity(metadata, body.expectedServiceIdentity);
+        assertExpectedServiceIdentity(metadata, body.expectedServiceIdentity, {
+          requireRuntimeVersion: true,
+        });
         assertCommandFreshForDispatch(paths, body);
         const payload = await runSerializedCommandWorker(body);
         if (payload?.snapshotRefresh?.ok === false && shouldSurfaceServiceSnapshotRefreshError(body, payload.snapshotRefresh)) {

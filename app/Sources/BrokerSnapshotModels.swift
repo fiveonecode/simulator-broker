@@ -244,4 +244,23 @@ struct BrokerServiceMetadata: Decodable, Sendable {
   let startedAt: String
   let stateRoot: String
   let transport: String
+  let runtimeVersion: String?
+
+  init(
+    hostConfigPath: String,
+    pid: Int,
+    socketPath: String,
+    startedAt: String,
+    stateRoot: String,
+    transport: String,
+    runtimeVersion: String? = nil
+  ) {
+    self.hostConfigPath = hostConfigPath
+    self.pid = pid
+    self.socketPath = socketPath
+    self.startedAt = startedAt
+    self.stateRoot = stateRoot
+    self.transport = transport
+    self.runtimeVersion = runtimeVersion
+  }
 }

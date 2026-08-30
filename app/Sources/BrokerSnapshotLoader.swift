@@ -242,6 +242,7 @@ private struct BrokerSnapshotServiceStatusEnvelope: Decodable, Sendable {
 
 actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
   private let decoder = JSONDecoder()
+  private let expectedRuntimeVersion: String
   private let paths: BrokerRuntimePaths
   private let processIdentifierExists: @Sendable (Int) -> Bool
   private let serviceStatusProbe: @Sendable (BrokerServiceMetadata) async -> BrokerServiceMetadata?
@@ -249,8 +250,10 @@ actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
   init(
     paths: BrokerRuntimePaths = .fromLaunchContext(),
     processIdentifierExists: @escaping @Sendable (Int) -> Bool = FileBrokerSnapshotLoader.defaultProcessIdentifierExists,
-    serviceStatusProbe: @escaping @Sendable (BrokerServiceMetadata) async -> BrokerServiceMetadata? = FileBrokerSnapshotLoader.defaultServiceStatusProbe
+    serviceStatusProbe: @escaping @Sendable (BrokerServiceMetadata) async -> BrokerServiceMetadata? = FileBrokerSnapshotLoader.defaultServiceStatusProbe,
+    expectedRuntimeVersion: String = BrokerRuntimeBuildVersion.current
   ) {
+    self.expectedRuntimeVersion = expectedRuntimeVersion
     self.paths = paths
     self.processIdentifierExists = processIdentifierExists
     self.serviceStatusProbe = serviceStatusProbe
@@ -278,7 +281,8 @@ actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
       return nil
     }
 
-    guard normalizedPath(service.stateRoot) == normalizedPath(paths.stateRoot.path),
+    guard service.runtimeVersion == expectedRuntimeVersion,
+          normalizedPath(service.stateRoot) == normalizedPath(paths.stateRoot.path),
           normalizedPath(service.hostConfigPath) == normalizedPath(paths.hostConfigURL.path),
           configuredServiceSocketMatches(service.socketPath) else {
       return nil
@@ -299,7 +303,8 @@ actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
       return nil
     }
 
-    guard normalizedPath(liveService.stateRoot) == normalizedPath(paths.stateRoot.path),
+    guard liveService.runtimeVersion == expectedRuntimeVersion,
+          normalizedPath(liveService.stateRoot) == normalizedPath(paths.stateRoot.path),
           normalizedPath(liveService.hostConfigPath) == normalizedPath(paths.hostConfigURL.path),
           normalizedPath(liveService.socketPath) == normalizedPath(service.socketPath),
           configuredServiceSocketMatches(liveService.socketPath) else {

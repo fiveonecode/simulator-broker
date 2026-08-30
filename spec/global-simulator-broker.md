@@ -160,9 +160,9 @@ Current implementation slice:
 - shared command execution path used by direct CLI mode and service-backed CLI mode
 - NDJSON event streaming for `events watch --follow --json-lines`
 - CLI service routing validates that the live service metadata matches the requested host config, state root, and socket before routing commands or reporting an unchanged start
-- service-backed command requests may carry an `expectedServiceIdentity` object, and `brokerd` must compare its host config path, state root, and socket path to the live daemon metadata immediately before command dispatch
+- service-backed command requests must carry an `expectedServiceIdentity` object whose host config path, state root, socket path, and exact opaque `runtimeVersion` match the live daemon metadata immediately before command dispatch; a missing runtime version fails closed before worker admission
 - service-backed command requests may carry client request-start, queue-timeout, and execution-timeout budget fields; `brokerd` must reject a request whose queue budget has already expired, or whose recomputed dispatch-time execution budget exceeds the client-advertised execution budget, before dispatching the broker command; dispatch-time recomputation must use the request project file path when the command carries one
-- service stop requests may carry the same `expectedServiceIdentity` object, and `brokerd` must validate it before acknowledging shutdown
+- service stop requests may carry the path portion of the same `expectedServiceIdentity` object, and `brokerd` must validate it before acknowledging shutdown; cooperative stop intentionally remains compatible with an older client so explicit upgrade recovery can drain the live daemon
 - service stop closes active event streams before shutdown completes
 - malformed JSON from a running service is reported as service unavailability by clients instead of escaping as an uncaught parser failure
 - service startup must not publish a listenable socket or service metadata until the initial broker-owned app snapshot refresh has completed or explicitly reported a missing-host setup state; the CLI start launcher must wait within the bounded startup snapshot budget for one shared process-table sample, startup-lock owner PID lifetime sampling, and all inventory commands, validate startup-lock owner PID lifetime before accepting an old lock as live, and terminate the spawned daemon on startup timeout
@@ -181,7 +181,7 @@ claim. The canonical health states are `healthy`, `degraded`, and
 
 | ID | Requirement | Verifier |
 | --- | --- | --- |
-| SB-SVC-RT-001 | Service metadata includes the daemon `runtimeVersion`; a CLI accepts service-backed work only when that value exactly matches its installed runtime version. A missing version is incompatible. | `client/test/brokerd.test.mjs` stale-runtime rejection case; `client/test/simbroker.test.mjs` legacy-daemon rejection case |
+| SB-SVC-RT-001 | Service metadata includes the daemon `runtimeVersion`; the CLI and app accept service-backed work only when that opaque value exactly matches their installed runtime version. A missing version is incompatible, and `/v1/command` rejects missing or mismatched expected versions before worker dispatch. | `client/test/brokerd.test.mjs` dispatch and stale-runtime rejection cases; `client/test/simbroker.test.mjs` legacy-daemon rejection case; `app/Tests/BrokerServiceClientTests.swift`; `app/Tests/BrokerSnapshotLoaderTests.swift` |
 | SB-SVC-RT-002 | `brokerd` records its entrypoint and package-metadata identity at startup. Missing, replaced, or version-changed runtime files transition the daemon to `incompatible`. | `client/test/brokerd.test.mjs` installed-runtime loss case |
 | SB-SVC-RT-003 | A worker bootstrap or runtime-load failure transitions the daemon to `degraded`; it must not return a healthy status after that failure. | `client/test/brokerd.test.mjs` worker bootstrap module-loss case |
 | SB-SVC-RT-004 | Healthy status is HTTP `200`. `degraded` or `incompatible` status is HTTP `409`, uses reason `service-runtime-incompatible` and exit code `3`, and keeps `running: true` so clients distinguish a live unusable daemon from a stopped daemon. | `client/test/brokerd.test.mjs` status assertions; error-contract tests through `npm run test:client` |
@@ -202,6 +202,14 @@ self-exit because a live status and cooperative stop surface are required to
 recover without guessing at processes or deleting sockets. A crash between
 stop and restart is recoverable by rerunning the same start command; service
 restart is not a cross-process atomic operation.
+
+App project generation writes an ignored Swift constant atomically from the
+root `package.json` version. Snapshot loading treats missing or mismatched
+service versions as read-only, and every app mutation rechecks live status
+before POSTing the same exact version in `expectedServiceIdentity`. This assumes
+the supported Homebrew formula and cask are installed as a paired release;
+independently skewed formula/cask installations intentionally remain read-only
+until the pair is upgraded or reinstalled together.
 
 ### `client`
 

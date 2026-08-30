@@ -2,6 +2,8 @@ import XCTest
 @testable import SimulatorBrokerApp
 
 final class BrokerSnapshotLoaderTests: XCTestCase {
+  private let runtimeVersion = "test-runtime-version"
+
   // Ignore snapshots that point at a different broker root than the configured runtime.
   func testLoaderIgnoresSnapshotWhenEmbeddedStateRootDoesNotMatchConfiguredPath() async throws {
     let tempRoot = try makeTempRoot()
@@ -99,6 +101,7 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
       [
         "hostConfigPath": "/tmp/fixture-host.json",
         "pid": 123,
+        "runtimeVersion": runtimeVersion,
         "socketPath": "/tmp/simbroker.sock",
         "startedAt": "2026-04-10T00:00:00Z",
         "stateRoot": "/tmp/simbroker-fixture/state",
@@ -107,7 +110,10 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
       to: paths.serviceMetadataURL
     )
 
-    let loadedState = try await FileBrokerSnapshotLoader(paths: paths).load()
+    let loadedState = try await FileBrokerSnapshotLoader(
+      paths: paths,
+      expectedRuntimeVersion: runtimeVersion
+    ).load()
 
     XCTAssertNil(loadedState.service)
   }
@@ -126,6 +132,7 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
       [
         "hostConfigPath": paths.hostConfigURL.path,
         "pid": 424242,
+        "runtimeVersion": runtimeVersion,
         "socketPath": socketURL.path,
         "startedAt": "2026-04-10T00:00:00Z",
         "stateRoot": paths.stateRoot.path,
@@ -136,7 +143,8 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
 
     let loadedState = try await FileBrokerSnapshotLoader(
       paths: paths,
-      processIdentifierExists: { _ in false }
+      processIdentifierExists: { _ in false },
+      expectedRuntimeVersion: runtimeVersion
     ).load()
 
     XCTAssertNil(loadedState.service)
@@ -156,6 +164,7 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
       [
         "hostConfigPath": paths.hostConfigURL.path,
         "pid": 12345,
+        "runtimeVersion": runtimeVersion,
         "socketPath": socketURL.path,
         "startedAt": "2026-04-10T00:00:00Z",
         "stateRoot": paths.stateRoot.path,
@@ -167,7 +176,8 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     let loadedState = try await FileBrokerSnapshotLoader(
       paths: paths,
       processIdentifierExists: { pid in pid == 12345 },
-      serviceStatusProbe: { _ in nil }
+      serviceStatusProbe: { _ in nil },
+      expectedRuntimeVersion: runtimeVersion
     ).load()
 
     XCTAssertNil(loadedState.service)
@@ -187,6 +197,7 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
       [
         "hostConfigPath": paths.hostConfigURL.path,
         "pid": 12345,
+        "runtimeVersion": runtimeVersion,
         "socketPath": socketURL.path,
         "startedAt": "2026-04-10T00:00:00Z",
         "stateRoot": paths.stateRoot.path,
@@ -205,9 +216,11 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
           socketPath: service.socketPath,
           startedAt: service.startedAt,
           stateRoot: "/tmp/other-simbroker-state",
-          transport: service.transport
+          transport: service.transport,
+          runtimeVersion: service.runtimeVersion
         )
-      }
+      },
+      expectedRuntimeVersion: runtimeVersion
     ).load()
 
     XCTAssertNil(loadedState.service)
@@ -227,6 +240,7 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
       [
         "hostConfigPath": paths.hostConfigURL.path,
         "pid": 12345,
+        "runtimeVersion": runtimeVersion,
         "socketPath": socketURL.path,
         "startedAt": "2026-04-10T00:00:00Z",
         "stateRoot": paths.stateRoot.path,
@@ -238,10 +252,75 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     let loadedState = try await FileBrokerSnapshotLoader(
       paths: paths,
       processIdentifierExists: { pid in pid == 12345 },
-      serviceStatusProbe: { service in service }
+      serviceStatusProbe: { service in service },
+      expectedRuntimeVersion: runtimeVersion
     ).load()
 
     XCTAssertEqual(loadedState.service?.pid, 12345)
+    XCTAssertEqual(loadedState.service?.runtimeVersion, runtimeVersion)
+  }
+
+  func testLoaderIgnoresLegacyServiceMetadataWithoutRuntimeVersion() async throws {
+    let tempRoot = try makeTempRoot()
+    let paths = BrokerRuntimePaths(
+      stateRoot: tempRoot.appending(path: "state"),
+      hostConfigURL: tempRoot.appending(path: "host-config.json")
+    )
+    let socketURL = paths.stateRoot.appending(path: "broker.sock")
+    try FileManager.default.createDirectory(at: socketURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data().write(to: socketURL)
+    try writeJson(
+      [
+        "hostConfigPath": paths.hostConfigURL.path,
+        "pid": 12345,
+        "socketPath": socketURL.path,
+        "startedAt": "2026-04-10T00:00:00Z",
+        "stateRoot": paths.stateRoot.path,
+        "transport": "unix-http",
+      ],
+      to: paths.serviceMetadataURL
+    )
+
+    let loadedState = try await FileBrokerSnapshotLoader(
+      paths: paths,
+      processIdentifierExists: { _ in true },
+      serviceStatusProbe: { service in service },
+      expectedRuntimeVersion: runtimeVersion
+    ).load()
+
+    XCTAssertNil(loadedState.service)
+  }
+
+  func testLoaderIgnoresServiceMetadataFromDifferentRuntimeVersion() async throws {
+    let tempRoot = try makeTempRoot()
+    let paths = BrokerRuntimePaths(
+      stateRoot: tempRoot.appending(path: "state"),
+      hostConfigURL: tempRoot.appending(path: "host-config.json")
+    )
+    let socketURL = paths.stateRoot.appending(path: "broker.sock")
+    try FileManager.default.createDirectory(at: socketURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data().write(to: socketURL)
+    try writeJson(
+      [
+        "hostConfigPath": paths.hostConfigURL.path,
+        "pid": 12345,
+        "runtimeVersion": "older-runtime-version",
+        "socketPath": socketURL.path,
+        "startedAt": "2026-04-10T00:00:00Z",
+        "stateRoot": paths.stateRoot.path,
+        "transport": "unix-http",
+      ],
+      to: paths.serviceMetadataURL
+    )
+
+    let loadedState = try await FileBrokerSnapshotLoader(
+      paths: paths,
+      processIdentifierExists: { _ in true },
+      serviceStatusProbe: { service in service },
+      expectedRuntimeVersion: runtimeVersion
+    ).load()
+
+    XCTAssertNil(loadedState.service)
   }
 
   func testLoaderIgnoresServiceMetadataThatDoesNotMatchConfiguredSocket() async throws {
@@ -259,6 +338,7 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
       [
         "hostConfigPath": paths.hostConfigURL.path,
         "pid": 12345,
+        "runtimeVersion": runtimeVersion,
         "socketPath": metadataSocketURL.path,
         "startedAt": "2026-04-10T00:00:00Z",
         "stateRoot": paths.stateRoot.path,
@@ -270,7 +350,8 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     let loadedState = try await FileBrokerSnapshotLoader(
       paths: paths,
       processIdentifierExists: { _ in true },
-      serviceStatusProbe: { service in service }
+      serviceStatusProbe: { service in service },
+      expectedRuntimeVersion: runtimeVersion
     ).load()
 
     XCTAssertNil(loadedState.service)

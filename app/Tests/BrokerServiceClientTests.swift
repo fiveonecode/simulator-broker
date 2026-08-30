@@ -2,6 +2,22 @@ import XCTest
 @testable import SimulatorBrokerApp
 
 final class BrokerServiceClientTests: XCTestCase {
+  private let runtimeVersion = "test-runtime-version"
+
+  func testGeneratedRuntimeVersionMatchesPackageMetadata() throws {
+    let packageURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appending(path: "package.json")
+    let packageMetadata = try JSONDecoder().decode(
+      RuntimePackageMetadata.self,
+      from: Data(contentsOf: packageURL)
+    )
+
+    XCTAssertEqual(BrokerRuntimeBuildVersion.current, packageMetadata.version)
+  }
+
   func testCurlProcessBoxDeclinesLaunchWhenCancelledBeforeRegistration() throws {
     let box = CurlProcessBox()
     let process = Process()
@@ -278,17 +294,22 @@ final class BrokerServiceClientTests: XCTestCase {
 
   func testCommandClientRejectsLiveServiceIdentityMismatchBeforeMutation() async throws {
     let fixture = try makeServiceFixture()
-    try writeServiceMetadata(paths: fixture.paths, socketPath: fixture.socketPath)
+    try writeServiceMetadata(paths: fixture.paths, socketPath: fixture.socketPath, runtimeVersion: runtimeVersion)
     let statusBody = try makeServiceStatusBody(
       hostConfigPath: fixture.paths.hostConfigURL.path,
       socketPath: fixture.socketPath,
-      stateRoot: fixture.root.appending(path: "other-state").path
+      stateRoot: fixture.root.appending(path: "other-state").path,
+      runtimeVersion: runtimeVersion
     )
     let transport = StubBrokerServiceTransport(responses: [
       BrokerHTTPResponse(bodyData: statusBody, statusCode: 200),
       BrokerHTTPResponse(bodyData: Data(#"{"ok":true}"#.utf8), statusCode: 200),
     ])
-    let client = BrokerServiceCommandClient(paths: fixture.paths, transport: transport)
+    let client = BrokerServiceCommandClient(
+      paths: fixture.paths,
+      transport: transport,
+      expectedRuntimeVersion: runtimeVersion
+    )
 
     do {
       _ = try await client.send(BrokerCommandRequest(command: "release", group: "lease", options: ["leaseId": .string("lease-1")]))
@@ -308,7 +329,7 @@ final class BrokerServiceClientTests: XCTestCase {
   func testCommandClientRejectsMetadataThatDoesNotMatchConfiguredSocketBeforeProbe() async throws {
     let fixture = try makeServiceFixture()
     let configuredSocketPath = fixture.root.appending(path: "configured.sock").path
-    try writeServiceMetadata(paths: fixture.paths, socketPath: fixture.socketPath)
+    try writeServiceMetadata(paths: fixture.paths, socketPath: fixture.socketPath, runtimeVersion: runtimeVersion)
     let transport = StubBrokerServiceTransport(responses: [])
     let client = BrokerServiceCommandClient(
       paths: BrokerRuntimePaths(
@@ -316,7 +337,8 @@ final class BrokerServiceClientTests: XCTestCase {
         hostConfigURL: fixture.paths.hostConfigURL,
         serviceSocketURL: URL(fileURLWithPath: configuredSocketPath)
       ),
-      transport: transport
+      transport: transport,
+      expectedRuntimeVersion: runtimeVersion
     )
 
     do {
@@ -334,21 +356,98 @@ final class BrokerServiceClientTests: XCTestCase {
     XCTAssertTrue(requests.isEmpty)
   }
 
-  func testCommandClientProbesIdentityAndUsesMutationTimeout() async throws {
+  func testCommandClientRejectsMissingLiveRuntimeVersionBeforeMutation() async throws {
     let fixture = try makeServiceFixture()
-    try writeServiceMetadata(paths: fixture.paths, socketPath: fixture.socketPath)
+    try writeServiceMetadata(paths: fixture.paths, socketPath: fixture.socketPath, runtimeVersion: runtimeVersion)
     let transport = StubBrokerServiceTransport(responses: [
       BrokerHTTPResponse(
         bodyData: try makeServiceStatusBody(
           hostConfigPath: fixture.paths.hostConfigURL.path,
           socketPath: fixture.socketPath,
-          stateRoot: fixture.paths.stateRoot.path
+          stateRoot: fixture.paths.stateRoot.path,
+          runtimeVersion: nil
+        ),
+        statusCode: 200
+      ),
+    ])
+    let client = BrokerServiceCommandClient(
+      paths: fixture.paths,
+      transport: transport,
+      expectedRuntimeVersion: runtimeVersion
+    )
+
+    do {
+      _ = try await client.send(BrokerCommandRequest(command: "release", group: "lease", options: [:]))
+      XCTFail("Expected missing runtime version rejection")
+    } catch let error as BrokerServiceCommandClientError {
+      guard case let .serviceIdentityMismatch(_, actual, mismatchedFields) = error else {
+        XCTFail("Unexpected error \(error)")
+        return
+      }
+      XCTAssertEqual(actual["runtimeVersion"], "<missing>")
+      XCTAssertEqual(mismatchedFields, ["runtimeVersion"])
+    }
+
+    let requests = await transport.requests()
+    XCTAssertEqual(requests.map(\.requestPath), ["/v1/service/status"])
+  }
+
+  func testCommandClientRejectsMismatchedLiveRuntimeVersionBeforeMutation() async throws {
+    let fixture = try makeServiceFixture()
+    try writeServiceMetadata(paths: fixture.paths, socketPath: fixture.socketPath, runtimeVersion: runtimeVersion)
+    let transport = StubBrokerServiceTransport(responses: [
+      BrokerHTTPResponse(
+        bodyData: try makeServiceStatusBody(
+          hostConfigPath: fixture.paths.hostConfigURL.path,
+          socketPath: fixture.socketPath,
+          stateRoot: fixture.paths.stateRoot.path,
+          runtimeVersion: "older-runtime-version"
+        ),
+        statusCode: 200
+      ),
+    ])
+    let client = BrokerServiceCommandClient(
+      paths: fixture.paths,
+      transport: transport,
+      expectedRuntimeVersion: runtimeVersion
+    )
+
+    do {
+      _ = try await client.send(BrokerCommandRequest(command: "release", group: "lease", options: [:]))
+      XCTFail("Expected mismatched runtime version rejection")
+    } catch let error as BrokerServiceCommandClientError {
+      guard case let .serviceIdentityMismatch(_, actual, mismatchedFields) = error else {
+        XCTFail("Unexpected error \(error)")
+        return
+      }
+      XCTAssertEqual(actual["runtimeVersion"], "older-runtime-version")
+      XCTAssertEqual(mismatchedFields, ["runtimeVersion"])
+    }
+
+    let requests = await transport.requests()
+    XCTAssertEqual(requests.map(\.requestPath), ["/v1/service/status"])
+  }
+
+  func testCommandClientProbesIdentityAndUsesMutationTimeout() async throws {
+    let fixture = try makeServiceFixture()
+    try writeServiceMetadata(paths: fixture.paths, socketPath: fixture.socketPath, runtimeVersion: runtimeVersion)
+    let transport = StubBrokerServiceTransport(responses: [
+      BrokerHTTPResponse(
+        bodyData: try makeServiceStatusBody(
+          hostConfigPath: fixture.paths.hostConfigURL.path,
+          socketPath: fixture.socketPath,
+          stateRoot: fixture.paths.stateRoot.path,
+          runtimeVersion: runtimeVersion
         ),
         statusCode: 200
       ),
       BrokerHTTPResponse(bodyData: Data(#"{"ok":true}"#.utf8), statusCode: 200),
     ])
-    let client = BrokerServiceCommandClient(paths: fixture.paths, transport: transport)
+    let client = BrokerServiceCommandClient(
+      paths: fixture.paths,
+      transport: transport,
+      expectedRuntimeVersion: runtimeVersion
+    )
 
     _ = try await client.send(BrokerCommandRequest(command: "repair", group: "simulators", options: ["alias": .string("ui-1")]))
 
@@ -363,6 +462,7 @@ final class BrokerServiceClientTests: XCTestCase {
     let expectedIdentity = try XCTUnwrap(commandBody["expectedServiceIdentity"] as? [String: String])
     XCTAssertEqual(expectedIdentity, [
       "hostConfigPath": fixture.paths.hostConfigURL.path,
+      "runtimeVersion": runtimeVersion,
       "socketPath": fixture.socketPath,
       "stateRoot": fixture.paths.stateRoot.path,
     ])
@@ -386,6 +486,10 @@ private struct ServiceFixture {
   let paths: BrokerRuntimePaths
   let root: URL
   let socketPath: String
+}
+
+private struct RuntimePackageMetadata: Decodable {
+  let version: String
 }
 
 private struct RecordedTransportRequest: Sendable {
@@ -437,28 +541,41 @@ private func makeServiceFixture() throws -> ServiceFixture {
   )
 }
 
-private func writeServiceMetadata(paths: BrokerRuntimePaths, socketPath: String) throws {
-  try writeJSONObject([
+private func writeServiceMetadata(paths: BrokerRuntimePaths, socketPath: String, runtimeVersion: String?) throws {
+  var metadata: [String: Any] = [
     "hostConfigPath": paths.hostConfigURL.path,
     "pid": 123,
     "socketPath": socketPath,
     "startedAt": "2026-06-18T00:00:00.000Z",
     "stateRoot": paths.stateRoot.path,
     "transport": "unix-http",
-  ], to: paths.serviceMetadataURL)
+  ]
+  if let runtimeVersion {
+    metadata["runtimeVersion"] = runtimeVersion
+  }
+  try writeJSONObject(metadata, to: paths.serviceMetadataURL)
 }
 
-private func makeServiceStatusBody(hostConfigPath: String, socketPath: String, stateRoot: String) throws -> Data {
-  try JSONSerialization.data(withJSONObject: [
+private func makeServiceStatusBody(
+  hostConfigPath: String,
+  socketPath: String,
+  stateRoot: String,
+  runtimeVersion: String?
+) throws -> Data {
+  var service: [String: Any] = [
+    "hostConfigPath": hostConfigPath,
+    "pid": 123,
+    "socketPath": socketPath,
+    "startedAt": "2026-06-18T00:00:00.000Z",
+    "stateRoot": stateRoot,
+    "transport": "unix-http",
+  ]
+  if let runtimeVersion {
+    service["runtimeVersion"] = runtimeVersion
+  }
+  return try JSONSerialization.data(withJSONObject: [
     "ok": true,
-    "service": [
-      "hostConfigPath": hostConfigPath,
-      "pid": 123,
-      "socketPath": socketPath,
-      "startedAt": "2026-06-18T00:00:00.000Z",
-      "stateRoot": stateRoot,
-      "transport": "unix-http",
-    ],
+    "service": service,
   ], options: [.sortedKeys])
 }
 

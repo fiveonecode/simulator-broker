@@ -335,7 +335,13 @@ function requestService(fixture, { body, method = "GET", requestPath }) {
   return new Promise((resolve, reject) => {
     const metadataPath = path.join(fixture.stateRoot, "brokerd.json");
     const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
-    const payload = body === undefined ? null : JSON.stringify(body);
+    const requestBody = method === "POST"
+      && requestPath === "/v1/command"
+      && body !== undefined
+      && !Object.hasOwn(body, "expectedServiceIdentity")
+      ? { ...body, expectedServiceIdentity: metadata }
+      : body;
+    const payload = requestBody === undefined ? null : JSON.stringify(requestBody);
     const request = http.request({
       headers: payload ? {
         "content-length": Buffer.byteLength(payload),
@@ -1754,6 +1760,7 @@ test("service stop closes command admission before acknowledging shutdown", asyn
   const metadata = readJson(paths.serviceMetadataPath);
   const body = JSON.stringify({
     command: "host",
+    expectedServiceIdentity: metadata,
     group: "help",
     options: {},
     type: "command",
@@ -1851,6 +1858,7 @@ test("brokerd rejects late command worker admission during shutdown", async (t) 
   const metadata = readJson(paths.serviceMetadataPath);
   const body = JSON.stringify({
     command: "host",
+    expectedServiceIdentity: metadata,
     group: "help",
     options: {},
     type: "command",
@@ -1995,6 +2003,7 @@ test("service validates expected identity immediately before command dispatch", 
       command: "mystery",
       expectedServiceIdentity: {
         hostConfigPath: fixture.hostConfigPath,
+        runtimeVersion: metadata.runtimeVersion,
         socketPath: metadata.socketPath,
         stateRoot: path.join(fixture.root, "other-state"),
       },
@@ -2008,6 +2017,85 @@ test("service validates expected identity immediately before command dispatch", 
   assert.equal(rejected.statusCode, 409);
   assert.equal(rejected.json.reasonCode, "service-identity-mismatch");
   assert.deepEqual(rejected.json.mismatchedFields, ["stateRoot"]);
+});
+
+test("service requires an exact runtime version before command worker dispatch", async (t) => {
+  const fixture = makeFixture();
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    serviceSocketPath: path.join(fixture.root, "runtime-identity.sock"),
+    stateRoot: fixture.stateRoot,
+  });
+  let commandWorkerStarts = 0;
+  const service = await startBrokerService(paths, {
+    reconcileIdleBroker() {
+      return { ok: true };
+    },
+    runBrokerCommandWorker() {
+      commandWorkerStarts += 1;
+      return { status: "ok" };
+    },
+    writeAppSnapshotArtifact() {
+      return { ok: true };
+    },
+  });
+  t.after(async () => service.shutdown({ exitProcess: false }));
+
+  const expectedServiceIdentity = {
+    hostConfigPath: fixture.hostConfigPath,
+    socketPath: paths.serviceSocketPath,
+    stateRoot: fixture.stateRoot,
+  };
+  const missingVersion = await requestService(fixture, {
+    body: {
+      command: "status",
+      expectedServiceIdentity,
+      group: "host",
+      options: {},
+      type: "command",
+    },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  assert.equal(missingVersion.statusCode, 409);
+  assert.equal(missingVersion.json.reasonCode, "service-identity-mismatch");
+  assert.deepEqual(missingVersion.json.mismatchedFields, ["runtimeVersion"]);
+
+  const mismatchedVersion = await requestService(fixture, {
+    body: {
+      command: "status",
+      expectedServiceIdentity: {
+        ...expectedServiceIdentity,
+        runtimeVersion: "older-runtime-version",
+      },
+      group: "host",
+      options: {},
+      type: "command",
+    },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  assert.equal(mismatchedVersion.statusCode, 409);
+  assert.equal(mismatchedVersion.json.reasonCode, "service-identity-mismatch");
+  assert.deepEqual(mismatchedVersion.json.mismatchedFields, ["runtimeVersion"]);
+  assert.equal(commandWorkerStarts, 0);
+
+  const accepted = await requestService(fixture, {
+    body: {
+      command: "status",
+      expectedServiceIdentity: {
+        ...expectedServiceIdentity,
+        runtimeVersion: service.metadata.runtimeVersion,
+      },
+      group: "host",
+      options: {},
+      type: "command",
+    },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+  assert.equal(accepted.statusCode, 200);
+  assert.equal(commandWorkerStarts, 1);
 });
 
 test("service rejects expired queued commands before command dispatch", async (t) => {
