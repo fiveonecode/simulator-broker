@@ -391,7 +391,9 @@ struct BrokerSetupView: View {
               detail: store.stateRootPath,
               title: "Broker service",
               statusColor: store.serviceStatusUnverified ? .red : (store.canSendCommands ? .green : .orange),
-              statusTitle: store.serviceStatusUnverified ? "Unverified" : (store.canSendCommands ? "Running" : "Stopped")
+              statusTitle: store.serviceStatusUnverified
+                ? "Unverified"
+                : (store.serviceRequiresRestart ? "Restart required" : (store.canSendCommands ? "Running" : "Stopped"))
             )
             if let installRootPath = store.installRootPath {
               SetupStatusRow(
@@ -446,6 +448,9 @@ struct BrokerSetupView: View {
     case .needsHostBootstrap:
       return "Preview one guided plan for the starter Simulator pool, host configuration, brokerd startup, snapshot refresh, and health verification."
     case .needsServiceStart:
+      if store.serviceRequiresRestart {
+        return "brokerd is running, but its runtime requires restart. Finish setup to restart it cooperatively and restore live commands."
+      }
       return "The broker host config exists, but brokerd is not running. Start the service to enable live state, pins, lease release, and lifecycle actions."
     case .needsSnapshotRefresh:
       return "brokerd is reachable, but the app snapshot is missing. Refresh the snapshot artifact to populate the dashboard."
@@ -465,7 +470,7 @@ struct BrokerSetupView: View {
     case .needsHostBootstrap:
       return "sparkles.rectangle.stack"
     case .needsServiceStart:
-      return "play.circle.fill"
+      return store.serviceRequiresRestart ? "arrow.trianglehead.2.clockwise.rotate.90" : "play.circle.fill"
     case .needsSnapshotRefresh:
       return "arrow.trianglehead.clockwise"
     case .readOnlySnapshot:
@@ -484,7 +489,7 @@ struct BrokerSetupView: View {
     case .needsHostBootstrap:
       return "Set Up This Mac"
     case .needsServiceStart:
-      return "Start brokerd"
+      return store.serviceRequiresRestart ? "Restart brokerd" : "Start brokerd"
     case .needsSnapshotRefresh:
       return "Refresh Broker State"
     case .readOnlySnapshot:
@@ -528,6 +533,9 @@ struct BrokerSetupView: View {
     case .needsHostBootstrap:
       return "CLI fallback for the same guided preview and confirmation flow."
     case .needsServiceStart, .readOnlySnapshot:
+      if store.serviceRequiresRestart {
+        return "The same setup command cooperatively replaces the incompatible runtime without replacing the host configuration."
+      }
       return "The same setup command safely finishes brokerd startup without replacing the host configuration."
     case .needsSnapshotRefresh:
       return "The same setup command safely refreshes and verifies broker state."

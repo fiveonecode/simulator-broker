@@ -62,6 +62,7 @@ struct RootView: View {
       || (store.lastErrorMessage != nil && store.snapshot != nil)
       || store.startupState == .readOnlySnapshot
       || store.startupState == .serviceStatusUnverified
+      || store.serviceRequiresRestart
       || store.isAutomaticSetupInProgress
   }
 
@@ -143,7 +144,7 @@ struct RootView: View {
     case .needsSnapshotRefresh:
       return "arrow.clockwise.circle"
     case .needsServiceStart:
-      return "bolt.slash.fill"
+      return store.serviceRequiresRestart ? "arrow.trianglehead.2.clockwise.rotate.90" : "bolt.slash.fill"
     case .missingCLI, .needsHostBootstrap:
       return "wrench.and.screwdriver.fill"
     }
@@ -200,7 +201,10 @@ struct RootView: View {
 
   @ViewBuilder
   private var serviceAvailabilityMessageCard: some View {
-    if store.startupState == .readOnlySnapshot || store.startupState == .serviceStatusUnverified {
+    if store.startupState == .readOnlySnapshot
+      || store.startupState == .serviceStatusUnverified
+      || store.serviceRequiresRestart
+    {
       if store.canOfferReadOnlyFinishSetup {
         StatusMessageCard(
           color: .orange,

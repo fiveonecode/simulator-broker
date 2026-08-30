@@ -54,7 +54,7 @@ private struct BrokerRefreshSupersededError: LocalizedError {
 
 private struct BrokerSetupServiceMissingAfterRefreshError: LocalizedError {
   var errorDescription: String? {
-    "Setup did not leave brokerd running. Refresh the dashboard or rerun setup."
+    "Setup did not restore broker command authority. Refresh the dashboard or rerun setup."
   }
 }
 
@@ -219,7 +219,7 @@ final class BrokerDashboardStore {
     case .needsSnapshotRefresh:
       return "Refreshing state"
     case .needsServiceStart:
-      return "Broker stopped"
+      return serviceRequiresRestart ? "Restart required" : "Broker stopped"
     case .missingCLI, .needsHostBootstrap:
       return "Setup required"
     }
@@ -236,7 +236,7 @@ final class BrokerDashboardStore {
     case .needsSnapshotRefresh:
       return "brokerd starting"
     case .needsServiceStart:
-      return "brokerd stopped"
+      return serviceRequiresRestart ? "brokerd restart required" : "brokerd stopped"
     case .missingCLI, .needsHostBootstrap:
       return "setup required"
     }
@@ -291,6 +291,12 @@ final class BrokerDashboardStore {
 
   var canSendCommands: Bool {
     loadedState?.service != nil
+      && serviceRequiresRestart == false
+      && serviceStatusUnverified == false
+  }
+
+  var serviceRequiresRestart: Bool {
+    loadedState?.serviceRequiresRestart == true && serviceStatusUnverified == false
   }
 
   var canRunLocalBrokerCommands: Bool {
@@ -300,12 +306,12 @@ final class BrokerDashboardStore {
   var canStartBrokerService: Bool {
     canRunLocalBrokerCommands
       && hostConfigExists
-      && loadedState?.service == nil
+      && (loadedState?.service == nil || serviceRequiresRestart)
       && serviceStatusUnverified == false
   }
 
   var canOfferReadOnlyFinishSetup: Bool {
-    startupState == .readOnlySnapshot
+    (startupState == .readOnlySnapshot || serviceRequiresRestart)
       && canStartBrokerService
       && isApplyingAction == false
       && serviceStatusUnverified == false
@@ -317,6 +323,9 @@ final class BrokerDashboardStore {
         return "Broker commands are disabled because current brokerd status could not be verified. The last readable snapshot remains available; refresh before sending commands."
       }
       return "Broker commands are disabled because current brokerd status could not be verified. Refresh before starting setup or sending commands."
+    }
+    if serviceRequiresRestart {
+      return "Broker commands are disabled because brokerd is running with a runtime that requires restart. Finish setup to restart it cooperatively and restore command authority."
     }
     return "Broker commands are disabled because brokerd is not running. Start the service to enable pinning, release, and lifecycle actions."
   }
@@ -388,6 +397,9 @@ final class BrokerDashboardStore {
     }
     if hostConfigExists == false {
       return canRunLocalBrokerCommands ? .needsHostBootstrap : .missingCLI
+    }
+    if serviceRequiresRestart {
+      return .needsServiceStart
     }
     if loadedState?.service != nil {
       return snapshot == nil ? .needsSnapshotRefresh : .ready
@@ -1037,7 +1049,9 @@ final class BrokerDashboardStore {
         completeRefresh(generation: generation, with: outcome)
         return outcome
       }
-      if sameServiceAuthority(loadedState?.service, refreshedState.service) == false {
+      if sameServiceAuthority(loadedState?.service, refreshedState.service) == false
+        || loadedState?.serviceRequiresRestart != refreshedState.serviceRequiresRestart
+      {
         advanceServiceAuthorityEpoch(preservingGuidedSetup: preservingGuidedSetup)
       }
       loadedState = refreshedState
@@ -1059,8 +1073,9 @@ final class BrokerDashboardStore {
       }
       if let partialFailure = error as? BrokerSnapshotPartialLoadError,
         partialFailure.recoveredState.service == nil
+          || partialFailure.recoveredState.serviceRequiresRestart
       {
-        acceptConfirmedServiceAbsence(
+        acceptRecoverablePartialState(
           partialFailure.recoveredState,
           preservingGuidedSetup: preservingGuidedSetup
         )
@@ -1081,7 +1096,7 @@ final class BrokerDashboardStore {
   }
 
   private func requireLiveServiceAfterSetupRefresh() throws {
-    guard loadedState?.service != nil else {
+    guard canSendCommands else {
       throw BrokerSetupServiceMissingAfterRefreshError()
     }
   }
@@ -1217,7 +1232,8 @@ final class BrokerDashboardStore {
       paths: loadedState.paths,
       tooling: loadedState.tooling,
       service: nil,
-      snapshot: loadedState.snapshot
+      snapshot: loadedState.snapshot,
+      serviceRequiresRestart: false
     )
     markServiceStatusUnverified()
   }
@@ -1227,18 +1243,21 @@ final class BrokerDashboardStore {
     serviceStatusUnverified = true
   }
 
-  private func acceptConfirmedServiceAbsence(
+  private func acceptRecoverablePartialState(
     _ recoveredState: BrokerLoadedState,
     preservingGuidedSetup: Bool
   ) {
-    if sameServiceAuthority(loadedState?.service, nil) == false {
+    if sameServiceAuthority(loadedState?.service, recoveredState.service) == false
+      || loadedState?.serviceRequiresRestart != recoveredState.serviceRequiresRestart
+    {
       advanceServiceAuthorityEpoch(preservingGuidedSetup: preservingGuidedSetup)
     }
     self.loadedState = BrokerLoadedState(
       paths: recoveredState.paths,
       tooling: recoveredState.tooling,
-      service: nil,
-      snapshot: loadedState?.snapshot
+      service: recoveredState.service,
+      snapshot: loadedState?.snapshot,
+      serviceRequiresRestart: recoveredState.serviceRequiresRestart
     )
     serviceStatusUnverified = false
     synchronizeSelections()
@@ -1247,12 +1266,6 @@ final class BrokerDashboardStore {
   private func advanceServiceAuthorityEpoch(preservingGuidedSetup: Bool = false) {
     serviceAuthorityEpoch += 1
     clearPendingMutationAffordances(preservingGuidedSetup: preservingGuidedSetup)
-  }
-
-  private func refreshAfterSetupCancellation() async {
-    await Task { [weak self] in
-      _ = await self?.refresh(silent: true)
-    }.value
   }
 
   private func sameServiceAuthority(
