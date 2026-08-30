@@ -84,6 +84,10 @@ persist_simbroker_path() {
     fi
     if [[ "${SHELL:-}" == *zsh* ]]; then
       chosen_profile="${HOME}/.zprofile"
+    elif [[ "${SHELL:-}" == *bash* && -f "${HOME}/.bash_profile" ]]; then
+      chosen_profile="${HOME}/.bash_profile"
+    elif [[ "${SHELL:-}" == *bash* && -f "${HOME}/.bash_login" ]]; then
+      chosen_profile="${HOME}/.bash_login"
     else
       chosen_profile="${HOME}/.profile"
     fi
