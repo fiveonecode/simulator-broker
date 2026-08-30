@@ -131,9 +131,11 @@ A first extracted implementation slice now exists:
   `Simulator-Broker-<version>.zip` to a GitHub Release. The Homebrew
   formula and cask pin the operator-packed checksums of those tagged
   assets. `.github/workflows/release.yml` may rebuild the CLI and npm
-  tarballs on the tag, but Ubuntu `test:client` is expected to miss the
-  30-minute budget (issue `#9`); wait for that job, then attach or
-  `--clobber` operator-packed assets as in Tagged Alpha ship. Do not
+  tarballs on the tag. Its Ubuntu `test:client` run must finish within the
+  30-minute job budget; issue `#9`'s nested full-repo scan was removed, so a
+  timeout is a regression rather than an expected release condition. After
+  the workflow succeeds, attach or `--clobber` operator-packed assets as in
+  Tagged Alpha ship. Do not
   leave Homebrew pointing at a workflow rebuild that has a different
   hash. The app zip is an operator-signed notarized attach for this
   Alpha, produced with `npm run package:cask-zip` after notarization.
@@ -456,6 +458,10 @@ Add stronger profiles next for:
   `test:docs` after tag/version validation and before package creation. These
   workflows do not run `npm run test:app`; pull-request CI does not run
   `npm run verify:public-surface`
+- the GitHub-hosted CI, tagged-release, and on-demand OCR workflows use
+  `actions/checkout@v7` plus `actions/setup-node@v7`; every setup-node step
+  explicitly disables implicit package-manager caching while preserving its
+  existing Node test version
 - `.github/ISSUE_TEMPLATE/` ships install-failure, bug, and feature forms, and
   `.github/pull_request_template.md` is a public-patch checklist that does not
   require `agent:context` or a task session directory
