@@ -4,11 +4,25 @@ func timestampDisplay(_ isoValue: String?) -> String? {
   guard let isoValue else {
     return nil
   }
-  let formatter = ISO8601DateFormatter()
-  guard let date = formatter.date(from: isoValue) else {
+  guard let date = parseISO8601Timestamp(isoValue) else {
     return isoValue
   }
   return date.formatted(date: .abbreviated, time: .shortened)
+}
+
+private func parseISO8601Timestamp(_ value: String) -> Date? {
+  let formats = [
+    Date.ISO8601FormatStyle(includingFractionalSeconds: true),
+    Date.ISO8601FormatStyle(includingFractionalSeconds: false),
+  ]
+
+  for format in formats {
+    if let date = try? format.parse(value) {
+      return date
+    }
+  }
+
+  return nil
 }
 
 func healthTint(_ health: String) -> Color {

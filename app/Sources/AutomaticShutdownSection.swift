@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct AutomaticShutdownSection: View {
+  static let validInputGuidance = "This grace period starts when a lease is released. Eligible automated simulators are shut down when it expires."
+
   @Bindable var store: BrokerDashboardStore
   let idle: BrokerIdleSummary
 
@@ -116,7 +118,7 @@ struct AutomaticShutdownSection: View {
     if graceSeconds == nil {
       return "The duration must be a whole number from 60 through 86400 seconds."
     }
-    return "Unused automated simulators are shut down after this grace period."
+    return Self.validInputGuidance
   }
 
   private var lastResultText: String {
