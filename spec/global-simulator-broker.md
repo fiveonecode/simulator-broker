@@ -2,7 +2,7 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.16.1`
+> **Version:** `0.16.3`
 > **Last Updated:** `2026-08-30`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
@@ -355,6 +355,7 @@ Failure-contract defaults for v1:
 - clients must reject non-positive `events watch --follow --poll-interval-ms` values as malformed flags
 - recent-event reads used for app snapshots must avoid parsing the full historical event log when only a bounded tail is requested and must preserve UTF-8 text when multibyte characters cross internal read chunk boundaries
 - app mutation flows must not clear or overwrite snapshot refresh errors after a successful broker mutation; a mutation is user-visible success only after the follow-up snapshot refresh succeeds or is superseded by a newer successful refresh
+- a current-generation app refresh failure preserves the last readable snapshot, tooling, and runtime paths but clears cached service authority until a later successful refresh validates exact service status; a live-status probe timeout, non-success HTTP response, or malformed response is a refresh failure rather than confirmed service absence; the unverified state takes precedence even when no snapshot is cached and applies on first load when host configuration already exists, dismisses pending mutation confirmations without letting an in-flight response republish them across revocation and later revalidation or a validated service-identity change, cancels guided setup still previewing or awaiting confirmation, rejects service and local-setup confirmation paths while authority is revoked, and must not present or offer recovery from confirmed brokerd absence; a true missing-host first load and a later failure after a cached missing-host success remain onboarding, a superseded failure must not downgrade newer loaded state, and setup already applying is not interrupted by this dismissal rule
 - service HTTP status classes should stay aligned with the same failure groups: `400` invalid request, `404` unknown route, `409` unavailable or conflict, `412` override-required, `423` repair-needed, and `500` internal failure
 
 ## 7. Public-safe idle lifecycle contract
@@ -598,6 +599,8 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.16.3 | 2026-08-30 | Service probe failures remain unverified, stale responses cannot publish confirmations, and known missing-host state remains onboarding. |
+| 0.16.2 | 2026-08-30 | Refresh-failure fail-closed represents unverified service status independently of snapshot availability, cancels pending mutation/setup previews and confirmations, and does not interrupt setup already applying. |
 | 0.16.1 | 2026-08-30 | Guided setup treats a live unhealthy daemon as finishing work (`start`, not `ready`/`keep`) and honors cancellation while replacing it. |
 | 0.16.0 | 2026-08-30 | Added fail-closed daemon runtime health, exact client/daemon version compatibility, and explicit state-preserving restart recovery. |
 | 0.15.1 | 2026-08-24 | Clarified that guided setup apply timeout covers bounded rollback as well as provisioning and finishing stages. |

@@ -61,6 +61,7 @@ struct RootView: View {
     store.lastActionMessage != nil
       || (store.lastErrorMessage != nil && store.snapshot != nil)
       || store.startupState == .readOnlySnapshot
+      || store.startupState == .serviceStatusUnverified
       || store.isAutomaticSetupInProgress
   }
 
@@ -137,6 +138,8 @@ struct RootView: View {
       return "bolt.horizontal.circle.fill"
     case .readOnlySnapshot:
       return "tray.full"
+    case .serviceStatusUnverified:
+      return "arrow.clockwise.circle"
     case .needsSnapshotRefresh:
       return "arrow.clockwise.circle"
     case .needsServiceStart:
@@ -155,7 +158,7 @@ struct RootView: View {
     automaticSetupProgressCard
     actionMessageCard
     errorMessageCard
-    readOnlySnapshotMessageCard
+    serviceAvailabilityMessageCard
   }
 
   @ViewBuilder
@@ -196,12 +199,12 @@ struct RootView: View {
   }
 
   @ViewBuilder
-  private var readOnlySnapshotMessageCard: some View {
-    if store.startupState == .readOnlySnapshot {
+  private var serviceAvailabilityMessageCard: some View {
+    if store.startupState == .readOnlySnapshot || store.startupState == .serviceStatusUnverified {
       if store.canOfferReadOnlyFinishSetup {
         StatusMessageCard(
           color: .orange,
-          message: "Broker commands are disabled because brokerd is not running. Start the service to enable pinning, release, and lifecycle actions.",
+          message: store.serviceAvailabilityMessage,
           symbolName: "bolt.slash.fill",
           actionTitle: "Finish setup",
           onAction: resumeGuidedSetup,
@@ -210,8 +213,8 @@ struct RootView: View {
       } else {
         StatusMessageCard(
           color: .orange,
-          message: "Broker commands are disabled because brokerd is not running. Start the service to enable pinning, release, and lifecycle actions.",
-          symbolName: "bolt.slash.fill",
+          message: store.serviceAvailabilityMessage,
+          symbolName: store.serviceStatusUnverified ? "arrow.clockwise.circle" : "bolt.slash.fill",
           onDismiss: nil
         )
       }

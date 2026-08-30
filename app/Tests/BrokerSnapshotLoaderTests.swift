@@ -150,37 +150,80 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     XCTAssertNil(loadedState.service)
   }
 
-  func testLoaderIgnoresServiceMetadataWhenStatusProbeDoesNotConfirmLiveDaemon() async throws {
-    let tempRoot = try makeTempRoot()
-    let paths = BrokerRuntimePaths(
-      stateRoot: tempRoot.appending(path: "state"),
-      hostConfigURL: tempRoot.appending(path: "host-config.json")
-    )
-    try Data("{}".utf8).write(to: paths.hostConfigURL)
-    let socketURL = paths.stateRoot.appending(path: "broker.sock")
-    try FileManager.default.createDirectory(at: socketURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try Data().write(to: socketURL)
-    try writeJson(
-      [
-        "hostConfigPath": paths.hostConfigURL.path,
-        "pid": 12345,
-        "runtimeVersion": runtimeVersion,
-        "socketPath": socketURL.path,
-        "startedAt": "2026-04-10T00:00:00Z",
-        "stateRoot": paths.stateRoot.path,
-        "transport": "unix-http",
-      ],
-      to: paths.serviceMetadataURL
-    )
+  func testLoaderFailsClosedWhenServiceStatusProbeTimesOut() async throws {
+    let paths = try makeLiveServicePaths()
 
-    let loadedState = try await FileBrokerSnapshotLoader(
-      paths: paths,
-      processIdentifierExists: { pid in pid == 12345 },
-      serviceStatusProbe: { _ in nil },
-      expectedRuntimeVersion: runtimeVersion
-    ).load()
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        processIdentifierExists: { pid in pid == 12345 },
+        serviceStatusProbe: { _ in throw ServiceStatusProbeTestError.timedOut },
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected service status timeout")
+    } catch {
+      XCTAssertEqual(error.localizedDescription, "Broker service status probe timed out.")
+    }
+  }
 
-    XCTAssertNil(loadedState.service)
+  func testLoaderFailsClosedWhenServiceStatusProbeReturnsNonSuccess() async throws {
+    let paths = try makeLiveServicePaths()
+
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        processIdentifierExists: { pid in pid == 12345 },
+        serviceStatusProbe: { _ in
+          try FileBrokerSnapshotLoader.decodeServiceStatusResponse(
+            BrokerHTTPResponse(bodyData: Data(), statusCode: 503)
+          )
+        },
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected non-success service status failure")
+    } catch {
+      XCTAssertEqual(error.localizedDescription, "Failed to verify brokerd status: brokerd returned HTTP status 503.")
+    }
+  }
+
+  func testLoaderFailsClosedWhenServiceStatusProbeReturnsMalformedBody() async throws {
+    let paths = try makeLiveServicePaths()
+
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        processIdentifierExists: { pid in pid == 12345 },
+        serviceStatusProbe: { _ in
+          try FileBrokerSnapshotLoader.decodeServiceStatusResponse(
+            BrokerHTTPResponse(bodyData: Data(#"{"service":"invalid"}"#.utf8), statusCode: 200)
+          )
+        },
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected malformed service status failure")
+    } catch {
+      XCTAssertEqual(error.localizedDescription, "Failed to verify brokerd status: brokerd returned malformed status JSON.")
+    }
+  }
+
+  func testLoaderFailsClosedWhenServiceStatusResponseOmitsServiceMetadata() async throws {
+    let paths = try makeLiveServicePaths()
+
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        processIdentifierExists: { pid in pid == 12345 },
+        serviceStatusProbe: { _ in
+          try FileBrokerSnapshotLoader.decodeServiceStatusResponse(
+            BrokerHTTPResponse(bodyData: Data(#"{"service":null}"#.utf8), statusCode: 200)
+          )
+        },
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected missing service metadata failure")
+    } catch {
+      XCTAssertEqual(error.localizedDescription, "Failed to verify brokerd status: brokerd status omitted service metadata.")
+    }
   }
 
   func testLoaderIgnoresServiceMetadataWhenLiveStatusReportsDifferentIdentity() async throws {
@@ -367,6 +410,34 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     return url
   }
 
+  private func makeLiveServicePaths() throws -> BrokerRuntimePaths {
+    let tempRoot = try makeTempRoot()
+    let paths = BrokerRuntimePaths(
+      stateRoot: tempRoot.appending(path: "state"),
+      hostConfigURL: tempRoot.appending(path: "host-config.json")
+    )
+    try Data("{}".utf8).write(to: paths.hostConfigURL)
+    let socketURL = paths.stateRoot.appending(path: "broker.sock")
+    try FileManager.default.createDirectory(
+      at: socketURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try Data().write(to: socketURL)
+    try writeJson(
+      [
+        "hostConfigPath": paths.hostConfigURL.path,
+        "pid": 12345,
+        "runtimeVersion": runtimeVersion,
+        "socketPath": socketURL.path,
+        "startedAt": "2026-04-10T00:00:00Z",
+        "stateRoot": paths.stateRoot.path,
+        "transport": "unix-http",
+      ],
+      to: paths.serviceMetadataURL
+    )
+    return paths
+  }
+
   private func writeFixtureSnapshot(named name: String, overrides: [String: Any], to url: URL) throws {
     let fixtureURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
@@ -384,5 +455,13 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
     try data.write(to: url)
+  }
+}
+
+private enum ServiceStatusProbeTestError: LocalizedError {
+  case timedOut
+
+  var errorDescription: String? {
+    "Broker service status probe timed out."
   }
 }
