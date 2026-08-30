@@ -44,7 +44,8 @@ A first extracted implementation slice now exists:
 - PATH persistence after install: Homebrew prefix bin when that is the install
   location, otherwise one guarded login-profile snippet for the default
   `~/.local/bin` location. The default profile is `~/.zprofile` for zsh, an
-  existing `~/.bash_profile` for Bash, or `~/.profile` otherwise; `--profile`
+  existing `~/.bash_profile` or `~/.bash_login` for Bash (checked in that
+  order), or `~/.profile` otherwise; `--profile`
   overrides the profile path so tests never edit the operator login rc
 - Public first-run order is Homebrew CLI, optional Homebrew cask, then app
   **Complete first-time setup** or `simbroker setup`. The shared guided flow

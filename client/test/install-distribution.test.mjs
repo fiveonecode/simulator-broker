@@ -537,11 +537,61 @@ test("install_distribution uses an existing Bash login profile idempotently", ()
   assert.equal(loginShell.stdout.trim(), path.join(root, ".local", "bin", "simbroker"));
 });
 
+test("install_distribution uses an existing Bash .bash_login when .bash_profile is absent", () => {
+  const root = makeTempDir();
+  const payloadRoot = stageCliOnlyPayload(root);
+  const prefix = path.join(root, "prefix");
+  const bashProfile = path.join(root, ".bash_profile");
+  const bashLogin = path.join(root, ".bash_login");
+  const fallbackProfile = path.join(root, ".profile");
+  fs.writeFileSync(bashLogin, "# existing Bash login setup\n");
+
+  const runInstall = () => spawnSync("bash", [
+    path.resolve("scripts/install_distribution.sh"),
+    "--payload-root",
+    payloadRoot,
+    "--prefix",
+    prefix,
+    "--cli-only",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      SHELL: "/bin/bash",
+    },
+  });
+
+  const first = runInstall();
+  assert.equal(first.status, 0, first.stderr);
+  const second = runInstall();
+  assert.equal(second.status, 0, second.stderr);
+
+  const profileText = fs.readFileSync(bashLogin, "utf8");
+  assert.match(profileText, /^# existing Bash login setup$/m);
+  assert.equal(countPathBlocks(profileText), 1);
+  assert.equal(fs.existsSync(bashProfile), false);
+  assert.equal(fs.existsSync(fallbackProfile), false);
+
+  const loginShell = spawnSync("bash", ["--login", "-c", "command -v simbroker"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      PATH: "/usr/bin:/bin",
+      SHELL: "/bin/bash",
+    },
+  });
+  assert.equal(loginShell.status, 0, loginShell.stderr);
+  assert.equal(loginShell.stdout.trim(), path.join(root, ".local", "bin", "simbroker"));
+});
+
 test("install_distribution falls back to .profile for Bash without .bash_profile", () => {
   const root = makeTempDir();
   const payloadRoot = stageCliOnlyPayload(root);
   const prefix = path.join(root, "prefix");
   const bashProfile = path.join(root, ".bash_profile");
+  const bashLogin = path.join(root, ".bash_login");
   const fallbackProfile = path.join(root, ".profile");
 
   const result = spawnSync("bash", [
@@ -562,6 +612,7 @@ test("install_distribution falls back to .profile for Bash without .bash_profile
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(fs.existsSync(bashProfile), false);
+  assert.equal(fs.existsSync(bashLogin), false);
   assert.equal(countPathBlocks(fs.readFileSync(fallbackProfile, "utf8")), 1);
 
   const loginShell = spawnSync("bash", ["--login", "-c", "command -v simbroker"], {

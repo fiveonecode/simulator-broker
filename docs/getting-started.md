@@ -87,8 +87,8 @@ directory.
   is installed there so a new login shell already has it on `PATH`.
 - Otherwise the wrapper is installed to `~/.local/bin` and the installer
   appends one guarded PATH snippet to your login profile: `~/.zprofile` on
-  zsh, an existing `~/.bash_profile` on Bash, or `~/.profile` otherwise. The
-  snippet is idempotent.
+  zsh, an existing `~/.bash_profile` or `~/.bash_login` on Bash (checked in
+  that order), or `~/.profile` otherwise. The snippet is idempotent.
 - `source "$HOME/Library/Application Support/SimulatorBroker/install/env.sh"`
   remains a fallback for the current shell.
 
