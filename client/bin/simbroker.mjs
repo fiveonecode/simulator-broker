@@ -42,6 +42,17 @@ import {
 import { applySetupBrokerInWorker } from "../setup-provisioning.mjs";
 
 const BROKERD_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "brokerd.mjs");
+const RUNTIME_PACKAGE_PATH = path.resolve(path.dirname(BROKERD_PATH), "../../package.json");
+const CLI_RUNTIME_VERSION = (() => {
+  try {
+    const runtimePackage = JSON.parse(fs.readFileSync(RUNTIME_PACKAGE_PATH, "utf8"));
+    return typeof runtimePackage?.version === "string" && runtimePackage.version.trim() !== ""
+      ? runtimePackage.version
+      : null;
+  } catch {
+    return null;
+  }
+})();
 const SERVICE_CONTROL_FLAGS = new Set([
   "help",
   "host-config",
@@ -341,13 +352,51 @@ function assertServiceMatchesPaths(paths, probe) {
   });
 }
 
-async function serviceStatus(paths) {
-  const probe = await probeService(paths);
+function serviceRuntimeHealth(probe) {
+  const reportedHealth = probe?.health;
+  if (reportedHealth?.status && reportedHealth.status !== "healthy") {
+    return {
+      ...reportedHealth,
+      actualRuntimeVersion: probe?.service?.runtimeVersion ?? reportedHealth.runtimeVersion ?? null,
+      expectedRuntimeVersion: CLI_RUNTIME_VERSION,
+    };
+  }
+  const actualRuntimeVersion = probe?.service?.runtimeVersion ?? null;
+  if (CLI_RUNTIME_VERSION !== null && actualRuntimeVersion === CLI_RUNTIME_VERSION) {
+    return {
+      runtimeVersion: CLI_RUNTIME_VERSION,
+      status: "healthy",
+    };
+  }
+  return {
+    actualRuntimeVersion,
+    error: "The installed CLI and running brokerd use different runtime versions. Restart brokerd with the installed CLI.",
+    expectedRuntimeVersion: CLI_RUNTIME_VERSION,
+    reasonCode: "service-runtime-incompatible",
+    recoveryCommand: "simbroker service start",
+    status: "incompatible",
+  };
+}
+
+function assertServiceRuntimeCompatible(probe) {
+  const health = serviceRuntimeHealth(probe);
+  if (health.status === "healthy") {
+    return;
+  }
+  throw new BrokerError(health.error ?? "Broker service runtime is incompatible with the installed CLI.", {
+    ...health,
+    reasonCode: "service-runtime-incompatible",
+  });
+}
+
+async function serviceStatus(paths, { signal } = {}) {
+  const probe = await probeService(paths, { signal });
   if (probe) {
     assertServiceMatchesPaths(paths, probe);
   }
   const metadata = serviceMetadataSnapshot(paths);
   return {
+    health: probe === null ? { status: "stopped" } : serviceRuntimeHealth(probe),
     ok: true,
     running: probe !== null,
     service: probe?.service ?? metadata,
@@ -445,20 +494,24 @@ async function waitForSpawnedService(paths, child, { signal, timeoutMs = 5000 } 
   };
 }
 
-async function waitForServiceToStop(paths, { timeoutMs = 5000 } = {}) {
+async function waitForServiceToStop(paths, { signal, timeoutMs = 5000 } = {}) {
   const startedAt = Date.now();
+  const aborted = abortOutcome(signal);
   while (Date.now() - startedAt < timeoutMs) {
+    throwIfAborted(signal);
     try {
-      const probe = await probeService(paths, { timeoutMs: 250 });
+      const probe = await probeService(paths, { signal, timeoutMs: 250 });
       if (!probe) {
         return true;
       }
     } catch (error) {
+      throwIfAborted(signal);
       if (!(error instanceof BrokerError) || error.payload?.reasonCode !== "service-unavailable") {
         throw error;
       }
     }
-    await sleep(100);
+    await Promise.race([sleep(100), aborted]);
+    throwIfAborted(signal);
   }
   return false;
 }
@@ -477,14 +530,19 @@ function terminateSpawnedService(child) {
 async function startService(paths, { signal } = {}) {
   throwIfAborted(signal);
   const running = await probeService(paths, { signal });
+  let restarted = false;
   if (running) {
     assertServiceMatchesPaths(paths, running);
-    return {
-      ok: true,
-      running: true,
-      service: running.service,
-      unchanged: true,
-    };
+    if (serviceRuntimeHealth(running).status === "healthy") {
+      return {
+        ok: true,
+        running: true,
+        service: running.service,
+        unchanged: true,
+      };
+    }
+    await stopService(paths, { signal });
+    restarted = true;
   }
 
   ensurePrivateDir(paths.stateRoot);
@@ -544,17 +602,20 @@ async function startService(paths, { signal } = {}) {
     });
   }
   assertServiceMatchesPaths(paths, probe);
+  assertServiceRuntimeCompatible(probe);
 
   return {
     ok: true,
+    restarted,
     running: true,
     service: probe.service,
     started: true,
   };
 }
 
-async function stopService(paths) {
-  const status = await serviceStatus(paths);
+async function stopService(paths, { signal } = {}) {
+  throwIfAborted(signal);
+  const status = await serviceStatus(paths, { signal });
   if (!status.running) {
     removeIfExists(paths.serviceMetadataPath);
     removeIfExists(paths.serviceSocketPath);
@@ -570,8 +631,10 @@ async function stopService(paths) {
   try {
     response = await requestServiceStop(paths, {
       expectedServiceIdentity: status.service,
+      signal,
     });
   } catch (error) {
+    throwIfAborted(signal);
     stopError = error;
     if (error instanceof BrokerError && error.payload?.reasonCode === "service-identity-mismatch") {
       throw error;
@@ -579,6 +642,7 @@ async function stopService(paths) {
   }
 
   const stopped = await waitForServiceToStop(paths, {
+    signal,
     timeoutMs: serviceStopTimeoutMs(paths, response),
   });
   if (!stopped && stopError) {
@@ -638,6 +702,7 @@ async function runServiceAwareRequest(paths, request) {
   if (request.type === "events-stream") {
     if (service) {
       assertServiceMatchesPaths(paths, service);
+      assertServiceRuntimeCompatible(service);
       await streamServiceEvents(paths, request.options);
       return {
         handled: true,
@@ -651,6 +716,7 @@ async function runServiceAwareRequest(paths, request) {
 
   if (service) {
     assertServiceMatchesPaths(paths, service);
+    assertServiceRuntimeCompatible(service);
     const payload = await executeServiceCommand(paths, request, {
       expectedServiceIdentity: service.service,
     });
@@ -856,6 +922,7 @@ async function buildSetupPreview(paths, options) {
   }
 
   let running = false;
+  let serviceHealthy = false;
   if (corePreview.status !== "blocked") {
     const serviceArtifactBlockers = setupServiceArtifactBlockers(paths);
     if (serviceArtifactBlockers.length > 0) {
@@ -866,7 +933,9 @@ async function buildSetupPreview(paths, options) {
       };
     } else {
       try {
-        running = (await serviceStatus(paths)).running;
+        const status = await serviceStatus(paths);
+        running = status.running;
+        serviceHealthy = status.health?.status === "healthy";
       } catch (error) {
         corePreview = {
           ...corePreview,
@@ -883,6 +952,7 @@ async function buildSetupPreview(paths, options) {
     }
   }
   return completeSetupPreview(corePreview, prerequisites, {
+    serviceHealthy,
     serviceRunning: running,
     snapshotReady: setupSnapshotReady(paths, corePreview),
   });

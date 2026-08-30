@@ -1,8 +1,8 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.31`
-> **Last Updated:** `2026-08-29`
+> **Version:** `1.0.33`
+> **Last Updated:** `2026-08-30`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
 > **Target:** Shipped on `v0.1.0-alpha.3`
@@ -67,6 +67,10 @@ host init is unchanged and documented only as advanced/troubleshooting.
   on yes, and returns successful `cancelled` without mutation on no or EOF.
 - Interactive existing healthy setup automatically performs only safe finishing
   work (service, snapshot, health) without a device-creation prompt. `ready`
+  requires a healthy live `brokerd`, not merely a process that is running while
+  runtime health is `degraded` or `incompatible`. A live unhealthy daemon is
+  finishing work: `service.running` stays true and `service.action` is `start`
+  so apply cooperatively restarts through the existing start path. `ready` also
   requires a current snapshot whose mtime is at least as new as host-config,
   registry, known-projects, lease/pin JSON, and the lease/pin directories.
   Those files must be readable valid records, not merely parseable JSON.
@@ -384,8 +388,9 @@ Apply performs, in order:
 - Existing healthy host is never replaced or expanded to six.
 - Lock/revalidation guarantees concurrent setup creates at most one host; the
   loser gets `setup-plan-stale`.
-- First SIGINT/SIGTERM is cooperative during Simulator operations, service
-  startup, snapshot refresh, and doctor verification, with exits 130/143;
+- First SIGINT/SIGTERM is cooperative during Simulator operations, cooperative
+  stop of an unhealthy daemon during service restart, service startup, snapshot
+  refresh, and doctor verification, with exits 130/143;
   post-commit state is preserved. A second termination may force exit. The
   app Stop/timeout SIGTERM window covers one in-flight Simulator command,
   the three-command rollback attribution inventory, the additional inventory
@@ -431,6 +436,13 @@ The sheet scrolls, uses semantic styles, default/cancel keyboard actions,
 VoiceOver labels, and status text/icons rather than color alone. Setup receives
 a full bounded timeout, not the 30-second unknown-command timeout. The app never
 calls `simctl` or writes broker state directly.
+
+The app accepts a live service only when metadata and the status probe both
+report the exact runtime version generated from the root package version at app
+build time. Missing or mismatched versions keep the dashboard read-only, and a
+command status recheck must pass before the app POSTs that version in
+`expectedServiceIdentity`. Supported formula/cask releases are paired; an
+independently skewed installation requires upgrading or reinstalling the pair.
 
 ### REQ-010 — Project onboarding compatibility
 
@@ -613,6 +625,8 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.33 | 2026-08-30 | `spec-steward`, `ios-dev` | Make app live-service reads and mutations require the exact generated broker runtime version |
+| 1.0.32 | 2026-08-30 | `spec-steward`, `ios-dev` | Treat a live unhealthy `brokerd` as setup finishing work with service action `start`, and honor first SIGINT/SIGTERM while replacing that daemon |
 | 1.0.31 | 2026-08-29 | `spec-steward`, `ios-dev` | Record Target as shipped on `v0.1.0-alpha.3` so the spec matches the tagged Homebrew, npm, and notarized-app artifacts that include guided setup |
 | 1.0.30 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on duplicate snapshot purpose IDs, give socket occupancy and parent-access blockers distinct IDs, and defer persistent state-directory creation until confirmation matches |
 | 1.0.29 | 2026-08-29 | `spec-steward`, `ios-dev` | Fail closed on occupied non-socket service-socket paths before provisioning, and duplicate snapshot event IDs |

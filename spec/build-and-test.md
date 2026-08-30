@@ -28,6 +28,7 @@ A first extracted implementation slice now exists:
 - broker-owned state artifacts are restricted to the current user, and lease, containment, pin, and lifecycle mutations share the broker mutation authority whether invoked directly, through the service, or from the app
 - inactive local project registrations can be removed only through the explicit, locked `project forget --project-id <id>` command; it is idempotent, refreshes the shared app snapshot, preserves the repository and audit history, and rejects projects with active leases or pins
 - the macOS app test wrapper now supports build-only reruns, focused `-only-testing` filters, and stable `xcresult` output for runtime triage
+- app project generation atomically derives an ignored Swift runtime-version constant and explicit app `Info.plist` compatibility key from the root `package.json`; both are separate from bundle marketing/build metadata and are regenerated before every supported build or test entrypoint
 - the macOS app emits unified `Logger` telemetry for startup, refresh, setup, broker actions, and override-required command outcomes
 - the repo-owned macOS entrypoints now fail fast with actionable messages when `xcodegen` or `xcodebuild` is missing or misconfigured
 - local install smoke coverage for a fresh-machine-style bootstrap, service start, lease acquire, app snapshot flow, installed-app launch proof, simulator cleanup that preserves preexisting simulators, and restoration of preexisting default install metadata
@@ -36,6 +37,9 @@ A first extracted implementation slice now exists:
   version-agnostic project scaffold, lease acquire/release, zero-create rerun,
   and baseline-preserving cleanup
 - installer coverage for stopping a running service before replacing the installed runtime, restarting it after metadata is written, shell-safe env helper serialization, and default-location install metadata for custom prefixes without leaving smoke-run paths in a developer install
+- daemon runtime-health coverage for missing worker modules, replaced runtime
+  files, stale client/daemon versions, fail-closed CLI and app probes, explicit
+  restart recovery, and preservation of active file-backed leases
 - CLI-only install through `bash scripts/install_local.sh --cli-only`, which copies the Node runtime and writes `simbroker` without XcodeGen or an app build
 - PATH persistence after install: Homebrew prefix bin when that is the install location, otherwise one guarded login-profile snippet for the default `~/.local/bin` location; `--profile` overrides the profile path so tests never edit the operator login rc
 - Public first-run order is Homebrew CLI, optional Homebrew cask, then app
@@ -102,7 +106,11 @@ A first extracted implementation slice now exists:
   non-Darwin. Copying the runtime and scanning the staged payload is too
   slow for the 120-second client-file timeout; those tests stay on local
   Darwin `npm test`. The script scans the staged payload and archive
-  name; it does not rerun the full-repo `verify:public-surface` scan.
+  name; it does not rerun the full-repo `verify:public-surface` scan. Before
+  staging or signing, including with `--skip-build`, the script requires the
+  app's `SimulatorBrokerExpectedRuntimeVersion` `Info.plist` value to exactly
+  match the root `package.json` version. A stale or missing value fails before
+  `codesign` so a version bump cannot silently reuse an older app build.
   The default public-surface scan reads index
   blobs only for dirty or missing worktree files. `git diff-files` exit `1`
   is the dirty-name list; only a real git failure fails the scan. A clean
@@ -147,7 +155,9 @@ not reinstall a live machine.
 3. Run `npm run package:cli` and `npm run package:npm`. Pin
    `Formula/simbroker.rb` `sha256` to the CLI tarball.
 4. Sign the Release app with `npm run package:distribution` and a
-   Developer ID Application identity.
+   Developer ID Application identity. The packaging command verifies the
+   generated app runtime compatibility key against the bumped root version
+   before signing; `--skip-build` is valid only for an already-matching app.
 5. Notarize and staple that app (`asc notarization submit --wait` or a
    `notarytool` keychain profile), then `npm run package:cask-zip`.
 6. Pin `Casks/simulator-broker.rb` `sha256` to
@@ -419,8 +429,8 @@ Add stronger profiles next for:
   grace-boundary eligibility, all safety exclusions, stale grace restart,
   mutation-lock serialization, shutdown failure repair state, and confirmed
   count-only cleanup
-- `npm run test:client` proves service lifecycle, concurrent clients, startup readiness before service metadata publication, restart safety, malformed service response handling, expected service identity validation for command dispatch and stop dispatch, NDJSON event streaming including stop with an active follower, service-backed lifecycle-control flows and boot readiness budgets against the fixture-backed `simctl` boundary, stable direct plus service-backed exit-code behavior, useful command help, direct/service capacity and idle parity, lazy daemon start, local-only scheduler limitation, immediate startup reconciliation, 30-second timer wiring, and snapshot refresh
-- `npm run test:app` proves the XcodeGen project builds and the app decodes snapshots, filters pin candidates, bounds local CLI subprocesses, preserves refresh diagnostics after successful mutations whose snapshot reload fails, routes broker-command errors correctly, and drives Automatic shutdown apply, disable, preview, confirmation, cleanup, and refresh flows
+- `npm run test:client` proves service lifecycle, concurrent clients, startup readiness before service metadata publication, restart safety, missing-worker degradation, on-disk runtime replacement detection, exact client/daemon runtime compatibility, state-preserving explicit upgrade restart, malformed service response handling, required exact runtime identity before command worker dispatch, path-compatible stop dispatch, NDJSON event streaming including stop with an active follower, service-backed lifecycle-control flows and boot readiness budgets against the fixture-backed `simctl` boundary, stable direct plus service-backed exit-code behavior, useful command help, direct/service capacity and idle parity, lazy daemon start, local-only scheduler limitation, immediate startup reconciliation, 30-second timer wiring, and snapshot refresh
+- `npm run test:app` proves the XcodeGen project builds, embeds the root package runtime version, rejects missing or mismatched service runtime versions before exposing live state or posting a mutation, decodes snapshots, filters pin candidates, bounds local CLI subprocesses, preserves refresh diagnostics after successful mutations whose snapshot reload fails, routes broker-command errors correctly, and drives Automatic shutdown apply, disable, preview, confirmation, cleanup, and refresh flows
 - the generated app test scheme receives a per-run temporary state root and
   host-config path from `scripts/test_app.sh`; the XCTest host never launches
   against the default broker state root
@@ -446,7 +456,7 @@ Add stronger profiles next for:
   require `agent:context` or a task session directory
 - `host init --bootstrap-config` writes a warning that real Simulator devices will be created before it calls `simctl` create
 - `npm run test:install-smoke` proves a fresh-machine-style install can bootstrap host config, scaffold a repo, start the service, acquire a lease, generate an app snapshot from the installed CLI, launch the installed app bundle against the smoke fixture, assert the `SimulatorBrokerApp` process stays alive, restore any preexisting default install metadata including symlink target contents, and clean up only the simulators provisioned by the smoke run afterward
-- `npm run package:distribution` builds the app in `Release`, requires operator-supplied `SIMBROKER_DISTRIBUTION_TEAM_ID` plus `SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY`, optionally consumes `SIMBROKER_NOTARYTOOL_PROFILE`, and writes a machine-readable readiness summary under `artifacts/distribution/`
+- `npm run package:distribution` builds the app in `Release`, requires operator-supplied `SIMBROKER_DISTRIBUTION_TEAM_ID` plus `SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY`, optionally consumes `SIMBROKER_NOTARYTOOL_PROFILE`, verifies the app's embedded expected runtime version exactly matches `package.json` before staging or signing, and writes a machine-readable readiness summary under `artifacts/distribution/`
 - when notarization credentials are unavailable, `npm run package:distribution` still writes the summary JSON and tells the operator to rerun with `SIMBROKER_NOTARYTOOL_PROFILE` instead of implying the archive is Gatekeeper-ready
 - `npm run package:distribution` returns non-zero after writing its summary JSON when the artifact is still unsigned, unstapled, unnotarized, or rejected by `spctl`
 - `npm run test:package-smoke` proves the zipped local-debug portable bundle can be unpacked, installed through its bundled `install.sh`, and complete the same host-bootstrap, repo-scaffold, lease, snapshot, installed-app launch, process-proof, and cleanup flow as the repo-local installer

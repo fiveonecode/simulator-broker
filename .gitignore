@@ -11,3 +11,5 @@ npm-debug.log*
 DerivedData/
 .codex/agent-harness/
 app/SimulatorBrokerApp.xcodeproj/
+/app/Sources/Generated/BrokerRuntimeVersion.generated.swift
+/app/Generated/SimulatorBrokerApp-Info.plist

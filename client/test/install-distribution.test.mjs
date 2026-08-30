@@ -9,6 +9,10 @@ import { spawnSync } from "node:child_process";
 // GitHub CI uses --test-timeout=120000, so those tests belong to local npm test.
 const skipDistributionPayloadScan =
   process.env.CI === "true" || process.platform !== "darwin";
+const distributionAppSource = path.resolve(
+  "DerivedData/SimulatorBrokerApp/Build/Products/Release/SimulatorBrokerApp.app",
+);
+const packageRuntimeVersion = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8")).version;
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-install-test-"));
@@ -17,6 +21,35 @@ function makeTempDir() {
 function writeJson(filePath, payload) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function prepareDistributionAppSource(t, runtimeVersion = packageRuntimeVersion) {
+  const contentsPath = path.join(distributionAppSource, "Contents");
+  const infoPlistPath = path.join(contentsPath, "Info.plist");
+  const appExisted = fs.existsSync(distributionAppSource);
+  const contentsExisted = fs.existsSync(contentsPath);
+  const originalInfoPlist = fs.existsSync(infoPlistPath)
+    ? fs.readFileSync(infoPlistPath)
+    : null;
+
+  fs.mkdirSync(contentsPath, { recursive: true });
+  writeJson(infoPlistPath, {
+    SimulatorBrokerExpectedRuntimeVersion: runtimeVersion,
+  });
+  t.after(() => {
+    if (!appExisted) {
+      fs.rmSync(path.resolve("DerivedData/SimulatorBrokerApp"), { force: true, recursive: true });
+    } else if (originalInfoPlist !== null) {
+      fs.writeFileSync(infoPlistPath, originalInfoPlist);
+    } else {
+      fs.rmSync(infoPlistPath, { force: true });
+      if (!contentsExisted) {
+        fs.rmSync(contentsPath, { force: true, recursive: true });
+      }
+    }
+  });
+
+  return distributionAppSource;
 }
 
 test("install_distribution serializes metadata safely for JSON-sensitive paths", () => {
@@ -617,6 +650,52 @@ test("install_local --cli-only does not rewrite the live default install metadat
   }
 });
 
+test("package_distribution rejects a stale app runtime version before signing", { skip: skipDistributionPayloadScan }, (t) => {
+  const root = makeTempDir();
+  const outputDir = path.join(root, "out");
+  const fakePathDir = path.join(root, "fake-path");
+  const signingMarker = path.join(root, "codesign-invoked");
+  const appSource = prepareDistributionAppSource(t, "0.0.0-stale-test");
+  fs.mkdirSync(fakePathDir, { recursive: true });
+  fs.writeFileSync(path.join(fakePathDir, "security"), [
+    "#!/usr/bin/env bash",
+    "printf '  1) ABC \"Developer ID Application: Example (TEAMID)\"\\n'",
+    "",
+  ].join("\n"));
+  fs.writeFileSync(path.join(fakePathDir, "codesign"), [
+    "#!/usr/bin/env bash",
+    "printf 'invoked\\n' >> \"$SIMBROKER_PACKAGE_TEST_CODESIGN_MARKER\"",
+    "",
+  ].join("\n"));
+  fs.chmodSync(path.join(fakePathDir, "security"), 0o755);
+  fs.chmodSync(path.join(fakePathDir, "codesign"), 0o755);
+
+  const result = spawnSync("bash", [
+    path.resolve("scripts/package_distribution.sh"),
+    "--skip-build",
+    "--output-dir",
+    outputDir,
+    "--team-id",
+    "TEAMID",
+    "--signing-identity",
+    "Developer ID Application: Example (TEAMID)",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      PATH: `${fakePathDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      SIMBROKER_PACKAGE_TEST_CODESIGN_MARKER: signingMarker,
+    },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Release app runtime compatibility version .* does not match package\.json/);
+  assert.equal(fs.existsSync(signingMarker), false);
+  assert.equal(fs.existsSync(path.join(outputDir, "SimulatorBroker-macOS-distribution")), false);
+  assert.equal(fs.existsSync(appSource), true);
+});
+
 test("package_distribution rejects symlinks copied into the runtime payload", { skip: skipDistributionPayloadScan }, (t) => {
   const root = makeTempDir();
   const outputDir = path.join(root, "out");
@@ -625,8 +704,7 @@ test("package_distribution rejects symlinks copied into the runtime payload", { 
   const symlinkTargetDir = path.join(root, "private-home");
   const symlinkTargetPath = path.join(symlinkTargetDir, "target.txt");
   const symlinkPath = path.resolve("client/.package-distribution-public-surface-symlink-test");
-  const appSource = path.resolve("DerivedData/SimulatorBrokerApp/Build/Products/Release/SimulatorBrokerApp.app");
-  const createdAppSource = !fs.existsSync(appSource);
+  prepareDistributionAppSource(t);
 
   assert.equal(fs.existsSync(symlinkPath), false);
   fs.mkdirSync(fakePathDir, { recursive: true });
@@ -638,13 +716,9 @@ test("package_distribution rejects symlinks copied into the runtime payload", { 
     "",
   ].join("\n"));
   fs.chmodSync(fakeSecurityPath, 0o755);
-  fs.mkdirSync(appSource, { recursive: true });
   fs.symlinkSync(symlinkTargetPath, symlinkPath);
   t.after(() => {
     fs.rmSync(symlinkPath, { force: true });
-    if (createdAppSource) {
-      fs.rmSync(path.resolve("DerivedData/SimulatorBrokerApp"), { force: true, recursive: true });
-    }
   });
 
   const result = spawnSync("bash", [
@@ -677,8 +751,7 @@ test("package_distribution scans copied payload filenames containing newlines", 
   const fakePathDir = path.join(root, "fake-path");
   const fakeSecurityPath = path.join(fakePathDir, "security");
   const newlinePayloadPath = path.resolve("client/.package-distribution-public-surface-newline-test\nsecret.txt");
-  const appSource = path.resolve("DerivedData/SimulatorBrokerApp/Build/Products/Release/SimulatorBrokerApp.app");
-  const createdAppSource = !fs.existsSync(appSource);
+  prepareDistributionAppSource(t);
 
   assert.equal(fs.existsSync(newlinePayloadPath), false);
   fs.mkdirSync(fakePathDir, { recursive: true });
@@ -688,13 +761,9 @@ test("package_distribution scans copied payload filenames containing newlines", 
     "",
   ].join("\n"));
   fs.chmodSync(fakeSecurityPath, 0o755);
-  fs.mkdirSync(appSource, { recursive: true });
   fs.writeFileSync(newlinePayloadPath, `${path.join(root, "private-token")}\n`);
   t.after(() => {
     fs.rmSync(newlinePayloadPath, { force: true });
-    if (createdAppSource) {
-      fs.rmSync(path.resolve("DerivedData/SimulatorBrokerApp"), { force: true, recursive: true });
-    }
   });
 
   const result = spawnSync("bash", [
@@ -729,8 +798,7 @@ test("package_distribution scans empty copied payload directories", { skip: skip
   const fakeSecurityPath = path.join(fakePathDir, "security");
   const privateDirectoryRoot = path.resolve("client/.package-distribution-public-surface-empty-directory-test");
   const privateDirectoryPath = path.join(privateDirectoryRoot, ...root.split(path.sep).filter(Boolean));
-  const appSource = path.resolve("DerivedData/SimulatorBrokerApp/Build/Products/Release/SimulatorBrokerApp.app");
-  const createdAppSource = !fs.existsSync(appSource);
+  prepareDistributionAppSource(t);
 
   assert.equal(fs.existsSync(privateDirectoryRoot), false);
   fs.mkdirSync(fakePathDir, { recursive: true });
@@ -740,13 +808,9 @@ test("package_distribution scans empty copied payload directories", { skip: skip
     "",
   ].join("\n"));
   fs.chmodSync(fakeSecurityPath, 0o755);
-  fs.mkdirSync(appSource, { recursive: true });
   fs.mkdirSync(privateDirectoryPath, { recursive: true });
   t.after(() => {
     fs.rmSync(privateDirectoryRoot, { force: true, recursive: true });
-    if (createdAppSource) {
-      fs.rmSync(path.resolve("DerivedData/SimulatorBrokerApp"), { force: true, recursive: true });
-    }
   });
 
   const result = spawnSync("bash", [
@@ -784,8 +848,7 @@ test("package_distribution scans the top-level archive name", { skip: skipDistri
   const originalDenylist = fs.existsSync(localDenylistPath)
     ? fs.readFileSync(localDenylistPath)
     : null;
-  const appSource = path.resolve("DerivedData/SimulatorBrokerApp/Build/Products/Release/SimulatorBrokerApp.app");
-  const createdAppSource = !fs.existsSync(appSource);
+  prepareDistributionAppSource(t);
 
   fs.mkdirSync(fakePathDir, { recursive: true });
   fs.writeFileSync(fakeSecurityPath, [
@@ -794,16 +857,12 @@ test("package_distribution scans the top-level archive name", { skip: skipDistri
     "",
   ].join("\n"));
   fs.chmodSync(fakeSecurityPath, 0o755);
-  fs.mkdirSync(appSource, { recursive: true });
   fs.writeFileSync(localDenylistPath, `${originalDenylist?.toString("utf8") ?? ""}\n${privateArchiveMarker}\n`);
   t.after(() => {
     if (originalDenylist === null) {
       fs.rmSync(localDenylistPath, { force: true });
     } else {
       fs.writeFileSync(localDenylistPath, originalDenylist);
-    }
-    if (createdAppSource) {
-      fs.rmSync(path.resolve("DerivedData/SimulatorBrokerApp"), { force: true, recursive: true });
     }
   });
 

@@ -11,6 +11,7 @@ import { createCommandRequest, executeBrokerCommand, format, parseArgs, streamEv
 import {
   executeServiceCommand,
   probeService,
+  requestServiceStop,
   serviceCommandExecutionTimeoutMs,
   serviceCommandTimeoutMs,
   serviceStopTimeoutMs,
@@ -29,6 +30,7 @@ import { createDeviceRecord, createSimctlFixture } from "../../broker-core/test/
 
 const CLI_PATH = path.resolve("client/bin/simbroker.mjs");
 const CLI_TEST_TIMEOUT_MS = 60_000;
+const RUNTIME_VERSION = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8")).version;
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-cli-test-"));
@@ -407,6 +409,51 @@ function listen(server, socketPath) {
       resolve();
     });
   });
+}
+
+function unhealthyServiceStatusPayload(fixture, socketPath) {
+  return {
+    error: "The installed CLI and running brokerd use different runtime versions. Restart brokerd with the installed CLI.",
+    exitCode: 3,
+    health: {
+      status: "incompatible",
+    },
+    ok: false,
+    reasonCode: "service-runtime-incompatible",
+    running: true,
+    service: {
+      hostConfigPath: fixture.hostConfigPath,
+      pid: process.pid,
+      runtimeVersion: "0.0.0-stale",
+      socketPath,
+      stateRoot: fixture.stateRoot,
+    },
+  };
+}
+
+function serveUnhealthyDaemon(fixture, socketPath, { onStop } = {}) {
+  const payload = unhealthyServiceStatusPayload(fixture, socketPath);
+  const server = http.createServer((request, response) => {
+    if (request.url === "/v1/service/status") {
+      response.writeHead(409, { "content-type": "application/json" });
+      response.end(`${JSON.stringify(payload)}\n`);
+      return;
+    }
+    if (request.method === "POST" && request.url === "/v1/service/stop") {
+      onStop?.();
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(`${JSON.stringify({
+        activeCommandDrainTimeoutMilliseconds: 60_000,
+        ok: true,
+        service: payload.service,
+        stopping: true,
+      })}\n`);
+      return;
+    }
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end("{}\n");
+  });
+  return server;
 }
 
 describe("simbroker", { concurrency: 1 }, () => {
@@ -2181,6 +2228,131 @@ test("SIGTERM interrupts setup while service startup is waiting", async (t) => {
   assert.ok(Date.now() - startedAt < 5_000);
 });
 
+test("setup treats an unhealthy live daemon as finishing work", async (t) => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  t.after(() => {
+    runCli(fixture, "service", "stop");
+  });
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "unhealthy-keep");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "unhealthy-keep",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  const server = serveUnhealthyDaemon(fixture, paths.serviceSocketPath);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await listen(server, paths.serviceSocketPath);
+
+  const finishing = await runCliAsync(fixture, {}, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required", JSON.stringify(finishing.json, null, 2));
+  assert.equal(finishing.json.service.action, "start");
+  assert.equal(finishing.json.service.running, true);
+  assert.equal(finishing.json.confirmation.required, false);
+});
+
+test("SIGTERM interrupts setup while replacing an unhealthy daemon", async (t) => {
+  const root = makeTempDir();
+  const fixture = {
+    hostConfigPath: path.join(root, "host-config.json"),
+    simctl: createSimctlFixture(root),
+    stateRoot: path.join(root, "state"),
+  };
+  t.after(() => {
+    runCli(fixture, "service", "stop");
+  });
+  const preview = runCli(fixture, "setup", "--json", "--host-id", "unhealthy-stop-signal");
+  const applied = runCli(
+    fixture,
+    "setup",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--host-id",
+    "unhealthy-stop-signal",
+    "--json",
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(runCli(fixture, "service", "stop").status, 0);
+
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  let stopRequested = false;
+  const server = serveUnhealthyDaemon(fixture, paths.serviceSocketPath, {
+    onStop() {
+      stopRequested = true;
+    },
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await listen(server, paths.serviceSocketPath);
+
+  const finishing = await runCliAsync(fixture, {}, "setup", "--json");
+  assert.equal(finishing.status, 0, finishing.stderr);
+  assert.equal(finishing.json.status, "changes_required", JSON.stringify(finishing.json, null, 2));
+  assert.equal(finishing.json.service.action, "start");
+  const startedAt = Date.now();
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [
+      CLI_PATH,
+      "setup", "--apply", "--confirm", finishing.json.planId, "--json",
+      "--host-config", fixture.hostConfigPath,
+      "--state-root", fixture.stateRoot,
+    ], {
+      env: {
+        ...process.env,
+        ...fixture.simctl.env,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    const deadline = Date.now() + 10_000;
+    const poll = setInterval(() => {
+      if (stopRequested) {
+        clearInterval(poll);
+        child.kill("SIGTERM");
+      } else if (Date.now() > deadline) {
+        clearInterval(poll);
+        child.kill("SIGKILL");
+        reject(new Error("Timed out waiting for setup to stop the unhealthy daemon."));
+      }
+    }, 10);
+    child.once("close", (status, signal) => {
+      clearInterval(poll);
+      resolve({ json: stdout ? JSON.parse(stdout) : null, signal, status, stderr });
+    });
+  });
+
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 143, result.stderr);
+  assert.equal(result.json.reasonCode, "setup-interrupted");
+  assert.ok(Date.now() - startedAt < 5_000);
+});
+
 test("setup rejects a snapshot whose host changed after provisioning", async () => {
   const root = makeTempDir();
   const fixture = {
@@ -3820,6 +3992,7 @@ test("CLI waits for the service identity probe before routing command requests",
           service: {
             hostConfigPath: fixture.hostConfigPath,
             pid: process.pid,
+            runtimeVersion: RUNTIME_VERSION,
             socketPath,
             stateRoot: fixture.stateRoot,
           },
@@ -3861,9 +4034,47 @@ test("CLI waits for the service identity probe before routing command requests",
   assert.deepEqual(commandBodies[0].expectedServiceIdentity, {
     hostConfigPath: fixture.hostConfigPath,
     pid: process.pid,
+    runtimeVersion: RUNTIME_VERSION,
     socketPath,
     stateRoot: fixture.stateRoot,
   });
+});
+
+test("CLI rejects a legacy daemon that does not report its runtime version", async (t) => {
+  const fixture = makeFixture();
+  const socketPath = path.join(fixture.root, "legacy-service.sock");
+  let commandRequests = 0;
+  const server = http.createServer((request, response) => {
+    if (request.url === "/v1/service/status") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(`${JSON.stringify({
+        ok: true,
+        running: true,
+        service: {
+          hostConfigPath: fixture.hostConfigPath,
+          pid: process.pid,
+          socketPath,
+          stateRoot: fixture.stateRoot,
+        },
+      })}\n`);
+      return;
+    }
+    if (request.url === "/v1/command") {
+      commandRequests += 1;
+    }
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end("{}\n");
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await listen(server, socketPath);
+
+  const result = await runCliAsync(fixture, {}, "--service-socket", socketPath, "host", "status");
+
+  assert.equal(result.status, 3);
+  assert.equal(result.json.reasonCode, "service-runtime-incompatible");
+  assert.equal(result.json.actualRuntimeVersion, null);
+  assert.equal(result.json.expectedRuntimeVersion, RUNTIME_VERSION);
+  assert.equal(commandRequests, 0);
 });
 
 test("service client rejects malformed JSON responses through BrokerError", async (t) => {
@@ -3927,6 +4138,34 @@ test("service command waits abort immediately when setup cancellation fires", as
   abortController.abort();
 
   await assert.rejects(command, (error) => error.payload?.reasonCode === "service-unavailable");
+});
+
+test("service stop request aborts immediately when setup cancellation fires", async (t) => {
+  const root = makeTempDir();
+  const socketPath = path.join(root, "cancelled-stop.sock");
+  let requestReceivedResolve;
+  const requestReceived = new Promise((resolve) => {
+    requestReceivedResolve = resolve;
+  });
+  const server = http.createServer((_request, _response) => {
+    requestReceivedResolve();
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await listen(server, socketPath);
+  const paths = resolveBrokerPaths({
+    serviceSocketPath: socketPath,
+    stateRoot: path.join(root, "state"),
+  });
+  const abortController = new AbortController();
+  const stop = requestServiceStop(paths, {
+    signal: abortController.signal,
+    timeoutMs: 60_000,
+  });
+
+  await requestReceived;
+  abortController.abort();
+
+  await assert.rejects(stop, (error) => error.payload?.reasonCode === "service-unavailable");
 });
 
 test("service client rejects aborted event streams", async (t) => {

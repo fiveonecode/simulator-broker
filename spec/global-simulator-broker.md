@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.15.1`
-> **Last Updated:** `2026-08-24`
+> **Version:** `0.16.1`
+> **Last Updated:** `2026-08-30`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -160,9 +160,9 @@ Current implementation slice:
 - shared command execution path used by direct CLI mode and service-backed CLI mode
 - NDJSON event streaming for `events watch --follow --json-lines`
 - CLI service routing validates that the live service metadata matches the requested host config, state root, and socket before routing commands or reporting an unchanged start
-- service-backed command requests may carry an `expectedServiceIdentity` object, and `brokerd` must compare its host config path, state root, and socket path to the live daemon metadata immediately before command dispatch
+- service-backed command requests must carry an `expectedServiceIdentity` object whose host config path, state root, socket path, and exact opaque `runtimeVersion` match the live daemon metadata immediately before command dispatch; a missing runtime version fails closed before worker admission
 - service-backed command requests may carry client request-start, queue-timeout, and execution-timeout budget fields; `brokerd` must reject a request whose queue budget has already expired, or whose recomputed dispatch-time execution budget exceeds the client-advertised execution budget, before dispatching the broker command; dispatch-time recomputation must use the request project file path when the command carries one
-- service stop requests may carry the same `expectedServiceIdentity` object, and `brokerd` must validate it before acknowledging shutdown
+- service stop requests may carry the path portion of the same `expectedServiceIdentity` object, and `brokerd` must validate it before acknowledging shutdown; cooperative stop intentionally remains compatible with an older client so explicit upgrade recovery can drain the live daemon
 - service stop closes active event streams before shutdown completes
 - malformed JSON from a running service is reported as service unavailability by clients instead of escaping as an uncaught parser failure
 - service startup must not publish a listenable socket or service metadata until the initial broker-owned app snapshot refresh has completed or explicitly reported a missing-host setup state; the CLI start launcher must wait within the bounded startup snapshot budget for one shared process-table sample, startup-lock owner PID lifetime sampling, and all inventory commands, validate startup-lock owner PID lifetime before accepting an old lock as live, and terminate the spawned daemon on startup timeout
@@ -172,6 +172,47 @@ Current implementation slice:
 - service-backed commands observing the same real `simctl`-synchronized alias health and repair state as direct CLI mode
 - immediate idle reconciliation before the startup snapshot, non-overlapping
   reconciliation every 30 seconds, and snapshot refresh after every timer run
+
+#### Service runtime health contract
+
+`brokerd` health is a fail-closed runtime contract, not a process-liveness
+claim. The canonical health states are `healthy`, `degraded`, and
+`incompatible`.
+
+| ID | Requirement | Verifier |
+| --- | --- | --- |
+| SB-SVC-RT-001 | Service metadata includes the daemon `runtimeVersion`; the CLI and app accept service-backed work only when that opaque value exactly matches their installed runtime version. A missing version is incompatible, and `/v1/command` rejects missing or mismatched expected versions before worker dispatch. | `client/test/brokerd.test.mjs` dispatch and stale-runtime rejection cases; `client/test/simbroker.test.mjs` legacy-daemon rejection case; `app/Tests/BrokerServiceClientTests.swift`; `app/Tests/BrokerSnapshotLoaderTests.swift` |
+| SB-SVC-RT-002 | `brokerd` records its entrypoint and package-metadata identity at startup. Missing, replaced, or version-changed runtime files transition the daemon to `incompatible`. | `client/test/brokerd.test.mjs` installed-runtime loss case |
+| SB-SVC-RT-003 | Every production command, snapshot, and scheduled-reconciliation worker receives the daemon's full startup runtime descriptor and compares it with the worker's current entrypoint/package descriptor before any broker operation begins. A bootstrap, runtime-load, or descriptor-mismatch failure transitions the daemon to `degraded`; it must not return a healthy status after that failure. | `client/test/brokerd.test.mjs` worker bootstrap module-loss and deterministic same-version runtime-replacement race cases |
+| SB-SVC-RT-004 | Healthy status is HTTP `200`. `degraded` or `incompatible` status is HTTP `409`, uses reason `service-runtime-incompatible` and exit code `3`, and keeps `running: true` so clients distinguish a live unusable daemon from a stopped daemon. | `client/test/brokerd.test.mjs` status assertions; error-contract tests through `npm run test:client` |
+| SB-SVC-RT-005 | While unhealthy, only status and cooperative stop remain available. Command, snapshot, event-stream, and scheduled worker admission fail closed until restart. | `client/test/brokerd.test.mjs` module-loss and stale-runtime rejection cases |
+| SB-SVC-RT-006 | Explicit `simbroker service start` cooperatively stops an unhealthy or version-incompatible daemon, waits for its admitted workers, starts the installed runtime, and preserves file-backed leases, pins, registry, and events. | `client/test/brokerd.test.mjs` stale-runtime restart with active lease |
+
+Guided setup preview reports `ready` with service action `keep` only when the
+live daemon is healthy. A live `degraded` or `incompatible` daemon stays
+`running: true` and is finishing work with service action `start`, so confirmed
+apply uses the same cooperative restart path as `simbroker service start`.
+Verified by `client/test/setup-preflight.test.mjs` and the unhealthy-daemon
+setup cases in `client/test/simbroker.test.mjs`.
+
+Runtime health remains degraded after the first worker bootstrap failure even if
+files reappear. This keeps recovery deterministic: restore or reinstall the
+runtime if necessary, then run `simbroker service start`. The daemon does not
+self-exit because a live status and cooperative stop surface are required to
+recover without guessing at processes or deleting sockets. A crash between
+stop and restart is recoverable by rerunning the same start command; service
+restart is not a cross-process atomic operation.
+
+App project generation writes an ignored Swift constant and explicit app
+`Info.plist` compatibility key atomically from the root `package.json` version.
+Distribution packaging compares that inspectable key with `package.json` before
+staging or signing, including when reusing a Release build with `--skip-build`.
+Snapshot loading treats missing or mismatched service versions as read-only,
+and every app mutation rechecks live status before POSTing the same exact
+version in `expectedServiceIdentity`. This assumes the supported Homebrew
+formula and cask are installed as a paired release; independently skewed
+formula/cask installations intentionally remain read-only until the pair is
+upgraded or reinstalled together.
 
 ### `client`
 
@@ -557,6 +598,8 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.16.1 | 2026-08-30 | Guided setup treats a live unhealthy daemon as finishing work (`start`, not `ready`/`keep`) and honors cancellation while replacing it. |
+| 0.16.0 | 2026-08-30 | Added fail-closed daemon runtime health, exact client/daemon version compatibility, and explicit state-preserving restart recovery. |
 | 0.15.1 | 2026-08-24 | Clarified that guided setup apply timeout covers bounded rollback as well as provisioning and finishing stages. |
 | 0.15.0 | 2026-08-22 | Added the shared guided setup/runtime/confirmation/recovery/app contract and version-agnostic project scaffolding default. |
 | 0.14.1 | 2026-08-18 | Help and doctor default to human-readable text; `--json` keeps the stable machine payload. |

@@ -622,6 +622,7 @@ private extension BrokerServiceMetadata {
   var commandIdentityObject: [String: String] {
     [
       "hostConfigPath": hostConfigPath,
+      "runtimeVersion": runtimeVersion ?? "<missing>",
       "socketPath": socketPath,
       "stateRoot": stateRoot,
     ]
@@ -650,7 +651,7 @@ enum BrokerServiceCommandClientError: LocalizedError, Sendable {
       return "brokerd metadata is missing at \(url.path). Start brokerd to enable operator actions."
     case let .serviceIdentityMismatch(expected, actual, mismatchedFields):
       let fieldList = mismatchedFields.joined(separator: ", ")
-      return "brokerd is running with different broker paths (\(fieldList)). Expected \(expected), received \(actual)."
+      return "brokerd is running with a different runtime identity (\(fieldList)). Expected \(expected), received \(actual)."
     case let .transportFailure(message):
       return message
     case let .unreadableServiceMetadata(url, message):
@@ -907,13 +908,16 @@ struct CurlBrokerServiceTransport: BrokerServiceTransporting {
 struct BrokerServiceCommandClient: BrokerCommandSending {
   private static let serviceStatusTimeoutSeconds = 10
 
+  let expectedRuntimeVersion: String
   let paths: BrokerRuntimePaths
   let transport: any BrokerServiceTransporting
 
   init(
     paths: BrokerRuntimePaths = .fromLaunchContext(),
-    transport: any BrokerServiceTransporting = CurlBrokerServiceTransport()
+    transport: any BrokerServiceTransporting = CurlBrokerServiceTransport(),
+    expectedRuntimeVersion: String = BrokerRuntimeBuildVersion.current
   ) {
+    self.expectedRuntimeVersion = expectedRuntimeVersion
     self.paths = paths
     self.transport = transport
   }
@@ -991,11 +995,13 @@ struct BrokerServiceCommandClient: BrokerCommandSending {
   private func validateServiceIdentity(_ service: BrokerServiceMetadata, expectedSocketPath: String) throws {
     let expected = [
       "hostConfigPath": normalizedPath(paths.hostConfigURL.path),
+      "runtimeVersion": expectedRuntimeVersion,
       "socketPath": normalizedPath(expectedSocketPath),
       "stateRoot": normalizedPath(paths.stateRoot.path),
     ]
     let actual = [
       "hostConfigPath": normalizedPath(service.hostConfigPath),
+      "runtimeVersion": service.runtimeVersion ?? "<missing>",
       "socketPath": normalizedPath(service.socketPath),
       "stateRoot": normalizedPath(service.stateRoot),
     ]

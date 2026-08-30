@@ -20,6 +20,7 @@ test("broker error contract maps reason codes to stable exit codes", () => {
   assert.equal(resolveBrokerExitCode("force-override-forbidden"), BROKER_EXIT_CODES.unavailable);
   assert.equal(resolveBrokerExitCode("service-command-expired"), BROKER_EXIT_CODES.unavailable);
   assert.equal(resolveBrokerExitCode("service-identity-mismatch"), BROKER_EXIT_CODES.unavailable);
+  assert.equal(resolveBrokerExitCode("service-runtime-incompatible"), BROKER_EXIT_CODES.unavailable);
   assert.equal(resolveBrokerExitCode("service-stop-timeout"), BROKER_EXIT_CODES.unavailable);
   assert.equal(resolveBrokerExitCode("project-in-use"), BROKER_EXIT_CODES.unavailable);
   assert.equal(resolveBrokerExitCode("unhealthy-alias"), BROKER_EXIT_CODES.repairNeeded);

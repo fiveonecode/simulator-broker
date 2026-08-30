@@ -655,6 +655,12 @@ export async function probeService(paths, options = {}) {
       timeoutMs: options.timeoutMs ?? 250,
     });
   } catch (error) {
+    if (error instanceof BrokerError
+      && error.payload?.reasonCode === "service-runtime-incompatible"
+      && error.payload?.running === true
+      && error.payload?.service) {
+      return error.payload;
+    }
     if (["ECONNREFUSED", "ENOENT"].includes(error?.code)) {
       return null;
     }
@@ -698,6 +704,7 @@ export async function requestServiceStop(paths, options = {}) {
       body,
       method: "POST",
       requestPath: "/v1/service/stop",
+      signal: options.signal,
       timeoutMs: options.timeoutMs ?? 2000,
     });
   } catch (error) {

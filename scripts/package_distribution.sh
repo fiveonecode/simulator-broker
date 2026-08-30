@@ -8,6 +8,7 @@ archive_name="SimulatorBroker-macOS-distribution"
 skip_build=0
 derived_data_path="$repo_root/DerivedData/SimulatorBrokerApp"
 app_source="$derived_data_path/Build/Products/Release/SimulatorBrokerApp.app"
+app_runtime_info_key="SimulatorBrokerExpectedRuntimeVersion"
 signing_identity="${SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY:-}"
 team_id="${SIMBROKER_DISTRIBUTION_TEAM_ID:-}"
 notarytool_profile="${SIMBROKER_NOTARYTOOL_PROFILE:-}"
@@ -211,6 +212,28 @@ fi
 
 if [[ ! -d "$app_source" ]]; then
   echo "Built Release app bundle not found at $app_source" >&2
+  exit 1
+fi
+
+expected_runtime_version="$(node --input-type=module - "$repo_root/package.json" <<'NODE'
+import fs from "node:fs";
+
+const packageMetadata = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const runtimeVersion = packageMetadata.version;
+if (typeof runtimeVersion !== "string" || !/^[0-9A-Za-z.+-]+$/.test(runtimeVersion)) {
+  throw new Error("package.json version must be a non-empty package version string.");
+}
+process.stdout.write(runtimeVersion);
+NODE
+)"
+app_info_plist="$app_source/Contents/Info.plist"
+if [[ ! -f "$app_info_plist" ]] \
+  || ! app_runtime_version="$(plutil -extract "$app_runtime_info_key" raw -o - "$app_info_plist" 2>/dev/null)"; then
+  echo "Release app is missing $app_runtime_info_key. Rebuild the app before packaging it." >&2
+  exit 1
+fi
+if [[ "$app_runtime_version" != "$expected_runtime_version" ]]; then
+  echo "Release app runtime compatibility version ($app_runtime_version) does not match package.json ($expected_runtime_version). Rebuild the app before packaging it." >&2
   exit 1
 fi
 
