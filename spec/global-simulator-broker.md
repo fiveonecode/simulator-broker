@@ -183,7 +183,7 @@ claim. The canonical health states are `healthy`, `degraded`, and
 | --- | --- | --- |
 | SB-SVC-RT-001 | Service metadata includes the daemon `runtimeVersion`; the CLI and app accept service-backed work only when that opaque value exactly matches their installed runtime version. A missing version is incompatible, and `/v1/command` rejects missing or mismatched expected versions before worker dispatch. | `client/test/brokerd.test.mjs` dispatch and stale-runtime rejection cases; `client/test/simbroker.test.mjs` legacy-daemon rejection case; `app/Tests/BrokerServiceClientTests.swift`; `app/Tests/BrokerSnapshotLoaderTests.swift` |
 | SB-SVC-RT-002 | `brokerd` records its entrypoint and package-metadata identity at startup. Missing, replaced, or version-changed runtime files transition the daemon to `incompatible`. | `client/test/brokerd.test.mjs` installed-runtime loss case |
-| SB-SVC-RT-003 | A worker bootstrap or runtime-load failure transitions the daemon to `degraded`; it must not return a healthy status after that failure. | `client/test/brokerd.test.mjs` worker bootstrap module-loss case |
+| SB-SVC-RT-003 | Every production command, snapshot, and scheduled-reconciliation worker receives the daemon's full startup runtime descriptor and compares it with the worker's current entrypoint/package descriptor before any broker operation begins. A bootstrap, runtime-load, or descriptor-mismatch failure transitions the daemon to `degraded`; it must not return a healthy status after that failure. | `client/test/brokerd.test.mjs` worker bootstrap module-loss and deterministic same-version runtime-replacement race cases |
 | SB-SVC-RT-004 | Healthy status is HTTP `200`. `degraded` or `incompatible` status is HTTP `409`, uses reason `service-runtime-incompatible` and exit code `3`, and keeps `running: true` so clients distinguish a live unusable daemon from a stopped daemon. | `client/test/brokerd.test.mjs` status assertions; error-contract tests through `npm run test:client` |
 | SB-SVC-RT-005 | While unhealthy, only status and cooperative stop remain available. Command, snapshot, event-stream, and scheduled worker admission fail closed until restart. | `client/test/brokerd.test.mjs` module-loss and stale-runtime rejection cases |
 | SB-SVC-RT-006 | Explicit `simbroker service start` cooperatively stops an unhealthy or version-incompatible daemon, waits for its admitted workers, starts the installed runtime, and preserves file-backed leases, pins, registry, and events. | `client/test/brokerd.test.mjs` stale-runtime restart with active lease |
@@ -203,13 +203,16 @@ recover without guessing at processes or deleting sockets. A crash between
 stop and restart is recoverable by rerunning the same start command; service
 restart is not a cross-process atomic operation.
 
-App project generation writes an ignored Swift constant atomically from the
-root `package.json` version. Snapshot loading treats missing or mismatched
-service versions as read-only, and every app mutation rechecks live status
-before POSTing the same exact version in `expectedServiceIdentity`. This assumes
-the supported Homebrew formula and cask are installed as a paired release;
-independently skewed formula/cask installations intentionally remain read-only
-until the pair is upgraded or reinstalled together.
+App project generation writes an ignored Swift constant and explicit app
+`Info.plist` compatibility key atomically from the root `package.json` version.
+Distribution packaging compares that inspectable key with `package.json` before
+staging or signing, including when reusing a Release build with `--skip-build`.
+Snapshot loading treats missing or mismatched service versions as read-only,
+and every app mutation rechecks live status before POSTing the same exact
+version in `expectedServiceIdentity`. This assumes the supported Homebrew
+formula and cask are installed as a paired release; independently skewed
+formula/cask installations intentionally remain read-only until the pair is
+upgraded or reinstalled together.
 
 ### `client`
 

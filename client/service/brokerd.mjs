@@ -869,16 +869,18 @@ export function runServiceWorker(workerPayload, {
   });
 }
 
-function runBrokerCommandWorker(paths, request) {
+function runBrokerCommandWorker(paths, request, expectedRuntimeDescriptor) {
   return runServiceWorker({
+    expectedRuntimeDescriptor,
     paths,
     request,
     type: "command",
   });
 }
 
-function runAppSnapshotWorker(paths, options) {
+function runAppSnapshotWorker(paths, options, expectedRuntimeDescriptor) {
   return runServiceWorker({
+    expectedRuntimeDescriptor,
     options,
     paths,
     type: "app-snapshot",
@@ -908,8 +910,15 @@ function shouldSurfaceServiceSnapshotRefreshError(request, snapshotRefresh) {
   return true;
 }
 
-function runIdleReconciliationWorker(paths, options, source, { waitForLeaseMutationLock = true } = {}) {
+function runIdleReconciliationWorker(
+  paths,
+  options,
+  source,
+  { waitForLeaseMutationLock = true } = {},
+  expectedRuntimeDescriptor,
+) {
   return runServiceWorker({
+    expectedRuntimeDescriptor,
     idleReconcileOptions: options.idleReconcileOptions ?? {},
     idleSnapshotOptions: options.idleSnapshotOptions ?? {},
     paths,
@@ -934,6 +943,41 @@ async function runIdleReconciliationWorkerTask(data) {
     leaseMutationLockWait: true,
   });
   return result;
+}
+
+function assertWorkerRuntimeMatchesStartup(expectedRuntimeDescriptor) {
+  let currentRuntimeDescriptor;
+  try {
+    currentRuntimeDescriptor = readServiceRuntimeDescriptor();
+  } catch (error) {
+    throw new BrokerError("Broker service worker could not read the installed runtime.", {
+      cause: error?.message ?? String(error),
+      expectedRuntimeVersion: expectedRuntimeDescriptor?.version ?? null,
+      reasonCode: SERVICE_RUNTIME_INCOMPATIBLE_REASON_CODE,
+    });
+  }
+
+  if (!sameServiceRuntimeDescriptor(expectedRuntimeDescriptor, currentRuntimeDescriptor)) {
+    throw new BrokerError("Broker service worker runtime does not match the daemon startup runtime.", {
+      expectedRuntimeVersion: expectedRuntimeDescriptor?.version ?? null,
+      observedRuntimeVersion: currentRuntimeDescriptor.version,
+      reasonCode: SERVICE_RUNTIME_INCOMPATIBLE_REASON_CODE,
+    });
+  }
+}
+
+async function runServiceWorkerTask(data) {
+  assertWorkerRuntimeMatchesStartup(data.expectedRuntimeDescriptor);
+  switch (data.type) {
+    case "idle-reconciliation":
+      return runIdleReconciliationWorkerTask(data);
+    case "command":
+      return executeBrokerCommand(data.paths, data.request);
+    case "app-snapshot":
+      return appSnapshotBrokerUnderMutationLock(data.paths, data.options ?? {});
+    default:
+      return null;
+  }
 }
 
 export async function startBrokerService(paths, options = {}) {
@@ -980,7 +1024,7 @@ export async function startBrokerService(paths, options = {}) {
   const runScheduledIdleReconciliation = options.runScheduledIdleReconciliation
     ?? (options.writeAppSnapshotArtifact || options.reconcileIdleBroker
       ? async (source, args) => runIdleReconciliation(source, args)
-      : (source, args) => runIdleReconciliationWorker(paths, options, source, args));
+      : (source, args) => runIdleReconciliationWorker(paths, options, source, args, startupRuntime));
   const runIdleReconciliation = (source, { waitForLeaseMutationLock = true } = {}) => {
     const lockOptions = waitForLeaseMutationLock ? {} : { leaseMutationLockWait: false };
     const result = reconcileIdle(paths, {
@@ -1016,9 +1060,9 @@ export async function startBrokerService(paths, options = {}) {
   const activeRequests = new Set();
   const activeEventStreams = new Set();
   const runCommandWorker = options.runBrokerCommandWorker
-    ?? ((request) => runBrokerCommandWorker(paths, request));
+    ?? ((request) => runBrokerCommandWorker(paths, request, startupRuntime));
   const runSnapshotWorker = options.runAppSnapshotWorker
-    ?? ((snapshotOptions) => runAppSnapshotWorker(paths, snapshotOptions));
+    ?? ((snapshotOptions) => runAppSnapshotWorker(paths, snapshotOptions, startupRuntime));
   let serviceHealth = {
     runtimeVersion: startupRuntime.version,
     status: "healthy",
@@ -1089,7 +1133,7 @@ export async function startBrokerService(paths, options = {}) {
           || error?.payload?.reasonCode === SERVICE_RUNTIME_INCOMPATIBLE_REASON_CODE) {
           const health = markServiceRuntimeUnhealthy(
             "degraded",
-            `Broker service ${operation} worker could not load the installed runtime. Restart brokerd with the installed CLI.`,
+            `Broker service ${operation} worker could not load or validate the installed runtime. Restart brokerd with the installed CLI.`,
             {
               cause: error?.payload?.cause ?? error?.message ?? String(error),
               workerErrorCode: error?.payload?.workerErrorCode ?? error?.code ?? null,
@@ -1541,36 +1585,8 @@ export async function startBrokerService(paths, options = {}) {
   });
 }
 
-if (!isMainThread && workerData?.type === "idle-reconciliation") {
-  runIdleReconciliationWorkerTask(workerData)
-    .then((result) => {
-      parentPort?.postMessage({ ok: true, result });
-    })
-    .catch((error) => {
-      parentPort?.postMessage({
-        error: serializeIdleReconciliationError(error),
-        ok: false,
-      });
-    });
-}
-
-if (!isMainThread && workerData?.type === "command") {
-  Promise.resolve()
-    .then(() => executeBrokerCommand(workerData.paths, workerData.request))
-    .then((result) => {
-      parentPort?.postMessage({ ok: true, result });
-    })
-    .catch((error) => {
-      parentPort?.postMessage({
-        error: serializeIdleReconciliationError(error),
-        ok: false,
-      });
-    });
-}
-
-if (!isMainThread && workerData?.type === "app-snapshot") {
-  Promise.resolve()
-    .then(() => appSnapshotBrokerUnderMutationLock(workerData.paths, workerData.options ?? {}))
+if (!isMainThread && ["idle-reconciliation", "command", "app-snapshot"].includes(workerData?.type)) {
+  runServiceWorkerTask(workerData)
     .then((result) => {
       parentPort?.postMessage({ ok: true, result });
     })

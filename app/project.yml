@@ -17,9 +17,8 @@ targets:
     settings:
       base:
         DEVELOPMENT_TEAM: ""
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Simulator Broker
-        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Generated/SimulatorBrokerApp-Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: dev.codex.simulator-broker-app
         PRODUCT_NAME: SimulatorBrokerApp
   SimulatorBrokerAppTests:

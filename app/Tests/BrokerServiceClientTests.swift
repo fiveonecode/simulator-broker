@@ -16,6 +16,10 @@ final class BrokerServiceClientTests: XCTestCase {
     )
 
     XCTAssertEqual(BrokerRuntimeBuildVersion.current, packageMetadata.version)
+    XCTAssertEqual(
+      Bundle.main.object(forInfoDictionaryKey: "SimulatorBrokerExpectedRuntimeVersion") as? String,
+      packageMetadata.version
+    )
   }
 
   func testCurlProcessBoxDeclinesLaunchWhenCancelledBeforeRegistration() throws {

@@ -237,9 +237,30 @@ function copyBrokerRuntime(root, name, version) {
     version,
   });
   return {
+    brokerdPath: path.join(runtimeRoot, "client/service/brokerd.mjs"),
     cliPath: path.join(runtimeRoot, "client/bin/simbroker.mjs"),
     root: runtimeRoot,
     version,
+  };
+}
+
+function readRuntimeFileIdentity(filePath) {
+  const stats = fs.statSync(filePath);
+  return {
+    birthtimeMs: stats.birthtimeMs,
+    ctimeMs: stats.ctimeMs,
+    dev: stats.dev,
+    ino: stats.ino,
+    mtimeMs: stats.mtimeMs,
+    size: stats.size,
+  };
+}
+
+function readCopiedBrokerRuntimeDescriptor(runtime) {
+  return {
+    moduleIdentity: readRuntimeFileIdentity(runtime.brokerdPath),
+    packageIdentity: readRuntimeFileIdentity(path.join(runtime.root, "package.json")),
+    version: runtime.version,
   };
 }
 
@@ -1052,6 +1073,85 @@ test("worker bootstrap module loss marks the running service degraded", async (t
   });
   assert.equal(rejectedRetry.statusCode, 409);
   assert.equal(snapshotWorkerStarts, 1);
+});
+
+test("worker revalidates the full startup runtime after dispatch admission", async (t) => {
+  const fixture = makeFixture();
+  applySimctlFixtureEnv(t, fixture);
+  const runtime = copyBrokerRuntime(fixture.root, "runtime-worker-race", "0.0.1-test");
+  const operationStartedPath = path.join(fixture.root, "worker-race-operation-started");
+  const commandDispatchPath = path.join(runtime.root, "client/command-dispatch.mjs");
+  const commandDispatchSource = fs.readFileSync(commandDispatchPath, "utf8");
+  const commandDispatchWithFileSystem = commandDispatchSource.replace(
+    'import process from "node:process";',
+    'import fs from "node:fs";\nimport process from "node:process";',
+  );
+  assert.notEqual(commandDispatchWithFileSystem, commandDispatchSource);
+  const instrumentedCommandDispatch = commandDispatchWithFileSystem.replace(
+    "export function executeBrokerCommand(paths, request) {",
+    `export function executeBrokerCommand(paths, request) {\n  fs.writeFileSync(${JSON.stringify(operationStartedPath)}, "started\\n");`,
+  );
+  assert.notEqual(instrumentedCommandDispatch, commandDispatchWithFileSystem);
+  fs.writeFileSync(commandDispatchPath, instrumentedCommandDispatch);
+  const startupRuntime = readCopiedBrokerRuntimeDescriptor(runtime);
+  const leaseFile = path.join(fixture.root, "worker-race-lease.json");
+  const paths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+    serviceSocketPath: path.join(fixture.root, "worker-race.sock"),
+    stateRoot: fixture.stateRoot,
+  });
+  let workerDispatches = 0;
+  const service = await startBrokerService(paths, {
+    readServiceRuntimeDescriptor() {
+      return startupRuntime;
+    },
+    runBrokerCommandWorker(request) {
+      workerDispatches += 1;
+      fs.appendFileSync(runtime.brokerdPath, "\n// deterministic runtime replacement race\n");
+      return runServiceWorker({
+        expectedRuntimeDescriptor: startupRuntime,
+        paths,
+        request,
+        type: "command",
+      }, {
+        workerUrl: pathToFileURL(runtime.brokerdPath),
+      });
+    },
+  });
+  t.after(async () => service.shutdown({ exitProcess: false }));
+
+  const response = await requestService(fixture, {
+    body: {
+      command: "acquire",
+      group: "lease",
+      options: {
+        actorId: "agent-worker-race",
+        actorType: "agent",
+        leaseFile,
+        ownerPid: process.pid,
+        projectFilePath: path.join(fixture.repoRoot, ".simulator-broker/project.json"),
+        purposeId: "agent-ui-session",
+      },
+      type: "command",
+    },
+    method: "POST",
+    requestPath: "/v1/command",
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.json.reasonCode, "service-runtime-incompatible");
+  assert.equal(workerDispatches, 1);
+  assert.equal(fs.existsSync(operationStartedPath), false);
+  assert.equal(fs.existsSync(leaseFile), false);
+  assert.deepEqual(fs.existsSync(paths.leasesDir) ? fs.readdirSync(paths.leasesDir) : [], []);
+
+  const status = await requestService(fixture, {
+    requestPath: "/v1/service/status",
+  });
+  assert.equal(status.statusCode, 409);
+  assert.equal(status.json.running, true);
+  assert.equal(status.json.health.status, "degraded");
 });
 
 test("scheduled idle reconciliation stays closed after runtime health fails", async (t) => {
