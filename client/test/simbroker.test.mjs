@@ -2424,9 +2424,10 @@ test("bare help and doctor print human text by default and JSON with --json", ()
   assert.equal(typeof doctorJson.json.stateRoot, "string");
 });
 
-test("every advertised group and doctor have a working --help page", () => {
+test("every advertised command has a working --help page", () => {
   const fixture = makeFixture();
   const advertised = [
+    ["setup", "setup --apply"],
     ["host", "host status"],
     ["project", "project forget"],
     ["lease", "lease contain"],
@@ -2438,6 +2439,10 @@ test("every advertised group and doctor have a working --help page", () => {
     ["service", "service start"],
     ["doctor", "doctor --json"],
   ];
+
+  const globalHelp = runCli(fixture, "--help", "--json");
+  assert.equal(globalHelp.status, 0, globalHelp.stderr);
+  assert.deepEqual(globalHelp.json.commands, advertised.map(([command]) => command));
 
   for (const [group, expectedCommand] of advertised) {
     const human = spawnCli(fixture, group, "--help");
