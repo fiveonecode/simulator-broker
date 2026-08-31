@@ -972,6 +972,8 @@ printf '%s\n' "$SIMBROKER_TEST_CHECKOUT_ROOT/artifacts/npm/should-not-appear.tgz
   const checksum = `${tarball}.sha256`;
   assert.equal(fs.existsSync(tarball), true, result.stdout);
   assert.equal(fs.existsSync(checksum), true, result.stdout);
+  assert.equal(fs.statSync(tarball).mode & 0o777, 0o644);
+  assert.equal(fs.statSync(checksum).mode & 0o777, 0o644);
   validatePortableCliTar(tarball, cliArchiveDirectory);
 
   const extractDir = path.join(outputDir, "extract");

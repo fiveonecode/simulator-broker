@@ -268,6 +268,11 @@ if ! mv "$candidate_checksum" "$checksum" 2>/dev/null; then
   exit 1
 fi
 candidate_checksum=""
+# mktemp candidates are 0600; restore umask-like public readability after rename.
+if ! chmod 0644 "$tarball" "$checksum" 2>/dev/null; then
+  echo "Unable to publish readable CLI artifacts." >&2
+  exit 1
+fi
 published=true
 
 printf '%s\n' "$tarball"
