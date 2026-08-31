@@ -159,7 +159,7 @@ A first extracted implementation slice now exists:
   fixtures inject `processController.currentPid` so hardcoded fixture
   PIDs cannot match the GitHub Actions test-runner pid. Containment still
   skips the live `process.pid` when `currentPid` is omitted.
-- tagged versions such as `v0.1.0-alpha.4` attach exactly four custom assets
+- tagged versions such as `v0.1.0-alpha.5` attach exactly four custom assets
   to a GitHub Release: the CLI tarball, its `.sha256` checksum, the packable
   `simbroker-<version>.tgz`, and the notarized
   `Simulator-Broker-<version>.zip`. GitHub-generated source archives are not
@@ -253,8 +253,9 @@ not reinstall a live machine.
 
 1. Bump `package.json` / lock / `packages/simbroker`, `CHANGELOG.md`,
    newcomer docs, `Formula/simbroker.rb` URL, and
-   `Casks/simulator-broker.rb` version. Leave the cask `sha256` on the
-   previous zip until the new zip exists.
+   `Casks/simulator-broker.rb` version. Replace both Homebrew checksums with
+   an explicit 64-zero prebuild placeholder so stale prior-release bytes
+   cannot appear pinned to the new version.
 2. Run `npm run agent:verify -- --profile spec-only` for the changed
    paths.
 3. Run `npm run package:cli` and `npm run package:npm`. Pin
