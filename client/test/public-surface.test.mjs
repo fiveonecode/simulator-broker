@@ -4,12 +4,49 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { dirtyWorktreeFiles, scanPublicSurface } from "../public-surface.mjs";
+
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-public-surface-test-"));
 }
+
+test("public surface scan accepts the runner-neutral spec on a hosted Ubuntu home", () => {
+  const hostedRunnerHome = path.posix.join(path.posix.sep, "home", "runner");
+
+  const report = scanPublicSurface({
+    files: ["spec/build-and-test.md"],
+    homePath: hostedRunnerHome,
+    root: repositoryRoot,
+  });
+
+  assert.equal(report.ok, true, JSON.stringify(report.issues));
+  assert.deepEqual(report.issues, []);
+  assert.equal(report.filesScanned, 1);
+});
+
+test("public surface scan still rejects an actual hosted Ubuntu home leak", () => {
+  const root = makeTempDir();
+  const hostedRunnerHome = path.posix.join(path.posix.sep, "home", "runner");
+  fs.writeFileSync(path.join(root, "README.md"), `artifact: ${hostedRunnerHome}/work/private.log\n`);
+
+  const report = scanPublicSurface({
+    files: ["README.md"],
+    homePath: hostedRunnerHome,
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{
+    line: 1,
+    path: "README.md",
+    rule: "local-home-path",
+  }]);
+  assert.equal(JSON.stringify(report).includes(hostedRunnerHome), false);
+});
 
 test("public surface scan reports a local home path without echoing the matched value", () => {
   const root = makeTempDir();
