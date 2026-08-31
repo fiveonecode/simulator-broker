@@ -34,7 +34,7 @@
     "test:package-smoke": "bash ./scripts/package_smoke.sh",
     "verify:public-surface": "node client/public-surface.mjs"
   },
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.4",
   "description": "Local simulator broker and macOS operator app for coordinated iOS Simulator workflows",
   "license": "MIT",
   "repository": {

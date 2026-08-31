@@ -126,12 +126,14 @@ A first extracted implementation slice now exists:
   fixtures inject `processController.currentPid` so hardcoded fixture
   PIDs cannot match the GitHub Actions test-runner pid. Containment still
   skips the live `process.pid` when `currentPid` is omitted.
-- tagged versions such as `v0.1.0-alpha.3` attach the CLI tarball, the
-  packable `simbroker-<version>.tgz`, and the notarized
-  `Simulator-Broker-<version>.zip` to a GitHub Release. The Homebrew
-  formula and cask pin the operator-packed checksums of those tagged
-  assets. `.github/workflows/release.yml` may rebuild the CLI and npm
-  tarballs on the tag. Its Ubuntu `test:client` run must finish within the
+- tagged versions such as `v0.1.0-alpha.4` attach exactly four custom assets
+  to a GitHub Release: the CLI tarball, its `.sha256` checksum, the packable
+  `simbroker-<version>.tgz`, and the notarized
+  `Simulator-Broker-<version>.zip`. GitHub-generated source archives are not
+  custom assets. The Homebrew formula and cask pin the operator-packed
+  checksums of the CLI tarball and app zip. `.github/workflows/release.yml`
+  may rebuild the CLI, checksum, and npm tarball on the tag. Its Ubuntu
+  `test:client` run must finish within the
   30-minute job budget; issue `#9`'s nested full-repo scan was removed, so a
   timeout is a regression rather than an expected release condition. After
   the workflow succeeds, attach or `--clobber` operator-packed assets as in
@@ -146,6 +148,19 @@ A first extracted implementation slice now exists:
 - agent-harness Git helpers use an expanded subprocess output buffer so context, fingerprint, and completion checks can inspect large adopted repositories without failing on Node's default output cap
 
 The current deterministic verification contract includes implementation tests plus spec integrity.
+
+### Release asset contract
+
+A complete tagged Alpha has exactly four custom GitHub Release assets:
+
+1. `simulator-broker-<version>-cli.tar.gz`
+2. `simulator-broker-<version>-cli.tar.gz.sha256`
+3. `simbroker-<version>.tgz`
+4. `Simulator-Broker-<version>.zip`
+
+The tag workflow attaches the first three. The operator attaches the signed,
+notarized, stapled app zip as the fourth. GitHub's generated source archives
+appear separately and are not part of this custom-asset count.
 
 ## Tagged Alpha ship
 
@@ -174,10 +189,12 @@ not reinstall a live machine.
    tree.
 8. Open a pull request. After merge, create tag `v<version>` and wait
    for `.github/workflows/release.yml` to finish or fail. If that job
-   did not create the GitHub Release, create it with the operator-packed
-   CLI tarball, npm tgz, and app zip. If the job created the release,
-   `gh release upload` the app zip and `--clobber` CLI/npm assets whose
-   hashes differ from the formula pins. Operator-packed checksums remain
+   did not create the GitHub Release, create it with exactly the four
+   operator-packed paths: the CLI tarball, CLI `.sha256`, npm tgz, and app
+   zip listed in Release asset contract. If the job created the release,
+   `gh release upload` the app zip and `--clobber` all three workflow-built
+   assets (CLI tarball, CLI checksum, and npm tgz) whose bytes differ from
+   the operator-packed copies. The operator-packed CLI and app hashes remain
    the Homebrew source of truth.
 9. Run `scripts/sync_homebrew_tap.sh` against a
    `fiveonecode/homebrew-simulator-broker` checkout.

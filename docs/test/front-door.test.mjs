@@ -15,6 +15,58 @@ function readRepoFile(relativePath) {
 const packageJson = JSON.parse(readRepoFile("package.json"));
 const version = packageJson.version;
 const cliArchiveDirectory = `simulator-broker-${version}-cli`;
+const customReleaseAssetTemplates = [
+  "simulator-broker-<version>-cli.tar.gz",
+  "simulator-broker-<version>-cli.tar.gz.sha256",
+  "simbroker-<version>.tgz",
+  "Simulator-Broker-<version>.zip",
+];
+
+function assertExactCustomReleaseAssetInventory(markdown) {
+  const marker = "A complete tagged Alpha has exactly four custom GitHub Release assets:";
+  const markerIndex = markdown.indexOf(marker);
+  assert.notEqual(markerIndex, -1, "release asset inventory marker must be present");
+
+  const lines = markdown.slice(markerIndex + marker.length).trimStart().split(/\r?\n/);
+  const assets = [];
+  for (const line of lines) {
+    const match = line.match(/^\d+\. `([^`]+)`$/);
+    if (match) {
+      assets.push(match[1]);
+      continue;
+    }
+    if (assets.length > 0) {
+      break;
+    }
+  }
+  assert.deepEqual(assets, customReleaseAssetTemplates);
+}
+
+function assertExactWorkflowAssetArguments(workflow) {
+  const lines = workflow.split(/\r?\n/);
+  const createIndex = lines.findIndex((line) => line.includes('gh release create "${GITHUB_REF_NAME}"'));
+  assert.notEqual(createIndex, -1, "gh release create command must be present");
+
+  const commandLines = [];
+  for (let index = createIndex; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    commandLines.push(line);
+    if (!line.endsWith("\\")) {
+      break;
+    }
+  }
+  const normalizedLines = commandLines.map((line) => line.replace(/\s+\\$/, ""));
+  assert.equal(normalizedLines.length, 7, "release command must keep its exact flag and asset shape");
+  assert.equal(normalizedLines[0], 'gh release create "${GITHUB_REF_NAME}"');
+  assert.equal(normalizedLines[1], '--title "Simulator Broker ${GITHUB_REF_NAME}"');
+  assert.match(normalizedLines[2], /^--notes ".*"$/);
+  assert.equal(normalizedLines[3], '"${prerelease_args[@]}"');
+  assert.deepEqual(
+    normalizedLines.slice(4),
+    ['"$asset"', '"$checksum"', '"$npm_asset"'],
+    "the tag workflow must attach exactly the three operator-replaceable CLI/npm assets",
+  );
+}
 
 function firstScreen(markdown) {
   const lines = markdown.split(/\r?\n/);
@@ -434,9 +486,14 @@ test("release workflow packages the CLI tarball on version tags", () => {
   assertWorkflowJobRunsExactCommand(release, "release", "npm run test:docs");
   assert.ok(release.includes("npm run package:cli"));
   assert.ok(release.includes("npm run package:npm"));
+  assert.ok(release.includes('asset="artifacts/cli/simulator-broker-${version}-cli.tar.gz"'));
+  assert.ok(release.includes('checksum="${asset}.sha256"'));
   assert.ok(release.includes("artifacts/npm/simbroker-${version}.tgz"));
   assert.ok(release.includes("gh release create"));
   assert.ok(release.includes("--prerelease"));
+  assertExactWorkflowAssetArguments(release);
+  assert.match(release, /CLI tarball, its SHA-256 checksum, and the npm package/);
+  assert.match(release, /complete exactly four custom assets/);
   assert.equal(release.includes("test:app"), false);
   assert.equal(
     release.replace(/\s+/g, " ").includes("This release is not a Homebrew formula, notarized app, or npm package."),
@@ -449,6 +506,53 @@ test("release workflow packages the CLI tarball on version tags", () => {
     "tag release notes must not claim the notarized app zip is absent",
   );
   assert.ok(release.includes("brew install --cask fiveonecode/simulator-broker/simulator-broker"));
+
+  const withUnexpectedAsset = release.replace(
+    '            "$npm_asset"',
+    '            "$npm_asset" \\\n            "unexpected.zip"',
+  );
+  assert.notEqual(withUnexpectedAsset, release, "negative fixture must add a fourth attachment");
+  assert.throws(
+    () => assertExactWorkflowAssetArguments(withUnexpectedAsset),
+    "a fourth workflow attachment must fail the exact asset assertion",
+  );
+  const withInterspersedAsset = release.replace(
+    '            "${prerelease_args[@]}"',
+    '            "unexpected.zip" \\\n            "${prerelease_args[@]}"',
+  );
+  assert.notEqual(withInterspersedAsset, release, "negative fixture must intersperse an attachment");
+  assert.throws(
+    () => assertExactWorkflowAssetArguments(withInterspersedAsset),
+    "a positional attachment interspersed with flags must fail the exact asset assertion",
+  );
+});
+
+test("public release contract inventories exactly four custom assets", () => {
+  const spec = readRepoFile("spec/build-and-test.md");
+  const gettingStarted = readRepoFile("docs/getting-started.md");
+  const status = readRepoFile("docs/status.md");
+  const security = readRepoFile("SECURITY.md");
+
+  assertExactCustomReleaseAssetInventory(spec);
+  assertExactCustomReleaseAssetInventory(gettingStarted);
+  assert.match(status, /exactly four custom assets/);
+  for (const template of customReleaseAssetTemplates) {
+    assert.ok(
+      security.includes(template.replace("<version>", version)),
+      `SECURITY must name ${template}`,
+    );
+  }
+  assert.match(spec, /GitHub's generated source archives[\s\S]*not part of this custom-asset count/);
+
+  const withoutChecksum = spec.replace(
+    "2. `simulator-broker-<version>-cli.tar.gz.sha256`\n",
+    "",
+  );
+  assert.notEqual(withoutChecksum, spec, "negative fixture must remove the checksum asset");
+  assert.throws(
+    () => assertExactCustomReleaseAssetInventory(withoutChecksum),
+    "omitting the CLI checksum must fail the release-contract assertion",
+  );
 });
 
 test("on-demand OCR review uses the maintained hosted action runtime contract", () => {
