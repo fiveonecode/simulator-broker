@@ -24,7 +24,7 @@ struct RootView: View {
         errorMessage: store.lastErrorMessage,
         onCancel: store.cancelGuidedSetup,
         onConfirm: store.confirmGuidedSetup,
-        onStop: store.stopGuidedSetup,
+        onStop: { _ = store.stopGuidedSetup() },
         phase: store.setupPhase,
         plan: plan
       )
@@ -61,6 +61,8 @@ struct RootView: View {
     store.lastActionMessage != nil
       || (store.lastErrorMessage != nil && store.snapshot != nil)
       || store.startupState == .readOnlySnapshot
+      || store.startupState == .serviceStatusUnverified
+      || store.serviceRequiresRestart
       || store.isAutomaticSetupInProgress
   }
 
@@ -137,10 +139,12 @@ struct RootView: View {
       return "bolt.horizontal.circle.fill"
     case .readOnlySnapshot:
       return "tray.full"
+    case .serviceStatusUnverified:
+      return "arrow.clockwise.circle"
     case .needsSnapshotRefresh:
       return "arrow.clockwise.circle"
     case .needsServiceStart:
-      return "bolt.slash.fill"
+      return store.serviceRequiresRestart ? "arrow.trianglehead.2.clockwise.rotate.90" : "bolt.slash.fill"
     case .missingCLI, .needsHostBootstrap:
       return "wrench.and.screwdriver.fill"
     }
@@ -155,7 +159,7 @@ struct RootView: View {
     automaticSetupProgressCard
     actionMessageCard
     errorMessageCard
-    readOnlySnapshotMessageCard
+    serviceAvailabilityMessageCard
   }
 
   @ViewBuilder
@@ -166,7 +170,7 @@ struct RootView: View {
         message: "Finishing setup: starting brokerd, refreshing the snapshot, and verifying Simulator health.",
         symbolName: "gearshape.2",
         actionTitle: store.setupPhase == .applying ? "Stop" : nil,
-        onAction: store.setupPhase == .applying ? { store.stopGuidedSetup() } : nil
+        onAction: store.setupPhase == .applying ? { _ = store.stopGuidedSetup() } : nil
       )
     }
   }
@@ -196,24 +200,36 @@ struct RootView: View {
   }
 
   @ViewBuilder
-  private var readOnlySnapshotMessageCard: some View {
-    if store.startupState == .readOnlySnapshot {
-      if store.canOfferReadOnlyFinishSetup {
-        StatusMessageCard(
-          color: .orange,
-          message: "Broker commands are disabled because brokerd is not running. Start the service to enable pinning, release, and lifecycle actions.",
-          symbolName: "bolt.slash.fill",
-          actionTitle: "Finish setup",
-          onAction: resumeGuidedSetup,
-          onDismiss: nil
-        )
-      } else {
-        StatusMessageCard(
-          color: .orange,
-          message: "Broker commands are disabled because brokerd is not running. Start the service to enable pinning, release, and lifecycle actions.",
-          symbolName: "bolt.slash.fill",
-          onDismiss: nil
-        )
+  private var serviceAvailabilityMessageCard: some View {
+    if store.startupState == .readOnlySnapshot
+      || store.startupState == .serviceStatusUnverified
+      || store.serviceRequiresRestart
+    {
+      VStack(alignment: .leading, spacing: 10) {
+        if store.canOfferReadOnlyFinishSetup {
+          StatusMessageCard(
+            color: .orange,
+            message: store.serviceAvailabilityMessage,
+            symbolName: "bolt.slash.fill",
+            actionTitle: "Finish setup",
+            onAction: resumeGuidedSetup,
+            onDismiss: nil
+          )
+        } else {
+          StatusMessageCard(
+            color: .orange,
+            message: store.serviceAvailabilityMessage,
+            symbolName: store.serviceStatusUnverified ? "arrow.clockwise.circle" : "bolt.slash.fill",
+            onDismiss: nil
+          )
+        }
+        if let command = store.unverifiedServiceStatusFallbackCommand {
+          Text(BrokerUnverifiedStatusCopy.manualFallbackText)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+          BrokerCommandSnippetView(command: command)
+        }
       }
     }
   }

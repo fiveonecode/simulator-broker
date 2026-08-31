@@ -219,17 +219,48 @@ struct BrokerLoadedState: Sendable {
   let tooling: BrokerToolingState
   let service: BrokerServiceMetadata?
   let snapshot: BrokerAppSnapshot?
+  let serviceRequiresRestart: Bool
+
+  init(
+    paths: BrokerRuntimePaths,
+    tooling: BrokerToolingState,
+    service: BrokerServiceMetadata?,
+    snapshot: BrokerAppSnapshot?,
+    serviceRequiresRestart: Bool = false
+  ) {
+    self.paths = paths
+    self.tooling = tooling
+    self.service = service
+    self.snapshot = snapshot
+    self.serviceRequiresRestart = serviceRequiresRestart
+  }
 }
 
 enum BrokerSnapshotLoaderError: LocalizedError {
   case unreadableFile(URL, Error)
+  case unverifiedServiceStatus(String)
 
   var errorDescription: String? {
     switch self {
     case let .unreadableFile(url, underlying):
       return "Failed to read \(url.lastPathComponent): \(underlying.localizedDescription)"
+    case let .unverifiedServiceStatus(reason):
+      return "Failed to verify brokerd status: \(reason)"
     }
   }
+}
+
+struct BrokerSnapshotPartialLoadError: LocalizedError, Sendable {
+  let recoveredState: BrokerLoadedState
+  let message: String
+
+  var errorDescription: String? {
+    message
+  }
+}
+
+struct BrokerServiceRestartRequiredStatus: Error, Sendable {
+  let service: BrokerServiceMetadata
 }
 
 protocol BrokerSnapshotLoading: Sendable {
@@ -237,7 +268,15 @@ protocol BrokerSnapshotLoading: Sendable {
 }
 
 private struct BrokerSnapshotServiceStatusEnvelope: Decodable, Sendable {
+  let exitCode: Int?
+  let reasonCode: String?
+  let running: Bool?
   let service: BrokerServiceMetadata?
+}
+
+private struct BrokerServiceLoadResult: Sendable {
+  let service: BrokerServiceMetadata
+  let requiresRestart: Bool
 }
 
 actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
@@ -245,12 +284,12 @@ actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
   private let expectedRuntimeVersion: String
   private let paths: BrokerRuntimePaths
   private let processIdentifierExists: @Sendable (Int) -> Bool
-  private let serviceStatusProbe: @Sendable (BrokerServiceMetadata) async -> BrokerServiceMetadata?
+  private let serviceStatusProbe: @Sendable (BrokerServiceMetadata) async throws -> BrokerServiceMetadata
 
   init(
     paths: BrokerRuntimePaths = .fromLaunchContext(),
     processIdentifierExists: @escaping @Sendable (Int) -> Bool = FileBrokerSnapshotLoader.defaultProcessIdentifierExists,
-    serviceStatusProbe: @escaping @Sendable (BrokerServiceMetadata) async -> BrokerServiceMetadata? = FileBrokerSnapshotLoader.defaultServiceStatusProbe,
+    serviceStatusProbe: @escaping @Sendable (BrokerServiceMetadata) async throws -> BrokerServiceMetadata = FileBrokerSnapshotLoader.defaultServiceStatusProbe,
     expectedRuntimeVersion: String = BrokerRuntimeBuildVersion.current
   ) {
     self.expectedRuntimeVersion = expectedRuntimeVersion
@@ -262,56 +301,91 @@ actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
   func load() async throws -> BrokerLoadedState {
     let installMetadata = try decodeIfPresent(BrokerInstallMetadata.self, from: paths.installMetadataURL)
     let hostConfigExists = FileManager.default.fileExists(atPath: paths.hostConfigURL.path)
-    let service = try await loadServiceMetadata()
-    let snapshot = try loadSnapshot(hostConfigExists: hostConfigExists)
+    let serviceResult = try await loadServiceMetadata()
+    let tooling = BrokerToolingState(
+      cliPath: resolveCLIPath(installMetadata: installMetadata),
+      hostConfigExists: hostConfigExists,
+      installMetadata: installMetadata
+    )
+    let snapshot: BrokerAppSnapshot?
+    do {
+      snapshot = try loadSnapshot(hostConfigExists: hostConfigExists)
+    } catch {
+      throw BrokerSnapshotPartialLoadError(
+        recoveredState: BrokerLoadedState(
+          paths: paths,
+          tooling: tooling,
+          service: serviceResult?.service,
+          snapshot: nil,
+          serviceRequiresRestart: serviceResult?.requiresRestart ?? false
+        ),
+        message: error.localizedDescription
+      )
+    }
     return BrokerLoadedState(
       paths: paths,
-      tooling: BrokerToolingState(
-        cliPath: resolveCLIPath(installMetadata: installMetadata),
-        hostConfigExists: hostConfigExists,
-        installMetadata: installMetadata
-      ),
-      service: service,
-      snapshot: snapshot
+      tooling: tooling,
+      service: serviceResult?.service,
+      snapshot: snapshot,
+      serviceRequiresRestart: serviceResult?.requiresRestart ?? false
     )
   }
 
-  private func loadServiceMetadata() async throws -> BrokerServiceMetadata? {
+  private func loadServiceMetadata() async throws -> BrokerServiceLoadResult? {
     guard let service = try decodeIfPresent(BrokerServiceMetadata.self, from: paths.serviceMetadataURL) else {
       return nil
     }
 
-    guard service.runtimeVersion == expectedRuntimeVersion,
+    guard service.runtimeVersion != nil,
           normalizedPath(service.stateRoot) == normalizedPath(paths.stateRoot.path),
           normalizedPath(service.hostConfigPath) == normalizedPath(paths.hostConfigURL.path),
           configuredServiceSocketMatches(service.socketPath) else {
       return nil
     }
 
-    guard let liveService = await liveServiceMetadata(for: service) else {
+    guard let liveService = try await liveServiceMetadata(for: service) else {
       return nil
     }
 
     return liveService
   }
 
-  private func liveServiceMetadata(for service: BrokerServiceMetadata) async -> BrokerServiceMetadata? {
+  private func liveServiceMetadata(for service: BrokerServiceMetadata) async throws -> BrokerServiceLoadResult? {
     guard service.pid > 1,
           processIdentifierExists(service.pid),
-          FileManager.default.fileExists(atPath: service.socketPath),
-          let liveService = await serviceStatusProbe(service) else {
+          FileManager.default.fileExists(atPath: service.socketPath) else {
       return nil
     }
+    let result: BrokerServiceLoadResult
+    do {
+      result = BrokerServiceLoadResult(
+        service: try await serviceStatusProbe(service),
+        requiresRestart: false
+      )
+    } catch let restartStatus as BrokerServiceRestartRequiredStatus {
+      result = BrokerServiceLoadResult(service: restartStatus.service, requiresRestart: true)
+    }
+    let liveService = result.service
 
-    guard liveService.runtimeVersion == expectedRuntimeVersion,
-          normalizedPath(liveService.stateRoot) == normalizedPath(paths.stateRoot.path),
-          normalizedPath(liveService.hostConfigPath) == normalizedPath(paths.hostConfigURL.path),
-          normalizedPath(liveService.socketPath) == normalizedPath(service.socketPath),
-          configuredServiceSocketMatches(liveService.socketPath) else {
-      return nil
+    let selectedIdentityMatches = normalizedPath(liveService.stateRoot) == normalizedPath(paths.stateRoot.path)
+      && normalizedPath(liveService.hostConfigPath) == normalizedPath(paths.hostConfigURL.path)
+      && normalizedPath(liveService.socketPath) == normalizedPath(service.socketPath)
+      && configuredServiceSocketMatches(liveService.socketPath)
+      && liveService.runtimeVersion == service.runtimeVersion
+
+    guard selectedIdentityMatches else {
+      throw BrokerSnapshotLoaderError.unverifiedServiceStatus(
+        "brokerd status did not match the selected runtime identity."
+      )
     }
 
-    return liveService
+    guard result.requiresRestart || liveService.runtimeVersion == expectedRuntimeVersion else {
+      throw BrokerSnapshotLoaderError.unverifiedServiceStatus(
+        "brokerd status reported an incompatible runtime version without restart-required status."
+      )
+    }
+
+    return result
   }
 
   private func configuredServiceSocketMatches(_ socketPath: String) -> Bool {
@@ -376,22 +450,51 @@ actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
     return errno == EPERM
   }
 
-  private static func defaultServiceStatusProbe(_ service: BrokerServiceMetadata) async -> BrokerServiceMetadata? {
-    do {
-      let response = try await CurlBrokerServiceTransport(transferTimeoutSeconds: 2).perform(
-        socketPath: service.socketPath,
-        requestPath: "/v1/service/status",
-        method: "GET",
-        bodyData: nil,
-        transferTimeoutSeconds: 2
+  private static func defaultServiceStatusProbe(_ service: BrokerServiceMetadata) async throws -> BrokerServiceMetadata {
+    let response = try await CurlBrokerServiceTransport(transferTimeoutSeconds: 2).perform(
+      socketPath: service.socketPath,
+      requestPath: "/v1/service/status",
+      method: "GET",
+      bodyData: nil,
+      transferTimeoutSeconds: 2
+    )
+    return try decodeServiceStatusResponse(response)
+  }
+
+  static func decodeServiceStatusResponse(_ response: BrokerHTTPResponse) throws -> BrokerServiceMetadata {
+    guard response.statusCode == 200 || response.statusCode == 409 else {
+      throw BrokerSnapshotLoaderError.unverifiedServiceStatus(
+        "brokerd returned HTTP status \(response.statusCode)."
       )
-      guard (200 ... 299).contains(response.statusCode),
-            let envelope = try? JSONDecoder().decode(BrokerSnapshotServiceStatusEnvelope.self, from: response.bodyData) else {
-        return nil
-      }
-      return envelope.service
-    } catch {
-      return nil
     }
+    let envelope: BrokerSnapshotServiceStatusEnvelope
+    do {
+      envelope = try JSONDecoder().decode(BrokerSnapshotServiceStatusEnvelope.self, from: response.bodyData)
+    } catch {
+      throw BrokerSnapshotLoaderError.unverifiedServiceStatus("brokerd returned malformed status JSON.")
+    }
+    if response.statusCode == 200 {
+      guard let service = envelope.service else {
+        throw BrokerSnapshotLoaderError.unverifiedServiceStatus("brokerd status omitted service metadata.")
+      }
+      guard envelope.running == true else {
+        throw BrokerSnapshotLoaderError.unverifiedServiceStatus(
+          "brokerd status did not confirm a running service."
+        )
+      }
+      return service
+    }
+
+    guard envelope.reasonCode == "service-runtime-incompatible",
+          envelope.running == true,
+          envelope.exitCode == 3 else {
+      throw BrokerSnapshotLoaderError.unverifiedServiceStatus(
+        "brokerd returned HTTP status \(response.statusCode)."
+      )
+    }
+    guard let service = envelope.service else {
+      throw BrokerSnapshotLoaderError.unverifiedServiceStatus("brokerd status omitted service metadata.")
+    }
+    throw BrokerServiceRestartRequiredStatus(service: service)
   }
 }

@@ -150,80 +150,496 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     XCTAssertNil(loadedState.service)
   }
 
-  func testLoaderIgnoresServiceMetadataWhenStatusProbeDoesNotConfirmLiveDaemon() async throws {
+  func testLoaderCarriesConfirmedServiceAbsenceThroughUnreadableSnapshot() async throws {
     let tempRoot = try makeTempRoot()
     let paths = BrokerRuntimePaths(
       stateRoot: tempRoot.appending(path: "state"),
       hostConfigURL: tempRoot.appending(path: "host-config.json")
     )
     try Data("{}".utf8).write(to: paths.hostConfigURL)
-    let socketURL = paths.stateRoot.appending(path: "broker.sock")
-    try FileManager.default.createDirectory(at: socketURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try Data().write(to: socketURL)
-    try writeJson(
-      [
-        "hostConfigPath": paths.hostConfigURL.path,
-        "pid": 12345,
-        "runtimeVersion": runtimeVersion,
-        "socketPath": socketURL.path,
-        "startedAt": "2026-04-10T00:00:00Z",
-        "stateRoot": paths.stateRoot.path,
-        "transport": "unix-http",
-      ],
-      to: paths.serviceMetadataURL
-    )
+    try FileManager.default.createDirectory(at: paths.stateRoot, withIntermediateDirectories: true)
+    try Data("not-json".utf8).write(to: paths.snapshotURL)
 
-    let loadedState = try await FileBrokerSnapshotLoader(
-      paths: paths,
-      processIdentifierExists: { pid in pid == 12345 },
-      serviceStatusProbe: { _ in nil },
-      expectedRuntimeVersion: runtimeVersion
-    ).load()
-
-    XCTAssertNil(loadedState.service)
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected unreadable snapshot failure")
+    } catch let error as BrokerSnapshotPartialLoadError {
+      XCTAssertNil(error.recoveredState.service)
+      XCTAssertNil(error.recoveredState.snapshot)
+      XCTAssertTrue(error.recoveredState.tooling.hostConfigExists)
+      XCTAssertTrue(error.localizedDescription.contains("app-snapshot.json"))
+    }
   }
 
-  func testLoaderIgnoresServiceMetadataWhenLiveStatusReportsDifferentIdentity() async throws {
-    let tempRoot = try makeTempRoot()
-    let paths = BrokerRuntimePaths(
-      stateRoot: tempRoot.appending(path: "state"),
-      hostConfigURL: tempRoot.appending(path: "host-config.json")
-    )
-    try Data("{}".utf8).write(to: paths.hostConfigURL)
-    let socketURL = paths.stateRoot.appending(path: "broker.sock")
-    try FileManager.default.createDirectory(at: socketURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try Data().write(to: socketURL)
-    try writeJson(
-      [
-        "hostConfigPath": paths.hostConfigURL.path,
-        "pid": 12345,
-        "runtimeVersion": runtimeVersion,
-        "socketPath": socketURL.path,
-        "startedAt": "2026-04-10T00:00:00Z",
-        "stateRoot": paths.stateRoot.path,
-        "transport": "unix-http",
-      ],
-      to: paths.serviceMetadataURL
+  func testLoaderCarriesValidatedLiveServiceThroughUnreadableSnapshot() async throws {
+    let paths = try makeLiveServicePaths()
+    try Data("not-json".utf8).write(to: paths.snapshotURL)
+
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        processIdentifierExists: { pid in pid == 12345 },
+        serviceStatusProbe: { service in service },
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected unreadable snapshot failure")
+    } catch let error as BrokerSnapshotPartialLoadError {
+      XCTAssertEqual(error.recoveredState.service?.pid, 12345)
+      XCTAssertNil(error.recoveredState.snapshot)
+      XCTAssertTrue(error.localizedDescription.contains("app-snapshot.json"))
+    }
+  }
+
+  func testLoaderFailsClosedWhenServiceStatusProbeTimesOut() async throws {
+    let paths = try makeLiveServicePaths()
+
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        processIdentifierExists: { pid in pid == 12345 },
+        serviceStatusProbe: { _ in throw ServiceStatusProbeTestError.timedOut },
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected service status timeout")
+    } catch {
+      XCTAssertEqual(error.localizedDescription, "Broker service status probe timed out.")
+    }
+  }
+
+  func testLoaderFailsClosedWhenServiceStatusProbeReturnsNonSuccess() async throws {
+    let paths = try makeLiveServicePaths()
+
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        processIdentifierExists: { pid in pid == 12345 },
+        serviceStatusProbe: { _ in
+          try FileBrokerSnapshotLoader.decodeServiceStatusResponse(
+            BrokerHTTPResponse(bodyData: Data(), statusCode: 503)
+          )
+        },
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected non-success service status failure")
+    } catch {
+      XCTAssertEqual(error.localizedDescription, "Failed to verify brokerd status: brokerd returned HTTP status 503.")
+    }
+  }
+
+  func testLoaderClassifiesExactRuntimeIncompatibleConflictAsRestartRequired() async throws {
+    let staleRuntimeVersion = "older-runtime-version"
+    let paths = try makeLiveServicePaths(runtimeVersion: staleRuntimeVersion)
+    let response = try restartRequiredResponse(
+      paths: paths,
+      runtimeVersion: staleRuntimeVersion
     )
 
     let loadedState = try await FileBrokerSnapshotLoader(
       paths: paths,
       processIdentifierExists: { pid in pid == 12345 },
-      serviceStatusProbe: { service in
-        BrokerServiceMetadata(
-          hostConfigPath: service.hostConfigPath,
-          pid: service.pid,
-          socketPath: service.socketPath,
-          startedAt: service.startedAt,
-          stateRoot: "/tmp/other-simbroker-state",
-          transport: service.transport,
-          runtimeVersion: service.runtimeVersion
-        )
+      serviceStatusProbe: { _ in
+        try FileBrokerSnapshotLoader.decodeServiceStatusResponse(response)
       },
       expectedRuntimeVersion: runtimeVersion
     ).load()
 
-    XCTAssertNil(loadedState.service)
+    XCTAssertTrue(loadedState.serviceRequiresRestart)
+    XCTAssertEqual(loadedState.service?.hostConfigPath, paths.hostConfigURL.path)
+    XCTAssertEqual(loadedState.service?.pid, 12345)
+    XCTAssertEqual(loadedState.service?.runtimeVersion, staleRuntimeVersion)
+    XCTAssertEqual(loadedState.service?.socketPath, paths.stateRoot.appending(path: "broker.sock").path)
+    XCTAssertEqual(loadedState.service?.startedAt, "2026-04-10T00:00:00Z")
+    XCTAssertEqual(loadedState.service?.stateRoot, paths.stateRoot.path)
+    XCTAssertEqual(loadedState.service?.transport, "unix-http")
+  }
+
+  func testRuntimeIncompatibleConflictRejectsWrongReasonCode() throws {
+    let paths = BrokerRuntimePaths(stateRoot: URL(fileURLWithPath: "/tmp/selected-state"))
+    let response = try restartRequiredResponse(
+      paths: paths,
+      runtimeVersion: "older-runtime-version",
+      reasonCode: "service-unavailable"
+    )
+
+    assertServiceStatusResponseFails(
+      response,
+      expectedDescription: "Failed to verify brokerd status: brokerd returned HTTP status 409."
+    )
+  }
+
+  func testRuntimeIncompatibleConflictRequiresCanonicalExitCode() throws {
+    let paths = BrokerRuntimePaths(stateRoot: URL(fileURLWithPath: "/tmp/selected-state"))
+    let missingExitCode = try restartRequiredResponse(
+      paths: paths,
+      runtimeVersion: "older-runtime-version",
+      exitCode: nil
+    )
+    let wrongExitCode = try restartRequiredResponse(
+      paths: paths,
+      runtimeVersion: "older-runtime-version",
+      exitCode: 1
+    )
+
+    for (name, response) in [
+      ("exitCode missing", missingExitCode),
+      ("exitCode 1", wrongExitCode),
+    ] {
+      assertServiceStatusResponseFails(
+        response,
+        expectedDescription: "Failed to verify brokerd status: brokerd returned HTTP status 409.",
+        context: name
+      )
+    }
+  }
+
+  func testRuntimeIncompatibleConflictRequiresRunningTrue() throws {
+    let paths = BrokerRuntimePaths(stateRoot: URL(fileURLWithPath: "/tmp/selected-state"))
+    let runningFalse = try restartRequiredResponse(
+      paths: paths,
+      runtimeVersion: "older-runtime-version",
+      running: false
+    )
+    var missingRunningPayload = serviceStatusPayload(
+      paths: paths,
+      runtimeVersion: "older-runtime-version"
+    )
+    missingRunningPayload.removeValue(forKey: "running")
+    let missingRunning = try serviceStatusResponse(
+      statusCode: 409,
+      payload: missingRunningPayload
+    )
+
+    for (name, response) in [
+      ("running false", runningFalse),
+      ("running missing", missingRunning),
+    ] {
+      assertServiceStatusResponseFails(
+        response,
+        expectedDescription: "Failed to verify brokerd status: brokerd returned HTTP status 409.",
+        context: name
+      )
+    }
+  }
+
+  func testRuntimeIncompatibleConflictRejectsMissingServiceMetadata() throws {
+    let paths = BrokerRuntimePaths(stateRoot: URL(fileURLWithPath: "/tmp/selected-state"))
+    var payload = serviceStatusPayload(
+      paths: paths,
+      runtimeVersion: "older-runtime-version"
+    )
+    payload["service"] = NSNull()
+    let response = try serviceStatusResponse(statusCode: 409, payload: payload)
+
+    assertServiceStatusResponseFails(
+      response,
+      expectedDescription: "Failed to verify brokerd status: brokerd status omitted service metadata."
+    )
+  }
+
+  func testRuntimeIncompatibleConflictRejectsMalformedServiceMetadata() throws {
+    let paths = BrokerRuntimePaths(stateRoot: URL(fileURLWithPath: "/tmp/selected-state"))
+    var payload = serviceStatusPayload(
+      paths: paths,
+      runtimeVersion: "older-runtime-version"
+    )
+    payload["service"] = ["pid": "not-an-integer"]
+    let response = try serviceStatusResponse(statusCode: 409, payload: payload)
+
+    assertServiceStatusResponseFails(
+      response,
+      expectedDescription: "Failed to verify brokerd status: brokerd returned malformed status JSON."
+    )
+  }
+
+  func testUnrelatedNonSuccessResponseRemainsUnverified() throws {
+    let paths = BrokerRuntimePaths(stateRoot: URL(fileURLWithPath: "/tmp/selected-state"))
+    let response = try serviceStatusResponse(
+      statusCode: 503,
+      payload: serviceStatusPayload(
+        paths: paths,
+        runtimeVersion: runtimeVersion
+      )
+    )
+
+    assertServiceStatusResponseFails(
+      response,
+      expectedDescription: "Failed to verify brokerd status: brokerd returned HTTP status 503."
+    )
+  }
+
+  func testHealthyStatusAcceptsExactHTTP200WithRunningTrue() throws {
+    let paths = BrokerRuntimePaths(stateRoot: URL(fileURLWithPath: "/tmp/selected-state"))
+    let response = try serviceStatusResponse(
+      statusCode: 200,
+      payload: serviceStatusPayload(
+        paths: paths,
+        runtimeVersion: runtimeVersion
+      )
+    )
+
+    let service = try FileBrokerSnapshotLoader.decodeServiceStatusResponse(response)
+
+    XCTAssertEqual(service.pid, 12345)
+    XCTAssertEqual(service.runtimeVersion, runtimeVersion)
+    XCTAssertEqual(service.stateRoot, paths.stateRoot.path)
+  }
+
+  func testHealthyStatusRejectsOtherwiseValidHTTP201Response() throws {
+    let paths = BrokerRuntimePaths(stateRoot: URL(fileURLWithPath: "/tmp/selected-state"))
+    let response = try serviceStatusResponse(
+      statusCode: 201,
+      payload: serviceStatusPayload(
+        paths: paths,
+        runtimeVersion: runtimeVersion
+      )
+    )
+
+    assertServiceStatusResponseFails(
+      response,
+      expectedDescription: "Failed to verify brokerd status: brokerd returned HTTP status 201."
+    )
+  }
+
+  func testHealthyStatusRequiresRunningTrue() throws {
+    let paths = BrokerRuntimePaths(stateRoot: URL(fileURLWithPath: "/tmp/selected-state"))
+    var runningFalsePayload = serviceStatusPayload(
+      paths: paths,
+      runtimeVersion: runtimeVersion
+    )
+    runningFalsePayload["running"] = false
+    let runningFalse = try serviceStatusResponse(
+      statusCode: 200,
+      payload: runningFalsePayload
+    )
+    var missingRunningPayload = serviceStatusPayload(
+      paths: paths,
+      runtimeVersion: runtimeVersion
+    )
+    missingRunningPayload.removeValue(forKey: "running")
+    let missingRunning = try serviceStatusResponse(
+      statusCode: 200,
+      payload: missingRunningPayload
+    )
+
+    for (name, response) in [
+      ("running false", runningFalse),
+      ("running missing", missingRunning),
+    ] {
+      assertServiceStatusResponseFails(
+        response,
+        expectedDescription: "Failed to verify brokerd status: brokerd status did not confirm a running service.",
+        context: name
+      )
+    }
+  }
+
+  func testRuntimeIncompatibleConflictRejectsMismatchedServiceIdentity() async throws {
+    let staleRuntimeVersion = "older-runtime-version"
+    let paths = try makeLiveServicePaths(runtimeVersion: staleRuntimeVersion)
+    var payload = serviceStatusPayload(
+      paths: paths,
+      runtimeVersion: staleRuntimeVersion
+    )
+    var service = try XCTUnwrap(payload["service"] as? [String: Any])
+    service["stateRoot"] = "/tmp/other-simbroker-state"
+    payload["service"] = service
+    let response = try serviceStatusResponse(statusCode: 409, payload: payload)
+
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        processIdentifierExists: { pid in pid == 12345 },
+        serviceStatusProbe: { _ in
+          try FileBrokerSnapshotLoader.decodeServiceStatusResponse(response)
+        },
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected mismatched restart-required service identity to remain unverified")
+    } catch let error as BrokerSnapshotLoaderError {
+      XCTAssertEqual(
+        error.localizedDescription,
+        "Failed to verify brokerd status: brokerd status did not match the selected runtime identity."
+      )
+    } catch {
+      XCTFail("Expected BrokerSnapshotLoaderError, got \(error)")
+    }
+  }
+
+  func testUnreadableSnapshotPartialStateCarriesRestartRequiredService() async throws {
+    let staleRuntimeVersion = "older-runtime-version"
+    let paths = try makeLiveServicePaths(runtimeVersion: staleRuntimeVersion)
+    try Data("not-json".utf8).write(to: paths.snapshotURL)
+    let response = try restartRequiredResponse(
+      paths: paths,
+      runtimeVersion: staleRuntimeVersion
+    )
+
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        processIdentifierExists: { pid in pid == 12345 },
+        serviceStatusProbe: { _ in
+          try FileBrokerSnapshotLoader.decodeServiceStatusResponse(response)
+        },
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected unreadable snapshot failure")
+    } catch let error as BrokerSnapshotPartialLoadError {
+      XCTAssertTrue(error.recoveredState.serviceRequiresRestart)
+      XCTAssertEqual(error.recoveredState.service?.pid, 12345)
+      XCTAssertEqual(error.recoveredState.service?.runtimeVersion, staleRuntimeVersion)
+      XCTAssertNil(error.recoveredState.snapshot)
+      XCTAssertTrue(error.localizedDescription.contains("app-snapshot.json"))
+    } catch {
+      XCTFail("Expected BrokerSnapshotPartialLoadError, got \(error)")
+    }
+  }
+
+  func testLoaderFailsClosedWhenServiceStatusProbeReturnsMalformedBody() async throws {
+    let paths = try makeLiveServicePaths()
+
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        processIdentifierExists: { pid in pid == 12345 },
+        serviceStatusProbe: { _ in
+          try FileBrokerSnapshotLoader.decodeServiceStatusResponse(
+            BrokerHTTPResponse(bodyData: Data(#"{"service":"invalid"}"#.utf8), statusCode: 200)
+          )
+        },
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected malformed service status failure")
+    } catch {
+      XCTAssertEqual(error.localizedDescription, "Failed to verify brokerd status: brokerd returned malformed status JSON.")
+    }
+  }
+
+  func testLoaderFailsClosedWhenServiceStatusResponseOmitsServiceMetadata() async throws {
+    let paths = try makeLiveServicePaths()
+
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        processIdentifierExists: { pid in pid == 12345 },
+        serviceStatusProbe: { _ in
+          try FileBrokerSnapshotLoader.decodeServiceStatusResponse(
+            BrokerHTTPResponse(bodyData: Data(#"{"service":null}"#.utf8), statusCode: 200)
+          )
+        },
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected missing service metadata failure")
+    } catch {
+      XCTAssertEqual(error.localizedDescription, "Failed to verify brokerd status: brokerd status omitted service metadata.")
+    }
+  }
+
+  func testLoaderFailsClosedWhenHealthyLiveStatusReportsDifferentSelectedIdentity() async throws {
+    let tempRoot = try makeTempRoot()
+    let paths = BrokerRuntimePaths(
+      stateRoot: tempRoot.appending(path: "state"),
+      hostConfigURL: tempRoot.appending(path: "host-config.json")
+    )
+    try Data("{}".utf8).write(to: paths.hostConfigURL)
+    let socketURL = paths.stateRoot.appending(path: "broker.sock")
+    try FileManager.default.createDirectory(at: socketURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data().write(to: socketURL)
+    try writeJson(
+      [
+        "hostConfigPath": paths.hostConfigURL.path,
+        "pid": 12345,
+        "runtimeVersion": runtimeVersion,
+        "socketPath": socketURL.path,
+        "startedAt": "2026-04-10T00:00:00Z",
+        "stateRoot": paths.stateRoot.path,
+        "transport": "unix-http",
+      ],
+      to: paths.serviceMetadataURL
+    )
+
+    let selectedService = BrokerServiceMetadata(
+      hostConfigPath: paths.hostConfigURL.path,
+      pid: 12345,
+      socketPath: socketURL.path,
+      startedAt: "2026-04-10T00:00:00Z",
+      stateRoot: paths.stateRoot.path,
+      transport: "unix-http",
+      runtimeVersion: runtimeVersion
+    )
+    let mismatchedServices: [(String, BrokerServiceMetadata)] = [
+      (
+        "state root",
+        BrokerServiceMetadata(
+          hostConfigPath: selectedService.hostConfigPath,
+          pid: selectedService.pid,
+          socketPath: selectedService.socketPath,
+          startedAt: selectedService.startedAt,
+          stateRoot: "/tmp/other-simbroker-state",
+          transport: selectedService.transport,
+          runtimeVersion: selectedService.runtimeVersion
+        )
+      ),
+      (
+        "host config",
+        BrokerServiceMetadata(
+          hostConfigPath: "/tmp/other-host-config.json",
+          pid: selectedService.pid,
+          socketPath: selectedService.socketPath,
+          startedAt: selectedService.startedAt,
+          stateRoot: selectedService.stateRoot,
+          transport: selectedService.transport,
+          runtimeVersion: selectedService.runtimeVersion
+        )
+      ),
+      (
+        "socket",
+        BrokerServiceMetadata(
+          hostConfigPath: selectedService.hostConfigPath,
+          pid: selectedService.pid,
+          socketPath: "/tmp/other-broker.sock",
+          startedAt: selectedService.startedAt,
+          stateRoot: selectedService.stateRoot,
+          transport: selectedService.transport,
+          runtimeVersion: selectedService.runtimeVersion
+        )
+      ),
+      (
+        "recorded runtime",
+        BrokerServiceMetadata(
+          hostConfigPath: selectedService.hostConfigPath,
+          pid: selectedService.pid,
+          socketPath: selectedService.socketPath,
+          startedAt: selectedService.startedAt,
+          stateRoot: selectedService.stateRoot,
+          transport: selectedService.transport,
+          runtimeVersion: "other-recorded-runtime"
+        )
+      ),
+    ]
+
+    for (identityField, mismatchedService) in mismatchedServices {
+      do {
+        _ = try await FileBrokerSnapshotLoader(
+          paths: paths,
+          processIdentifierExists: { pid in pid == 12345 },
+          serviceStatusProbe: { _ in mismatchedService },
+          expectedRuntimeVersion: runtimeVersion
+        ).load()
+        XCTFail("Expected healthy \(identityField) mismatch to remain unverified")
+      } catch let error as BrokerSnapshotLoaderError {
+        XCTAssertEqual(
+          error.localizedDescription,
+          "Failed to verify brokerd status: brokerd status did not match the selected runtime identity.",
+          identityField
+        )
+      } catch {
+        XCTFail("Expected BrokerSnapshotLoaderError for \(identityField), got \(error)")
+      }
+    }
   }
 
   func testLoaderAcceptsServiceMetadataWhenLiveStatusMatchesRuntime() async throws {
@@ -258,6 +674,7 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
 
     XCTAssertEqual(loadedState.service?.pid, 12345)
     XCTAssertEqual(loadedState.service?.runtimeVersion, runtimeVersion)
+    XCTAssertFalse(loadedState.serviceRequiresRestart)
   }
 
   func testLoaderIgnoresLegacyServiceMetadataWithoutRuntimeVersion() async throws {
@@ -291,7 +708,7 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     XCTAssertNil(loadedState.service)
   }
 
-  func testLoaderIgnoresServiceMetadataFromDifferentRuntimeVersion() async throws {
+  func testLoaderFailsClosedWhenHealthyStatusClaimsAnUnexpectedRuntimeVersion() async throws {
     let tempRoot = try makeTempRoot()
     let paths = BrokerRuntimePaths(
       stateRoot: tempRoot.appending(path: "state"),
@@ -313,14 +730,22 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
       to: paths.serviceMetadataURL
     )
 
-    let loadedState = try await FileBrokerSnapshotLoader(
-      paths: paths,
-      processIdentifierExists: { _ in true },
-      serviceStatusProbe: { service in service },
-      expectedRuntimeVersion: runtimeVersion
-    ).load()
-
-    XCTAssertNil(loadedState.service)
+    do {
+      _ = try await FileBrokerSnapshotLoader(
+        paths: paths,
+        processIdentifierExists: { _ in true },
+        serviceStatusProbe: { service in service },
+        expectedRuntimeVersion: runtimeVersion
+      ).load()
+      XCTFail("Expected an unexpected healthy runtime version to remain unverified")
+    } catch let error as BrokerSnapshotLoaderError {
+      XCTAssertEqual(
+        error.localizedDescription,
+        "Failed to verify brokerd status: brokerd status reported an incompatible runtime version without restart-required status."
+      )
+    } catch {
+      XCTFail("Expected BrokerSnapshotLoaderError, got \(error)")
+    }
   }
 
   func testLoaderIgnoresServiceMetadataThatDoesNotMatchConfiguredSocket() async throws {
@@ -367,6 +792,102 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     return url
   }
 
+  private func makeLiveServicePaths(runtimeVersion serviceRuntimeVersion: String? = nil) throws -> BrokerRuntimePaths {
+    let tempRoot = try makeTempRoot()
+    let paths = BrokerRuntimePaths(
+      stateRoot: tempRoot.appending(path: "state"),
+      hostConfigURL: tempRoot.appending(path: "host-config.json")
+    )
+    try Data("{}".utf8).write(to: paths.hostConfigURL)
+    let socketURL = paths.stateRoot.appending(path: "broker.sock")
+    try FileManager.default.createDirectory(
+      at: socketURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try Data().write(to: socketURL)
+    try writeJson(
+      [
+        "hostConfigPath": paths.hostConfigURL.path,
+        "pid": 12345,
+        "runtimeVersion": serviceRuntimeVersion ?? runtimeVersion,
+        "socketPath": socketURL.path,
+        "startedAt": "2026-04-10T00:00:00Z",
+        "stateRoot": paths.stateRoot.path,
+        "transport": "unix-http",
+      ],
+      to: paths.serviceMetadataURL
+    )
+    return paths
+  }
+
+  private func restartRequiredResponse(
+    paths: BrokerRuntimePaths,
+    runtimeVersion serviceRuntimeVersion: String,
+    reasonCode: String = "service-runtime-incompatible",
+    running: Bool = true,
+    exitCode: Int? = 3
+  ) throws -> BrokerHTTPResponse {
+    var payload = serviceStatusPayload(
+      paths: paths,
+      runtimeVersion: serviceRuntimeVersion
+    )
+    payload["reasonCode"] = reasonCode
+    payload["running"] = running
+    if let exitCode {
+      payload["exitCode"] = exitCode
+    } else {
+      payload.removeValue(forKey: "exitCode")
+    }
+    return try serviceStatusResponse(statusCode: 409, payload: payload)
+  }
+
+  private func serviceStatusPayload(
+    paths: BrokerRuntimePaths,
+    runtimeVersion serviceRuntimeVersion: String
+  ) -> [String: Any] {
+    [
+      "exitCode": 3,
+      "reasonCode": "service-runtime-incompatible",
+      "running": true,
+      "service": [
+        "hostConfigPath": paths.hostConfigURL.path,
+        "pid": 12345,
+        "runtimeVersion": serviceRuntimeVersion,
+        "socketPath": paths.stateRoot.appending(path: "broker.sock").path,
+        "startedAt": "2026-04-10T00:00:00Z",
+        "stateRoot": paths.stateRoot.path,
+        "transport": "unix-http",
+      ],
+    ]
+  }
+
+  private func serviceStatusResponse(
+    statusCode: Int,
+    payload: [String: Any]
+  ) throws -> BrokerHTTPResponse {
+    BrokerHTTPResponse(
+      bodyData: try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+      statusCode: statusCode
+    )
+  }
+
+  private func assertServiceStatusResponseFails(
+    _ response: BrokerHTTPResponse,
+    expectedDescription: String,
+    context: String = "response",
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    do {
+      _ = try FileBrokerSnapshotLoader.decodeServiceStatusResponse(response)
+      XCTFail("Expected \(context) to remain unverified", file: file, line: line)
+    } catch let error as BrokerSnapshotLoaderError {
+      XCTAssertEqual(error.localizedDescription, expectedDescription, file: file, line: line)
+    } catch {
+      XCTFail("Expected BrokerSnapshotLoaderError for \(context), got \(error)", file: file, line: line)
+    }
+  }
+
   private func writeFixtureSnapshot(named name: String, overrides: [String: Any], to url: URL) throws {
     let fixtureURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
@@ -384,5 +905,13 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
     try data.write(to: url)
+  }
+}
+
+private enum ServiceStatusProbeTestError: LocalizedError {
+  case timedOut
+
+  var errorDescription: String? {
+    "Broker service status probe timed out."
   }
 }

@@ -24,15 +24,25 @@ struct BrokerCLIInvocationFormatter {
     stateRootPath: String,
     serviceSocketPath: String?
   ) -> String {
-    var arguments = [
-      "setup",
-      "--host-config", Self.shellQuote(hostConfigPath),
-      "--state-root", Self.shellQuote(stateRootPath),
-    ]
-    if let serviceSocketPath {
-      arguments += ["--service-socket", Self.shellQuote(serviceSocketPath)]
-    }
-    return command(arguments.joined(separator: " "))
+    command(Self.pathSelectedArguments(
+      subcommand: "setup",
+      hostConfigPath: hostConfigPath,
+      stateRootPath: stateRootPath,
+      serviceSocketPath: serviceSocketPath
+    ).joined(separator: " "))
+  }
+
+  func serviceStatusCommand(
+    hostConfigPath: String,
+    stateRootPath: String,
+    serviceSocketPath: String?
+  ) -> String {
+    command(Self.pathSelectedArguments(
+      subcommand: "service status --json",
+      hostConfigPath: hostConfigPath,
+      stateRootPath: stateRootPath,
+      serviceSocketPath: serviceSocketPath
+    ).joined(separator: " "))
   }
 
   private var invocationPrefix: String {
@@ -42,9 +52,31 @@ struct BrokerCLIInvocationFormatter {
     return "simbroker"
   }
 
+  private static func pathSelectedArguments(
+    subcommand: String,
+    hostConfigPath: String,
+    stateRootPath: String,
+    serviceSocketPath: String?
+  ) -> [String] {
+    var arguments = [
+      subcommand,
+      "--host-config", shellQuote(hostConfigPath),
+      "--state-root", shellQuote(stateRootPath),
+    ]
+    if let serviceSocketPath {
+      arguments += ["--service-socket", shellQuote(serviceSocketPath)]
+    }
+    return arguments
+  }
+
   private static func shellQuote(_ rawValue: String) -> String {
     "'\(rawValue.replacingOccurrences(of: "'", with: "'\\''"))'"
   }
+}
+
+enum BrokerUnverifiedStatusCopy {
+  static let manualFallbackText =
+    "Check exact service status without mutating it, then refresh the dashboard."
 }
 
 enum BrokerMissingCLISetupCopy {

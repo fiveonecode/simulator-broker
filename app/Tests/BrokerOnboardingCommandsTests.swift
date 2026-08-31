@@ -28,6 +28,39 @@ final class BrokerOnboardingCommandsTests: XCTestCase {
     )
   }
 
+  func testServiceStatusCommandPreservesEveryBrokerPathOverride() {
+    let formatter = BrokerCLIInvocationFormatter(executablePath: "/tmp/custom broker/simbroker")
+
+    XCTAssertEqual(
+      formatter.serviceStatusCommand(
+        hostConfigPath: "/tmp/config dir/host's config.json",
+        stateRootPath: "/tmp/state root",
+        serviceSocketPath: "/tmp/socket dir/broker.sock"
+      ),
+      "'/tmp/custom broker/simbroker' service status --json --host-config '/tmp/config dir/host'\\''s config.json' --state-root '/tmp/state root' --service-socket '/tmp/socket dir/broker.sock'"
+    )
+  }
+
+  func testServiceStatusCommandOmitsAnUnconfiguredServiceSocketOverride() {
+    let formatter = BrokerCLIInvocationFormatter(executablePath: nil)
+
+    XCTAssertEqual(
+      formatter.serviceStatusCommand(
+        hostConfigPath: "/tmp/host.json",
+        stateRootPath: "/tmp/state",
+        serviceSocketPath: nil
+      ),
+      "simbroker service status --json --host-config '/tmp/host.json' --state-root '/tmp/state'"
+    )
+  }
+
+  func testUnverifiedStatusCopyExplainsExactStatusThenRefresh() {
+    XCTAssertEqual(
+      BrokerUnverifiedStatusCopy.manualFallbackText,
+      "Check exact service status without mutating it, then refresh the dashboard."
+    )
+  }
+
   func testMissingCLICopyLeadsWithHomebrewFormulaAndRefresh() {
     XCTAssertEqual(
       BrokerMissingCLISetupCopy.brewInstallCommand,
