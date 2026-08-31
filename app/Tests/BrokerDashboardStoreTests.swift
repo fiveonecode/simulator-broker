@@ -2681,6 +2681,7 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertNil(store.setupPlan)
     XCTAssertNil(store.pendingSetupConfirmation)
     XCTAssertNil(store.lastErrorMessage)
+    XCTAssertFalse(store.serviceStatusUnverified)
   }
 
   func testStoppingStoreBeforeQueuedGuidedSetupApplyDoesNotInvokeApplyCommand() async throws {
@@ -2721,6 +2722,7 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertNil(store.setupPlan)
     XCTAssertNil(store.pendingSetupConfirmation)
     XCTAssertNil(store.lastErrorMessage)
+    XCTAssertFalse(store.serviceStatusUnverified)
   }
 
   func testStoppingStoreDuringDeferredPreviewFailureDoesNotPublishAfterStop() async throws {
