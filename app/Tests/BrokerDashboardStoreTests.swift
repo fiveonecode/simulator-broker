@@ -518,6 +518,60 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertFalse(invocations[0].arguments.contains("--apply"))
   }
 
+  func testMissingHostRefreshFailureClearsCachedLiveServiceAndPreservesOnboarding() async throws {
+    let temporaryRoot = FileManager.default.temporaryDirectory
+      .appending(path: "simbroker-missing-host-live-service-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+    let paths = BrokerRuntimePaths(
+      stateRoot: temporaryRoot.appending(path: "state"),
+      hostConfigURL: temporaryRoot.appending(path: "missing-host.json"),
+      configuredCLIURL: URL(fileURLWithPath: "/tmp/fake-simbroker")
+    )
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = BrokerLoadedState(
+      paths: paths,
+      tooling: BrokerToolingState(
+        cliPath: URL(fileURLWithPath: "/tmp/fake-simbroker"),
+        hostConfigExists: false,
+        installMetadata: nil
+      ),
+      service: BrokerServiceMetadata(
+        hostConfigPath: paths.hostConfigURL.path,
+        pid: 123,
+        socketPath: temporaryRoot.appending(path: "broker.sock").path,
+        startedAt: "2026-04-09T10:00:00Z",
+        stateRoot: paths.stateRoot.path,
+        transport: "unix-http"
+      ),
+      snapshot: snapshot
+    )
+    let store = BrokerDashboardStore(
+      loader: FailingSnapshotLoader(error: SnapshotRefreshTestError(message: "Status probe failed")),
+      commandClient: RecordingCommandClient(),
+      runtimePaths: paths
+    )
+    store.loadedState = loadedState
+    store.pendingClearPinRequest = BrokerPendingClearPinRequest(alias: "manual-1")
+
+    XCTAssertTrue(store.canSendCommands)
+    XCTAssertEqual(store.startupState, .needsHostBootstrap)
+
+    store.refreshNow()
+    try await waitUntil {
+      store.isRefreshing == false && store.lastErrorMessage == "Status probe failed"
+    }
+
+    XCTAssertNil(store.loadedState?.service)
+    XCTAssertFalse(store.loadedState?.serviceRequiresRestart ?? true)
+    XCTAssertEqual(store.loadedState?.snapshot?.generatedAt, snapshot.generatedAt)
+    XCTAssertFalse(store.serviceStatusUnverified)
+    XCTAssertEqual(store.startupState, .needsHostBootstrap)
+    XCTAssertFalse(store.canSendCommands)
+    XCTAssertNil(store.pendingClearPinRequest)
+  }
+
   func testUnreadableSnapshotWithConfirmedServiceAbsencePreservesRecovery() async throws {
     let snapshot = try loadFixture(named: "busy-snapshot")
     let readyState = makeLoadedState(snapshot: snapshot)
@@ -3100,6 +3154,68 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertEqual(store.loadedState?.snapshot?.generatedAt, originalState.snapshot?.generatedAt)
     let pendingAfterStoppedRefresh = await loader.pendingCount()
     XCTAssertEqual(pendingAfterStoppedRefresh, 1)
+
+    await loader.resumePending(at: 0, with: restartedState)
+    try await waitUntil {
+      store.isRefreshing == false
+        && store.loadedState?.snapshot?.generatedAt == restartedState.snapshot?.generatedAt
+    }
+
+    XCTAssertTrue(store.canSendCommands)
+    XCTAssertFalse(store.serviceStatusUnverified)
+    XCTAssertNil(store.lastErrorMessage)
+  }
+
+  func testManualRefreshQueuedBeforeStopDoesNotPublishAfterShutdown() async throws {
+    let originalState = makeLoadedState(
+      snapshot: try loadFixture(named: "busy-snapshot", generatedAt: "2026-04-09T10:00:00Z")
+    )
+    let loader = ControlledSnapshotLoader()
+    let store = BrokerDashboardStore(
+      loader: loader,
+      commandClient: RecordingCommandClient(),
+      runtimePaths: originalState.paths
+    )
+    store.loadedState = originalState
+
+    store.refreshNow()
+    store.stop()
+
+    try await Task.sleep(for: .milliseconds(200))
+
+    let pendingCount = await loader.pendingCount()
+    XCTAssertEqual(pendingCount, 0)
+    XCTAssertEqual(store.loadedState?.snapshot?.generatedAt, originalState.snapshot?.generatedAt)
+    XCTAssertFalse(store.isRefreshing)
+    XCTAssertFalse(store.serviceStatusUnverified)
+    XCTAssertNil(store.lastErrorMessage)
+  }
+
+  func testManualRefreshQueuedBeforeStopDoesNotPublishIntoRestartedLifecycle() async throws {
+    let originalState = makeLoadedState(
+      snapshot: try loadFixture(named: "busy-snapshot", generatedAt: "2026-04-09T10:00:00Z")
+    )
+    let restartedState = makeLoadedState(
+      snapshot: try loadFixture(named: "busy-snapshot", generatedAt: "2026-04-09T10:30:00Z")
+    )
+    let loader = ControlledSnapshotLoader()
+    let store = BrokerDashboardStore(
+      loader: loader,
+      commandClient: RecordingCommandClient(),
+      runtimePaths: originalState.paths,
+      refreshInterval: .seconds(60)
+    )
+    store.loadedState = originalState
+
+    store.refreshNow()
+    store.stop()
+    store.start()
+    defer { store.stop() }
+
+    try await waitUntil { await loader.pendingCount() >= 1 }
+    try await Task.sleep(for: .milliseconds(200))
+    let pendingCount = await loader.pendingCount()
+    XCTAssertEqual(pendingCount, 1)
 
     await loader.resumePending(at: 0, with: restartedState)
     try await waitUntil {

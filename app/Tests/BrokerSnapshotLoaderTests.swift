@@ -270,6 +270,31 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     )
   }
 
+  func testRuntimeIncompatibleConflictRequiresCanonicalExitCode() throws {
+    let paths = BrokerRuntimePaths(stateRoot: URL(fileURLWithPath: "/tmp/selected-state"))
+    let missingExitCode = try restartRequiredResponse(
+      paths: paths,
+      runtimeVersion: "older-runtime-version",
+      exitCode: nil
+    )
+    let wrongExitCode = try restartRequiredResponse(
+      paths: paths,
+      runtimeVersion: "older-runtime-version",
+      exitCode: 1
+    )
+
+    for (name, response) in [
+      ("exitCode missing", missingExitCode),
+      ("exitCode 1", wrongExitCode),
+    ] {
+      assertServiceStatusResponseFails(
+        response,
+        expectedDescription: "Failed to verify brokerd status: brokerd returned HTTP status 409.",
+        context: name
+      )
+    }
+  }
+
   func testRuntimeIncompatibleConflictRequiresRunningTrue() throws {
     let paths = BrokerRuntimePaths(stateRoot: URL(fileURLWithPath: "/tmp/selected-state"))
     let runningFalse = try restartRequiredResponse(
@@ -799,7 +824,8 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     paths: BrokerRuntimePaths,
     runtimeVersion serviceRuntimeVersion: String,
     reasonCode: String = "service-runtime-incompatible",
-    running: Bool = true
+    running: Bool = true,
+    exitCode: Int? = 3
   ) throws -> BrokerHTTPResponse {
     var payload = serviceStatusPayload(
       paths: paths,
@@ -807,6 +833,11 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     )
     payload["reasonCode"] = reasonCode
     payload["running"] = running
+    if let exitCode {
+      payload["exitCode"] = exitCode
+    } else {
+      payload.removeValue(forKey: "exitCode")
+    }
     return try serviceStatusResponse(statusCode: 409, payload: payload)
   }
 
@@ -815,6 +846,7 @@ final class BrokerSnapshotLoaderTests: XCTestCase {
     runtimeVersion serviceRuntimeVersion: String
   ) -> [String: Any] {
     [
+      "exitCode": 3,
       "reasonCode": "service-runtime-incompatible",
       "running": true,
       "service": [

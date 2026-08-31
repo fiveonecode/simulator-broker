@@ -514,8 +514,9 @@ final class BrokerDashboardStore {
   }
 
   func refreshNow() {
+    let stopGeneration = storeStopGeneration
     Task {
-      await refresh()
+      await refresh(expectedStopGeneration: stopGeneration)
     }
   }
 
@@ -1146,6 +1147,8 @@ final class BrokerDashboardStore {
           revokeCachedServiceAuthority(preserving: loadedState)
         } else if loadedState == nil, hostConfigurationCouldAuthorizeService {
           markServiceStatusUnverified()
+        } else if let loadedState, loadedState.service != nil || loadedState.serviceRequiresRestart {
+          clearCachedServiceAuthorityPreservingOnboarding(preserving: loadedState)
         }
       }
       logRefreshFailure(mode: refreshMode, error: error)
@@ -1313,6 +1316,16 @@ final class BrokerDashboardStore {
   }
 
   private func revokeCachedServiceAuthority(preserving loadedState: BrokerLoadedState) {
+    replaceCachedServiceAuthority(preserving: loadedState)
+    markServiceStatusUnverified()
+  }
+
+  private func clearCachedServiceAuthorityPreservingOnboarding(preserving loadedState: BrokerLoadedState) {
+    replaceCachedServiceAuthority(preserving: loadedState)
+    advanceServiceAuthorityEpoch()
+  }
+
+  private func replaceCachedServiceAuthority(preserving loadedState: BrokerLoadedState) {
     self.loadedState = BrokerLoadedState(
       paths: loadedState.paths,
       tooling: loadedState.tooling,
@@ -1320,7 +1333,6 @@ final class BrokerDashboardStore {
       snapshot: loadedState.snapshot,
       serviceRequiresRestart: false
     )
-    markServiceStatusUnverified()
   }
 
   private func markServiceStatusUnverified() {

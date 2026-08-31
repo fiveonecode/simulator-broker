@@ -268,6 +268,7 @@ protocol BrokerSnapshotLoading: Sendable {
 }
 
 private struct BrokerSnapshotServiceStatusEnvelope: Decodable, Sendable {
+  let exitCode: Int?
   let reasonCode: String?
   let running: Bool?
   let service: BrokerServiceMetadata?
@@ -485,7 +486,8 @@ actor FileBrokerSnapshotLoader: BrokerSnapshotLoading {
     }
 
     guard envelope.reasonCode == "service-runtime-incompatible",
-          envelope.running == true else {
+          envelope.running == true,
+          envelope.exitCode == 3 else {
       throw BrokerSnapshotLoaderError.unverifiedServiceStatus(
         "brokerd returned HTTP status \(response.statusCode)."
       )
