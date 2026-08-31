@@ -258,6 +258,12 @@ if ! printf '%s  %s\n' "$archive_hash" "${archive_name}.tar.gz" > "$candidate_ch
   exit 1
 fi
 
+# Normalize both complete candidates before either final name becomes visible.
+if ! chmod 0644 "$candidate_tarball" "$candidate_checksum" 2>/dev/null; then
+  echo "Unable to publish readable CLI artifacts." >&2
+  exit 1
+fi
+
 if ! mv "$candidate_tarball" "$tarball" 2>/dev/null; then
   echo "Unable to publish the CLI tarball." >&2
   exit 1
@@ -268,11 +274,6 @@ if ! mv "$candidate_checksum" "$checksum" 2>/dev/null; then
   exit 1
 fi
 candidate_checksum=""
-# mktemp candidates are 0600; restore umask-like public readability after rename.
-if ! chmod 0644 "$tarball" "$checksum" 2>/dev/null; then
-  echo "Unable to publish readable CLI artifacts." >&2
-  exit 1
-fi
 published=true
 
 printf '%s\n' "$tarball"

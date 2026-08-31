@@ -11,6 +11,7 @@ globs:
   - scripts/package_local.sh
   - scripts/package_smoke.sh
   - scripts/test_app.sh
+  - scripts/validate_cli_tar.mjs
 owner: ios-dev
 required_skills:
   - apple-doc-research
@@ -36,6 +37,7 @@ allowed_paths:
   - scripts/package_local.sh
   - scripts/package_smoke.sh
   - scripts/test_app.sh
+  - scripts/validate_cli_tar.mjs
   - spec/**
   - .agents/**
 forbidden_paths: []

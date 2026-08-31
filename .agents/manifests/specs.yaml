@@ -19,7 +19,6 @@ globs:
   - Formula/**
   - packages/simbroker/**
   - scripts/package_cli.sh
-  - scripts/validate_cli_tar.mjs
   - scripts/package_cask_zip.sh
   - scripts/package_npm.sh
   - scripts/sync_homebrew_tap.sh

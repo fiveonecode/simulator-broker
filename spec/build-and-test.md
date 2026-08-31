@@ -70,13 +70,13 @@ A first extracted implementation slice now exists:
   AppleDouble `._*` metadata is rejected rather than silently excluded. The
   script removes any old final tarball and checksum at rebuild start, creates a
   private candidate, and invokes `scripts/validate_cli_tar.mjs` to inspect raw
-  USTAR headers before checksum generation or final publication. Publication
-  then sets the final tarball and checksum to mode `0644` so a shared output
-  directory remains readable; candidates stay private until that rename. The
-  final archive therefore contains no AppleDouble or PAX records and normalizes
-  every header to numeric uid/gid `0` without host user or group names;
-  newcomer commands invoke `./simulator-broker-<version>-cli/bin/simbroker`,
-  not `./bin/simbroker`
+  USTAR headers before checksum generation or final publication. Once both
+  hidden candidates are complete, publication sets them to mode `0644` before
+  either final name becomes visible so a shared output directory remains
+  readable. The final archive therefore contains no AppleDouble or PAX records
+  and normalizes every header to numeric uid/gid `0` without host user or group
+  names; newcomer commands invoke
+  `./simulator-broker-<version>-cli/bin/simbroker`, not `./bin/simbroker`
 - `Formula/simbroker.rb` installs that GitHub Release tarball through Homebrew.
   `brew install fiveonecode/simulator-broker/simbroker` clones
   `fiveonecode/homebrew-simulator-broker`. `scripts/sync_homebrew_tap.sh`
@@ -186,7 +186,7 @@ The current deterministic verification contract includes implementation tests pl
 | SB-PKG-CLI-001 | `scripts/package_cli.sh` treats static README Markdown as literal payload data and interpolates only the validated package version and derived archive directory. README command examples must never execute or contribute captured stdout while the archive is built. | `docs/test/front-door.test.mjs` `package_cli.sh writes a runnable CLI tarball without tests or the app` fake-command sentinel |
 | SB-PKG-CLI-002 | The README extracted from the final CLI tarball contains the literal `` `npm run package:npm` `` example and contains neither the exact packaging checkout root nor command-fixture output. | The same extracted-archive test |
 | SB-PKG-CLI-003 | The final CLI gzip contains only regular-file and directory USTAR records under the single versioned root. Every raw header has numeric uid/gid `0` and empty user/group names; AppleDouble `._*`, PAX global/extended headers, and serialized xattrs are forbidden. Packaging accepts only stable GNU tar or bsdtar version identities and selects implementation-specific ownership and metadata flags. Source and staged AppleDouble paths fail before archive/checksum publication; a raw-invalid candidate also fails before publication; stale final tar/checksum files are removed at rebuild start. Failure diagnostics name only stable public payload labels. | `scripts/validate_cli_tar.mjs`, imported by `docs/test/front-door.test.mjs`; `SB-PKG-CLI-003 raw CLI tar validation rejects hidden metadata and host ownership`; the runnable package test; and the GNU-on-Darwin, unknown-tar, source/staged AppleDouble, and raw-invalid candidate regressions |
-| SB-PKG-CLI-004 | After a valid candidate is accepted, `scripts/package_cli.sh` publishes the final tarball and checksum with mode `0644`. `mktemp` candidates remain private until that rename. | `docs/test/front-door.test.mjs` `package_cli.sh writes a runnable CLI tarball without tests or the app` published-mode assertions |
+| SB-PKG-CLI-004 | After a valid archive candidate and its checksum are complete, `scripts/package_cli.sh` sets both hidden candidates to mode `0644` before either final rename. The published tarball and checksum must therefore both have mode `0644`. | `docs/test/front-door.test.mjs` `package_cli.sh writes a runnable CLI tarball without tests or the app` published-mode assertions |
 
 These are final-payload checks because a source-only public-surface scan cannot
 observe shell interpretation during archive generation. Any command execution,
