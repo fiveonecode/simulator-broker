@@ -40,7 +40,8 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
   `validate.sh` full-repository gate, app generation, repo-local install,
   CLI-only install (`install_local.sh --cli-only`), CLI tarball packaging
   (`package_cli.sh`) plus its raw USTAR validator (`validate_cli_tar.mjs`),
-  Homebrew cask zip (`package_cask_zip.sh`), npm CLI packing (`package_npm.sh`), Homebrew tap
+  Homebrew cask zip (`package_cask_zip.sh`) plus its standard-library candidate
+  validator (`validate_cask_zip.py`), npm CLI packing (`package_npm.sh`), Homebrew tap
   sync (`sync_homebrew_tap.sh`), distribution install, portable package creation, smoke
   verification, and harness bootstrap
 

@@ -7,10 +7,12 @@ globs:
   - scripts/install_local.sh
   - scripts/install_smoke.sh
   - scripts/installed_app_smoke_evidence.mjs
+  - scripts/package_cask_zip.sh
   - scripts/package_distribution.sh
   - scripts/package_local.sh
   - scripts/package_smoke.sh
   - scripts/test_app.sh
+  - scripts/validate_cask_zip.py
   - scripts/validate_cli_tar.mjs
 owner: ios-dev
 required_skills:
@@ -33,10 +35,12 @@ allowed_paths:
   - scripts/install_local.sh
   - scripts/install_smoke.sh
   - scripts/installed_app_smoke_evidence.mjs
+  - scripts/package_cask_zip.sh
   - scripts/package_distribution.sh
   - scripts/package_local.sh
   - scripts/package_smoke.sh
   - scripts/test_app.sh
+  - scripts/validate_cask_zip.py
   - scripts/validate_cli_tar.mjs
   - spec/**
   - .agents/**
