@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -21,6 +22,135 @@ const customReleaseAssetTemplates = [
   "simbroker-<version>.tgz",
   "Simulator-Broker-<version>.zip",
 ];
+
+const tarBlockSize = 512;
+
+function tarHeaderText(header, offset, length) {
+  const field = header.subarray(offset, offset + length);
+  const nul = field.indexOf(0);
+  return field.subarray(0, nul === -1 ? field.length : nul).toString("utf8");
+}
+
+function tarHeaderOctal(header, offset, length, fieldName, entryName) {
+  const value = tarHeaderText(header, offset, length).trim();
+  assert.match(value, /^[0-7]+$/, `${entryName} has invalid ${fieldName} tar header value`);
+  return Number.parseInt(value, 8);
+}
+
+function parsePaxRecords(payload, entryName) {
+  const records = [];
+  let offset = 0;
+
+  while (offset < payload.length) {
+    const separator = payload.indexOf(0x20, offset);
+    assert.notEqual(separator, -1, `${entryName} has a malformed PAX record length`);
+    const lengthText = payload.subarray(offset, separator).toString("ascii");
+    assert.match(lengthText, /^[1-9][0-9]*$/, `${entryName} has a malformed PAX record length`);
+    const recordEnd = offset + Number.parseInt(lengthText, 10);
+    assert.ok(recordEnd <= payload.length, `${entryName} has a truncated PAX record`);
+    assert.equal(payload[recordEnd - 1], 0x0a, `${entryName} PAX record must end with a newline`);
+
+    const record = payload.subarray(separator + 1, recordEnd - 1).toString("utf8");
+    const equals = record.indexOf("=");
+    assert.ok(equals > 0, `${entryName} has a malformed PAX key/value record`);
+    records.push({ key: record.slice(0, equals), value: record.slice(equals + 1) });
+    offset = recordEnd;
+  }
+
+  return records;
+}
+
+function readRawTarEntries(tarball) {
+  const archive = gunzipSync(fs.readFileSync(tarball));
+  assert.equal(archive.length % tarBlockSize, 0, "CLI tarball must contain complete 512-byte blocks");
+  const entries = [];
+  let offset = 0;
+  let foundTrailer = false;
+
+  while (offset + tarBlockSize <= archive.length) {
+    const header = archive.subarray(offset, offset + tarBlockSize);
+    if (header.every((byte) => byte === 0)) {
+      assert.ok(
+        archive.length - offset >= tarBlockSize * 2,
+        "CLI tarball must end with two zero blocks",
+      );
+      assert.ok(
+        archive.subarray(offset).every((byte) => byte === 0),
+        "CLI tarball has non-zero data after its zero-block trailer",
+      );
+      foundTrailer = true;
+      break;
+    }
+
+    const name = tarHeaderText(header, 0, 100);
+    const prefix = tarHeaderText(header, 345, 155);
+    const entryName = prefix ? `${prefix}/${name}` : name;
+    const size = tarHeaderOctal(header, 124, 12, "size", entryName);
+    const storedChecksum = tarHeaderOctal(header, 148, 8, "checksum", entryName);
+    const computedChecksum = header.reduce(
+      (sum, byte, index) => sum + (index >= 148 && index < 156 ? 0x20 : byte),
+      0,
+    );
+    assert.equal(storedChecksum, computedChecksum, `${entryName} has an invalid tar header checksum`);
+
+    const payloadStart = offset + tarBlockSize;
+    const payloadEnd = payloadStart + size;
+    assert.ok(payloadEnd <= archive.length, `${entryName} extends beyond the CLI tarball`);
+    const typeFlag = String.fromCharCode(header[156] || 0x30);
+    const payload = archive.subarray(payloadStart, payloadEnd);
+    entries.push({
+      gid: tarHeaderOctal(header, 116, 8, "gid", entryName),
+      gname: tarHeaderText(header, 297, 32),
+      magic: header.subarray(257, 263).toString("latin1"),
+      name: entryName,
+      paxRecords: typeFlag === "x" || typeFlag === "g" ? parsePaxRecords(payload, entryName) : [],
+      typeFlag,
+      uid: tarHeaderOctal(header, 108, 8, "uid", entryName),
+      uname: tarHeaderText(header, 265, 32),
+      version: header.subarray(263, 265).toString("latin1"),
+    });
+    offset = payloadStart + Math.ceil(size / tarBlockSize) * tarBlockSize;
+  }
+
+  assert.equal(foundTrailer, true, "CLI tarball must end with a zero-block trailer");
+  return entries;
+}
+
+function assertPortableCliTarEntries(entries) {
+  assert.ok(entries.length > 0, "CLI tarball must contain payload entries");
+  assert.equal(new Set(entries.map((entry) => entry.name)).size, entries.length, "CLI tar paths must be unique");
+
+  for (const entry of entries) {
+    assert.ok(["0", "5"].includes(entry.typeFlag), `CLI tar contains non-payload type ${entry.typeFlag}: ${entry.name}`);
+    assert.equal(
+      entry.name.endsWith("/") && entry.typeFlag !== "5",
+      false,
+      `only CLI tar directories may have a trailing slash: ${entry.name}`,
+    );
+    const normalizedName = entry.name.endsWith("/") ? entry.name.slice(0, -1) : entry.name;
+    const segments = normalizedName.split("/");
+    assert.equal(segments[0], cliArchiveDirectory, `CLI tar entry must stay under ${cliArchiveDirectory}: ${entry.name}`);
+    assert.equal(
+      segments.some((segment) => segment === "" || segment === "." || segment === ".."),
+      false,
+      `CLI tar contains an unsafe path segment: ${entry.name}`,
+    );
+    assert.deepEqual(entry.paxRecords, [], `CLI tar contains PAX metadata: ${entry.name}`);
+    assert.equal(entry.name.split("/").some((segment) => segment.startsWith("._")), false, `CLI tar contains AppleDouble metadata: ${entry.name}`);
+    assert.equal(entry.magic, "ustar\0", `${entry.name} must use exact POSIX USTAR magic`);
+    assert.equal(entry.version, "00", `${entry.name} must use exact POSIX USTAR version 00`);
+    assert.equal(entry.uid, 0, `${entry.name} must have normalized uid 0`);
+    assert.equal(entry.gid, 0, `${entry.name} must have normalized gid 0`);
+    assert.equal(entry.uname, "", `${entry.name} must not expose a host user name`);
+    assert.equal(entry.gname, "", `${entry.name} must not expose a host group name`);
+  }
+
+  const rootEntries = entries.filter(
+    (entry) => entry.name === cliArchiveDirectory || entry.name === `${cliArchiveDirectory}/`,
+  );
+  assert.equal(rootEntries.length, 1, `CLI tarball must contain exactly one ${cliArchiveDirectory} root entry`);
+  assert.equal(rootEntries[0].typeFlag, "5", "CLI tarball root entry must be a directory");
+}
 
 function assertExactCustomReleaseAssetInventory(markdown) {
   const marker = "A complete tagged Alpha has exactly four custom GitHub Release assets:";
@@ -445,7 +575,7 @@ test("CHANGELOG and package.json name the Alpha version", () => {
   assert.ok(changelog.includes("scripts/package_cli.sh"));
 });
 
-test("public CI splits Ubuntu core suites from macOS client tests and skips the app suite", () => {
+test("public CI runs docs on Ubuntu and macOS while splitting core from client tests", () => {
   const ci = readRepoFile(".github/workflows/ci.yml");
 
   assertHostedNodeActionContract(ci, {
@@ -459,6 +589,7 @@ test("public CI splits Ubuntu core suites from macOS client tests and skips the 
   assert.match(ci, /timeout-minutes:\s*15/);
   assert.equal(ci.includes("npm run verify:public-surface"), false);
   assertWorkflowJobRunsExactCommand(ci, "node-ubuntu", "npm run test:docs");
+  assertWorkflowJobRunsExactCommand(ci, "node-macos", "npm run test:docs");
   assert.ok(ci.includes("npm run test:broker-core"));
   const clientTestRun = ci
     .split("\n")
@@ -588,6 +719,7 @@ test("public PR and tagged-release docs gates fail closed when the command is mi
   assert.match(ci, /^  pull_request:\s*$/m);
   assert.match(release, /^    tags:\s*$/m);
   assertWorkflowJobRunsExactCommand(ci, "node-ubuntu", "npm run test:docs");
+  assertWorkflowJobRunsExactCommand(ci, "node-macos", "npm run test:docs");
   assertWorkflowJobRunsExactCommand(release, "release", "npm run test:docs");
   assert.ok(
     release.indexOf("run: npm run test:docs") < release.indexOf("npm run package:cli"),
@@ -595,12 +727,22 @@ test("public PR and tagged-release docs gates fail closed when the command is mi
   );
 
   const ciWithoutDocs = ci.replace("run: npm run test:docs", "run: npm run test:broker-core");
+  const macJob = workflowJobSection(ci, "node-macos");
+  const ciWithoutMacDocs = ci.replace(
+    macJob,
+    macJob.replace("run: npm run test:docs", "run: npm run test:client"),
+  );
   const releaseWithoutDocs = release.replace("run: npm run test:docs", "run: npm run test:broker-core");
   assert.notEqual(ciWithoutDocs, ci, "negative CI fixture must remove the docs command");
+  assert.notEqual(ciWithoutMacDocs, ci, "negative macOS CI fixture must remove the docs command");
   assert.notEqual(releaseWithoutDocs, release, "negative release fixture must remove the docs command");
   assert.throws(
     () => assertWorkflowJobRunsExactCommand(ciWithoutDocs, "node-ubuntu", "npm run test:docs"),
     /node-ubuntu must run npm run test:docs exactly once/,
+  );
+  assert.throws(
+    () => assertWorkflowJobRunsExactCommand(ciWithoutMacDocs, "node-macos", "npm run test:docs"),
+    /node-macos must run npm run test:docs exactly once/,
   );
   assert.throws(
     () => assertWorkflowJobRunsExactCommand(releaseWithoutDocs, "release", "npm run test:docs"),
@@ -787,6 +929,94 @@ test("root package stays private and package_npm.sh packs a runnable simbroker b
   assert.equal(fs.existsSync(path.join(installDir, "lib/node_modules/simbroker/client/test")), false);
 });
 
+test("SB-PKG-CLI-003 raw CLI tar validation rejects hidden metadata and host ownership", () => {
+  const paxRecords = parsePaxRecords(
+    Buffer.from("57 LIBARCHIVE.xattr.com.apple.provenance=AQIAnFJB7p5GquY\n"),
+    `${cliArchiveDirectory}/PaxHeader/README.md`,
+  );
+  assert.deepEqual(paxRecords, [{
+    key: "LIBARCHIVE.xattr.com.apple.provenance",
+    value: "AQIAnFJB7p5GquY",
+  }]);
+
+  const portableEntry = {
+    gid: 0,
+    gname: "",
+    magic: "ustar\0",
+    name: `${cliArchiveDirectory}/README.md`,
+    paxRecords: [],
+    typeFlag: "0",
+    uid: 0,
+    uname: "",
+    version: "00",
+  };
+  assert.throws(
+    () => assertPortableCliTarEntries([{
+      ...portableEntry,
+      name: `${cliArchiveDirectory}/PaxHeader/README.md`,
+      paxRecords,
+      typeFlag: "x",
+    }]),
+    /non-payload type x/,
+  );
+  assert.throws(
+    () => assertPortableCliTarEntries([{
+      ...portableEntry,
+      name: `${cliArchiveDirectory}/._README.md`,
+    }]),
+    /AppleDouble metadata/,
+  );
+  assert.throws(
+    () => assertPortableCliTarEntries([{
+      ...portableEntry,
+      gid: 20,
+      gname: "staff",
+      uid: 501,
+      uname: "local-builder",
+    }]),
+    /normalized uid 0/,
+  );
+  assert.throws(
+    () => assertPortableCliTarEntries([{
+      ...portableEntry,
+      magic: "ustar ",
+      version: " \0",
+    }]),
+    /exact POSIX USTAR magic/,
+  );
+  assert.throws(
+    () => assertPortableCliTarEntries([{
+      ...portableEntry,
+      version: " \0",
+    }]),
+    /exact POSIX USTAR version 00/,
+  );
+  assert.throws(
+    () => assertPortableCliTarEntries([{
+      ...portableEntry,
+      name: `${cliArchiveDirectory}/README.md/`,
+    }]),
+    /only CLI tar directories may have a trailing slash/,
+  );
+  assert.throws(
+    () => assertPortableCliTarEntries([{
+      ...portableEntry,
+      name: cliArchiveDirectory,
+    }]),
+    /CLI tarball root entry must be a directory/,
+  );
+  for (const name of [
+    `${cliArchiveDirectory}/../README.md`,
+    `${cliArchiveDirectory}/./README.md`,
+    `${cliArchiveDirectory}//README.md`,
+  ]) {
+    assert.throws(
+      () => assertPortableCliTarEntries([{ ...portableEntry, name }]),
+      /unsafe path segment/,
+    );
+  }
+});
+
 test("package_cli.sh writes a runnable CLI tarball without tests or the app", () => {
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-cli-"));
   const fakeBin = path.join(outputDir, "fake-bin");
@@ -818,6 +1048,7 @@ printf '%s\n' "$SIMBROKER_TEST_CHECKOUT_ROOT/artifacts/npm/should-not-appear.tgz
   const checksum = `${tarball}.sha256`;
   assert.equal(fs.existsSync(tarball), true, result.stdout);
   assert.equal(fs.existsSync(checksum), true, result.stdout);
+  assertPortableCliTarEntries(readRawTarEntries(tarball));
 
   const extractDir = path.join(outputDir, "extract");
   fs.mkdirSync(extractDir);

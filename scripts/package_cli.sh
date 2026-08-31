@@ -93,7 +93,17 @@ output_dir="$(cd "$output_dir" && pwd -P)"
 tarball="$output_dir/${archive_name}.tar.gz"
 checksum="$output_dir/${archive_name}.tar.gz.sha256"
 
-tar -C "$stage" -czf "$tarball" "$archive_name"
+tar_options=(
+  --format ustar
+  --owner 0
+  --group 0
+  --numeric-owner
+)
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  tar_options+=(--no-mac-metadata --no-xattrs)
+fi
+
+COPYFILE_DISABLE=1 tar "${tar_options[@]}" -C "$stage" -czf "$tarball" "$archive_name"
 
 if command -v shasum >/dev/null 2>&1; then
   (cd "$output_dir" && shasum -a 256 "${archive_name}.tar.gz" > "${archive_name}.tar.gz.sha256")

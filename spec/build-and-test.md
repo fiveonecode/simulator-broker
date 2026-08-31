@@ -61,8 +61,11 @@ A first extracted implementation slice now exists:
   opt-in idle policy is absent; newcomer guidance names `idle status` and the
   human-attributed `idle enable` command without choosing a duration
 - `scripts/package_cli.sh` packages the Node CLI runtime into a versioned
-  top-level directory inside a tarball without XcodeGen or an app build;
-  newcomer commands invoke
+  top-level directory inside a portable USTAR tarball without XcodeGen or an
+  app build. The archive suppresses macOS COPYFILE and extended-attribute
+  metadata, contains no AppleDouble or PAX records, and normalizes every
+  header to numeric uid/gid `0` without host user or group names; newcomer
+  commands invoke
   `./simulator-broker-<version>-cli/bin/simbroker`, not `./bin/simbroker`
 - `Formula/simbroker.rb` installs that GitHub Release tarball through Homebrew.
   `brew install fiveonecode/simulator-broker/simbroker` clones
@@ -89,8 +92,9 @@ A first extracted implementation slice now exists:
   distribution payload instead of `Simulator Broker.app`.
 - public GitHub-hosted CI splits by machine: Ubuntu runs the managed-skill
   ownership check, `test:docs`, `test:broker-core`, and
-  `test:harness-adoption` with a 10-minute budget; macOS runs `test:client`
-  with a 15-minute budget. Neither job runs `test:app` or
+  `test:harness-adoption` with a 10-minute budget; macOS runs `test:docs` and
+  `test:client` with a 15-minute budget. Running `test:docs` on both hosts
+  exercises CLI packaging with GNU tar and bsdtar. Neither job runs `test:app` or
   `verify:public-surface`. Home-path leak scanning
   uses `os.homedir()` of the current machine, so each runner searches its own
   account home, not the operator home. Keep runner-home examples symbolic:
@@ -165,17 +169,24 @@ A first extracted implementation slice now exists:
 
 The current deterministic verification contract includes implementation tests plus spec integrity.
 
-### CLI archive README contract
+### CLI archive payload contract
 
 | ID | Requirement | Verifier |
 | --- | --- | --- |
 | SB-PKG-CLI-001 | `scripts/package_cli.sh` treats static README Markdown as literal payload data and interpolates only the validated package version and derived archive directory. README command examples must never execute or contribute captured stdout while the archive is built. | `docs/test/front-door.test.mjs` `package_cli.sh writes a runnable CLI tarball without tests or the app` fake-command sentinel |
 | SB-PKG-CLI-002 | The README extracted from the final CLI tarball contains the literal `` `npm run package:npm` `` example and contains neither the exact packaging checkout root nor command-fixture output. | The same extracted-archive test |
+| SB-PKG-CLI-003 | The final CLI gzip contains only regular-file and directory USTAR records under the single versioned root. Every raw header has numeric uid/gid `0` and empty user/group names; AppleDouble `._*`, PAX global/extended headers, and serialized xattrs are forbidden. | `docs/test/front-door.test.mjs` `SB-PKG-CLI-003 raw CLI tar validation rejects hidden metadata and host ownership` plus the final archive assertion in `package_cli.sh writes a runnable CLI tarball without tests or the app` |
 
 These are final-payload checks because a source-only public-surface scan cannot
 observe shell interpretation during archive generation. Any command execution,
 captured output, or exact checkout-root leak fails `test:docs` before release
-packaging. This contract does not prohibit generic temporary-directory guidance.
+packaging. The structure verifier decompresses the gzip and reads raw 512-byte
+tar headers, validates their checksums, and parses any PAX body directly;
+ordinary macOS tar listings and extractions are not acceptable evidence because
+they can consume or hide AppleDouble and extended-attribute records. The
+negative verifier covers PAX xattrs, AppleDouble paths, and non-normalized host
+ownership on both macOS and Ubuntu. This contract does not prohibit generic
+temporary-directory guidance.
 
 ### Release asset contract
 
@@ -237,8 +248,8 @@ Codex Autopilot is a separate origin-default-branch gate. It runs only the
 command in `autopilot.yml` (`npm test`). Autopilot does not read `.agents` or
 `WORKFLOW.md` as its contract. Missing origin `autopilot.yml` is not skip.
 Local full-repo validation remains `./scripts/validate.sh`. GitHub-hosted CI
-stays the split Ubuntu/macOS jobs, and both public pull requests and tagged
-releases run `npm run test:docs`. Pull-request CI still does not run
+stays the split Ubuntu/macOS jobs. Public pull requests run `npm run test:docs`
+on both hosts, and tagged releases run it before packaging. Pull-request CI still does not run
 `test:app` or `verify:public-surface`; the release workflow also does not run
 `test:app`.
 
@@ -505,11 +516,11 @@ Add stronger profiles next for:
 - `./script/build_and_run.sh --telemetry` proves the app emits filterable `AppLifecycle` and `Refresh` unified logs during a live run, while `bash scripts/test_app.sh` exercises `Setup` and `Commands` events in focused app tests
 - the installer prints the installed CLI path, app path when an app was installed, env helper path, any current-shell PATH warning, PATH persist result, and the next command (`command -v simbroker` after persist, or `source "<env-helper>"` when persist is skipped)
 - `bash scripts/install_local.sh --cli-only` installs the CLI runtime without invoking `xcodegen` or `xcodebuild` and without requiring an app bundle
-- `npm run package:cli` writes `artifacts/cli/simulator-broker-<version>-cli.tar.gz` plus a SHA-256 checksum, does not invoke XcodeGen or `xcodebuild`, and its extracted README preserves literal Markdown without executing package commands or capturing the exact checkout root
+- `npm run package:cli` writes `artifacts/cli/simulator-broker-<version>-cli.tar.gz` plus a SHA-256 checksum, does not invoke XcodeGen or `xcodebuild`, emits only normalized raw USTAR payload records without macOS metadata or host ownership, and its extracted README preserves literal Markdown without executing package commands or capturing the exact checkout root
 - `npm run package:cask-zip` writes `artifacts/distribution/Simulator-Broker-<version>.zip` plus a SHA-256 checksum from a Developer ID-signed, stapled `Simulator Broker.app` using `ditto -c -k --keepParent`. It verifies the sealed signature with `codesign --verify --deep --strict`, requires `CFBundleIdentifier`/`Identifier` `dev.codex.simulator-broker-app`, runs `xcrun stapler validate` before writing the zip, and does not build, sign, notarize, staple, tag, or publish
 - `.github/workflows/ci.yml` runs `test:docs`, `test:broker-core`, and
-  `test:harness-adoption` on `ubuntu-latest` (10 minutes) and `test:client` on
-  `macos-latest` (15 minutes). `.github/workflows/release.yml` runs
+  `test:harness-adoption` on `ubuntu-latest` (10 minutes), then runs `test:docs`
+  and `test:client` on `macos-latest` (15 minutes). `.github/workflows/release.yml` runs
   `test:docs` after tag/version validation and before package creation. These
   workflows do not run `npm run test:app`; pull-request CI does not run
   `npm run verify:public-surface`
