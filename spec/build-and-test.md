@@ -116,7 +116,22 @@ A first extracted implementation slice now exists:
   staging or signing, including with `--skip-build`, the script requires the
   app's `SimulatorBrokerExpectedRuntimeVersion` `Info.plist` value to exactly
   match the root `package.json` version. A stale or missing value fails before
-  `codesign` so a version bump cannot silently reuse an older app build.
+  `codesign` so a version bump cannot silently reuse an older app build. The
+  XcodeGen Release configuration generates a `dwarf-with-dsym` companion and
+  deployment-postprocesses the app executable with debugging-symbol stripping;
+  Swift-symbol stripping stays disabled. This removes source and DerivedData
+  paths from the shipped executable while retaining the external dSYM for
+  symbolication. Immediately before signing, `package_distribution.sh`
+  resolves Xcode's visible source root, requires exactly the `arm64` and
+  `x86_64` slices, raw-byte scans each slice plus the universal container for
+  that exact root, and rejects root-independently when either slice still has
+  debugging-symbol records, absolute-path symbol names, or embedded `__DWARF`.
+  The structural checks keep `--skip-build` safe when a same-version app came
+  from a checkout that was subsequently moved or renamed.
+  This binary gate is intentionally separate from the text public-surface
+  scanner because NUL-containing Mach-O metadata and `strings` output can both
+  miss the embedded paths. The dSYM remains in DerivedData and is not copied
+  into the distribution payload or archive.
   The default public-surface scan reads index
   blobs only for dirty or missing worktree files. `git diff-files` exit `1`
   is the dirty-name list; only a real git failure fails the scan. A clean
@@ -476,6 +491,15 @@ Add stronger profiles next for:
   home path or prohibited local broker artifact and applies optional rules from
   ignored `.public-safety.local` without printing matched values
 - `npm run test:app:build` isolates compile-time failures with the same XcodeGen and derived-data settings used by the full suite
+- Release app builds create both `arm64` and `x86_64` slices, retain a
+  UUID-matched external dSYM, and strip debugging symbols from only the shipped
+  executable. `script/verify_release_app_binary.sh` requires exactly those two
+  architectures, raw-byte scans both slices and the universal container for
+  the exact Xcode-visible build root, and independently rejects retained
+  debugging-symbol records. Its compiled fixture proves clean, arm64-only
+  leak, x86_64-only leak, universal-container-only leak, extra or missing
+  architecture, and stale unstripped-build outcomes without printing the
+  forbidden path
 - `npm run test:app:focus -- <filter>` reruns one named XCTest scope and writes a stable `xcresult` bundle under `artifacts/app-tests/` unless the caller overrides the path explicitly
 - `./script/build_and_run.sh` is the canonical local macOS app run loop, stops only the app instance launched from the current checkout's built app path, and `./script/build_and_run.sh --verify` proves that built app launches as a foreground `.app`
 - `./script/build_and_run.sh --telemetry` proves the app emits filterable `AppLifecycle` and `Refresh` unified logs during a live run, while `bash scripts/test_app.sh` exercises `Setup` and `Commands` events in focused app tests

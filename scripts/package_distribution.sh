@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 source "$repo_root/script/require_macos_build_prereqs.sh"
 output_dir="$repo_root/artifacts/distribution"
 archive_name="SimulatorBroker-macOS-distribution"
@@ -13,6 +13,7 @@ signing_identity="${SIMBROKER_DISTRIBUTION_SIGNING_IDENTITY:-}"
 team_id="${SIMBROKER_DISTRIBUTION_TEAM_ID:-}"
 notarytool_profile="${SIMBROKER_NOTARYTOOL_PROFILE:-}"
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/simbroker-package-distribution.XXXXXX")"
+release_build_root=""
 
 cleanup() {
   rm -rf "$tmp_root"
@@ -94,6 +95,41 @@ if (report.ok) {
   process.exitCode = 1;
 }
 EOF
+}
+
+resolve_release_build_root() {
+  local project_path="$repo_root/app/SimulatorBrokerApp.xcodeproj"
+  local settings_path="$tmp_root/release-build-settings.txt"
+  local source_root
+  local physical_build_root
+
+  require_macos_build_prereqs
+  if [[ ! -d "$project_path" ]]; then
+    bash "$repo_root/scripts/generate_app_project.sh" >&2
+  fi
+
+  if ! xcodebuild \
+    -project "$project_path" \
+    -target SimulatorBrokerApp \
+    -configuration Release \
+    -showBuildSettings \
+    CODE_SIGNING_ALLOWED=NO >"$settings_path" 2>/dev/null; then
+    echo "Could not resolve the Xcode-visible Release source root." >&2
+    exit 1
+  fi
+
+  source_root="$(sed -n 's/^[[:space:]]*SRCROOT = //p' "$settings_path" | head -n 1)"
+  if [[ -z "$source_root" || ! -d "$source_root" ]]; then
+    echo "Could not resolve the Xcode-visible Release source root." >&2
+    exit 1
+  fi
+
+  release_build_root="$(cd "$source_root/.." && pwd -L)"
+  physical_build_root="$(cd "$release_build_root" && pwd -P)"
+  if [[ "$physical_build_root" != "$repo_root" ]]; then
+    echo "Xcode Release source root does not match the current repository." >&2
+    exit 1
+  fi
 }
 
 usage() {
@@ -297,6 +333,10 @@ Optional install flags:
 EOF
 
 scan_distribution_public_surface "$bundle_root" "$archive_name"
+resolve_release_build_root
+bash "$repo_root/script/verify_release_app_binary.sh" \
+  "$distribution_app_path/Contents/MacOS/SimulatorBrokerApp" \
+  "$release_build_root"
 
 codesign_sign_exit_code=0
 if run_with_output_capture \

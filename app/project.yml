@@ -21,6 +21,13 @@ targets:
         INFOPLIST_FILE: Generated/SimulatorBrokerApp-Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: dev.codex.simulator-broker-app
         PRODUCT_NAME: SimulatorBrokerApp
+      configs:
+        Release:
+          DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+          DEPLOYMENT_POSTPROCESSING: "YES"
+          STRIP_INSTALLED_PRODUCT: "YES"
+          STRIP_STYLE: debugging
+          STRIP_SWIFT_SYMBOLS: "NO"
   SimulatorBrokerAppTests:
     type: bundle.unit-test
     platform: macOS
