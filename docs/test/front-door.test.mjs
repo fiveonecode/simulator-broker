@@ -6,6 +6,12 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import {
+  assertPortableCliTarEntries as assertPortableCliTarEntriesForRoot,
+  parsePaxRecords,
+  validatePortableCliTar,
+} from "../../scripts/validate_cli_tar.mjs";
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 function readRepoFile(relativePath) {
@@ -21,6 +27,10 @@ const customReleaseAssetTemplates = [
   "simbroker-<version>.tgz",
   "Simulator-Broker-<version>.zip",
 ];
+
+function assertPortableCliTarEntries(entries) {
+  return assertPortableCliTarEntriesForRoot(entries, cliArchiveDirectory);
+}
 
 function assertExactCustomReleaseAssetInventory(markdown) {
   const marker = "A complete tagged Alpha has exactly four custom GitHub Release assets:";
@@ -445,7 +455,7 @@ test("CHANGELOG and package.json name the Alpha version", () => {
   assert.ok(changelog.includes("scripts/package_cli.sh"));
 });
 
-test("public CI splits Ubuntu core suites from macOS client tests and skips the app suite", () => {
+test("public CI runs docs on Ubuntu and macOS while splitting core from client tests", () => {
   const ci = readRepoFile(".github/workflows/ci.yml");
 
   assertHostedNodeActionContract(ci, {
@@ -459,6 +469,7 @@ test("public CI splits Ubuntu core suites from macOS client tests and skips the 
   assert.match(ci, /timeout-minutes:\s*15/);
   assert.equal(ci.includes("npm run verify:public-surface"), false);
   assertWorkflowJobRunsExactCommand(ci, "node-ubuntu", "npm run test:docs");
+  assertWorkflowJobRunsExactCommand(ci, "node-macos", "npm run test:docs");
   assert.ok(ci.includes("npm run test:broker-core"));
   const clientTestRun = ci
     .split("\n")
@@ -588,6 +599,7 @@ test("public PR and tagged-release docs gates fail closed when the command is mi
   assert.match(ci, /^  pull_request:\s*$/m);
   assert.match(release, /^    tags:\s*$/m);
   assertWorkflowJobRunsExactCommand(ci, "node-ubuntu", "npm run test:docs");
+  assertWorkflowJobRunsExactCommand(ci, "node-macos", "npm run test:docs");
   assertWorkflowJobRunsExactCommand(release, "release", "npm run test:docs");
   assert.ok(
     release.indexOf("run: npm run test:docs") < release.indexOf("npm run package:cli"),
@@ -595,12 +607,22 @@ test("public PR and tagged-release docs gates fail closed when the command is mi
   );
 
   const ciWithoutDocs = ci.replace("run: npm run test:docs", "run: npm run test:broker-core");
+  const macJob = workflowJobSection(ci, "node-macos");
+  const ciWithoutMacDocs = ci.replace(
+    macJob,
+    macJob.replace("run: npm run test:docs", "run: npm run test:client"),
+  );
   const releaseWithoutDocs = release.replace("run: npm run test:docs", "run: npm run test:broker-core");
   assert.notEqual(ciWithoutDocs, ci, "negative CI fixture must remove the docs command");
+  assert.notEqual(ciWithoutMacDocs, ci, "negative macOS CI fixture must remove the docs command");
   assert.notEqual(releaseWithoutDocs, release, "negative release fixture must remove the docs command");
   assert.throws(
     () => assertWorkflowJobRunsExactCommand(ciWithoutDocs, "node-ubuntu", "npm run test:docs"),
     /node-ubuntu must run npm run test:docs exactly once/,
+  );
+  assert.throws(
+    () => assertWorkflowJobRunsExactCommand(ciWithoutMacDocs, "node-macos", "npm run test:docs"),
+    /node-macos must run npm run test:docs exactly once/,
   );
   assert.throws(
     () => assertWorkflowJobRunsExactCommand(releaseWithoutDocs, "release", "npm run test:docs"),
@@ -787,6 +809,138 @@ test("root package stays private and package_npm.sh packs a runnable simbroker b
   assert.equal(fs.existsSync(path.join(installDir, "lib/node_modules/simbroker/client/test")), false);
 });
 
+function copyCliPackagingFixture(fixtureRoot) {
+  fs.mkdirSync(fixtureRoot, { recursive: true });
+  for (const directory of ["broker-core", "client"]) {
+    fs.cpSync(path.join(repoRoot, directory), path.join(fixtureRoot, directory), { recursive: true });
+  }
+  for (const relativePath of [
+    "scripts/package_cli.sh",
+    "scripts/validate_cli_tar.mjs",
+    "package.json",
+    "LICENSE",
+    "CHANGELOG.md",
+  ]) {
+    const destination = path.join(fixtureRoot, relativePath);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(path.join(repoRoot, relativePath), destination);
+  }
+  fs.chmodSync(path.join(fixtureRoot, "scripts/package_cli.sh"), 0o755);
+}
+
+function finalCliPaths(outputDir) {
+  const tarball = path.join(outputDir, `simulator-broker-${version}-cli.tar.gz`);
+  return { checksum: `${tarball}.sha256`, tarball };
+}
+
+function installedTarIdentity() {
+  const lookup = spawnSync("bash", ["-c", "command -v tar"], { encoding: "utf8" });
+  assert.equal(lookup.status, 0, lookup.stderr);
+  const tarBinary = lookup.stdout.trim();
+  const versionResult = spawnSync(tarBinary, ["--version"], {
+    encoding: "utf8",
+    env: { ...process.env, LC_ALL: "C" },
+  });
+  assert.equal(versionResult.status, 0, versionResult.stderr);
+  const firstLine = versionResult.stdout.split(/\r?\n/, 1)[0];
+  assert.match(firstLine, /^(?:tar \(GNU tar\) |bsdtar )/);
+  return { firstLine, tarBinary };
+}
+
+test("SB-PKG-CLI-003 raw CLI tar validation rejects hidden metadata and host ownership", () => {
+  const paxRecords = parsePaxRecords(
+    Buffer.from("57 LIBARCHIVE.xattr.com.apple.provenance=AQIAnFJB7p5GquY\n"),
+    `${cliArchiveDirectory}/PaxHeader/README.md`,
+  );
+  assert.deepEqual(paxRecords, [{
+    key: "LIBARCHIVE.xattr.com.apple.provenance",
+    value: "AQIAnFJB7p5GquY",
+  }]);
+
+  const portableEntry = {
+    gid: 0,
+    gname: "",
+    magic: "ustar\0",
+    name: `${cliArchiveDirectory}/README.md`,
+    paxRecords: [],
+    typeFlag: "0",
+    uid: 0,
+    uname: "",
+    version: "00",
+  };
+  for (const invalidRoot of ["", ".", "..", "nested/root", "nested\\root", "nul\0root"]) {
+    assert.throws(
+      () => assertPortableCliTarEntriesForRoot([portableEntry], invalidRoot),
+      /CLI tar root/,
+    );
+  }
+  assert.throws(
+    () => assertPortableCliTarEntries([{
+      ...portableEntry,
+      name: `${cliArchiveDirectory}/PaxHeader/README.md`,
+      paxRecords,
+      typeFlag: "x",
+    }]),
+    /non-payload type x/,
+  );
+  assert.throws(
+    () => assertPortableCliTarEntries([{
+      ...portableEntry,
+      name: `${cliArchiveDirectory}/._README.md`,
+    }]),
+    /AppleDouble metadata/,
+  );
+  assert.throws(
+    () => assertPortableCliTarEntries([{
+      ...portableEntry,
+      gid: 20,
+      gname: "staff",
+      uid: 501,
+      uname: "local-builder",
+    }]),
+    /normalized uid 0/,
+  );
+  assert.throws(
+    () => assertPortableCliTarEntries([{
+      ...portableEntry,
+      magic: "ustar ",
+      version: " \0",
+    }]),
+    /exact POSIX USTAR magic/,
+  );
+  assert.throws(
+    () => assertPortableCliTarEntries([{
+      ...portableEntry,
+      version: " \0",
+    }]),
+    /exact POSIX USTAR version 00/,
+  );
+  assert.throws(
+    () => assertPortableCliTarEntries([{
+      ...portableEntry,
+      name: `${cliArchiveDirectory}/README.md/`,
+    }]),
+    /only CLI tar directories may have a trailing slash/,
+  );
+  assert.throws(
+    () => assertPortableCliTarEntries([{
+      ...portableEntry,
+      name: cliArchiveDirectory,
+    }]),
+    /CLI tarball root entry must be a directory/,
+  );
+  for (const name of [
+    `${cliArchiveDirectory}/../README.md`,
+    `${cliArchiveDirectory}/./README.md`,
+    `${cliArchiveDirectory}//README.md`,
+  ]) {
+    assert.throws(
+      () => assertPortableCliTarEntries([{ ...portableEntry, name }]),
+      /unsafe path segment/,
+    );
+  }
+});
+
 test("package_cli.sh writes a runnable CLI tarball without tests or the app", () => {
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-cli-"));
   const fakeBin = path.join(outputDir, "fake-bin");
@@ -818,6 +972,9 @@ printf '%s\n' "$SIMBROKER_TEST_CHECKOUT_ROOT/artifacts/npm/should-not-appear.tgz
   const checksum = `${tarball}.sha256`;
   assert.equal(fs.existsSync(tarball), true, result.stdout);
   assert.equal(fs.existsSync(checksum), true, result.stdout);
+  assert.equal(fs.statSync(tarball).mode & 0o777, 0o644);
+  assert.equal(fs.statSync(checksum).mode & 0o777, 0o644);
+  validatePortableCliTar(tarball, cliArchiveDirectory);
 
   const extractDir = path.join(outputDir, "extract");
   fs.mkdirSync(extractDir);
@@ -832,6 +989,8 @@ printf '%s\n' "$SIMBROKER_TEST_CHECKOUT_ROOT/artifacts/npm/should-not-appear.tgz
   assert.equal(fs.existsSync(path.join(root, "client/test")), false);
   assert.equal(fs.existsSync(path.join(root, "app")), false);
   assert.equal(fs.existsSync(path.join(root, "LICENSE")), true);
+  assert.equal(fs.existsSync(path.join(root, "CHANGELOG.md")), true);
+  assert.equal(fs.existsSync(path.join(root, "package.json")), true);
   const packagedReadme = fs.readFileSync(path.join(root, "README.md"), "utf8");
   assert.equal(
     fs.existsSync(npmInvocationSentinel),
@@ -853,6 +1012,250 @@ printf '%s\n' "$SIMBROKER_TEST_CHECKOUT_ROOT/artifacts/npm/should-not-appear.tgz
   );
   assert.ok(packagedReadme.includes(`./${cliArchiveDirectory}/bin/simbroker --help`));
   assert.equal(packagedReadme.includes("`./bin/simbroker --help`"), false);
+});
+
+test("package_cli.sh selects GNU tar flags even when uname reports Darwin", () => {
+  const script = readRepoFile("scripts/package_cli.sh");
+  assert.equal(script.includes("uname -s"), false, "CLI packaging must classify tar, not the host OS");
+  assert.ok(script.includes('"tar (GNU tar) "*'));
+  assert.ok(script.includes('"bsdtar "*'));
+
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-cli-gnu-tar-"));
+  const fakeBin = path.join(outputDir, "fake-bin");
+  const tarLog = path.join(outputDir, "tar-arguments.log");
+  const { tarBinary } = installedTarIdentity();
+  fs.mkdirSync(fakeBin);
+  fs.writeFileSync(
+    path.join(fakeBin, "uname"),
+    "#!/usr/bin/env bash\nprintf '%s\\n' Darwin\n",
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(fakeBin, "tar"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "--version" ]]; then
+  printf '%s\n' 'tar (GNU tar) 1.35'
+  exit 0
+fi
+for arg in "$@"; do
+  case "$arg" in
+    --no-mac-metadata|--uid|--gid|--uname|--gname)
+      echo "GNU tar fixture received a bsdtar-only option" >&2
+      exit 2
+      ;;
+  esac
+done
+printf '%s\n' "$@" >> "$SIMBROKER_TEST_TAR_LOG"
+exec "$SIMBROKER_TEST_REAL_TAR" "$@"
+`,
+    { mode: 0o755 },
+  );
+
+  const result = spawnSync("bash", [path.join(repoRoot, "scripts/package_cli.sh"), "--output-dir", outputDir], {
+    encoding: "utf8",
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
+      SIMBROKER_TEST_REAL_TAR: tarBinary,
+      SIMBROKER_TEST_TAR_LOG: tarLog,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const tarArguments = fs.readFileSync(tarLog, "utf8").split(/\r?\n/);
+  assert.ok(tarArguments.includes("--owner=0"));
+  assert.ok(tarArguments.includes("--group=0"));
+  assert.ok(tarArguments.includes("--numeric-owner"));
+  assert.ok(tarArguments.includes("--no-xattrs"));
+  assert.equal(tarArguments.includes("--no-mac-metadata"), false);
+  const { checksum, tarball } = finalCliPaths(outputDir);
+  assert.equal(fs.existsSync(tarball), true, result.stdout);
+  assert.equal(fs.existsSync(checksum), true, result.stdout);
+  validatePortableCliTar(tarball, cliArchiveDirectory);
+});
+
+test("package_cli.sh rejects an unknown tar before staging and clears stale outputs", () => {
+  const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-cli-unknown-tar-"));
+  const outputDir = path.join(testRoot, "output");
+  const fakeBin = path.join(testRoot, "fake-bin");
+  const temporaryDir = path.join(testRoot, "temporary");
+  const invocationSentinel = path.join(testRoot, "tar-payload-operation");
+  fs.mkdirSync(outputDir);
+  fs.mkdirSync(fakeBin);
+  fs.mkdirSync(temporaryDir);
+  const { checksum, tarball } = finalCliPaths(outputDir);
+  fs.writeFileSync(tarball, "stale tar bytes\n");
+  fs.writeFileSync(checksum, "stale checksum\n");
+  fs.writeFileSync(
+    path.join(fakeBin, "tar"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "--version" ]]; then
+  printf '%s\n' 'toy tar 1.0'
+  exit 0
+fi
+: > "$SIMBROKER_TEST_TAR_SENTINEL"
+exit 99
+`,
+    { mode: 0o755 },
+  );
+
+  const result = spawnSync("bash", [path.join(repoRoot, "scripts/package_cli.sh"), "--output-dir", outputDir], {
+    encoding: "utf8",
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
+      SIMBROKER_TEST_TAR_SENTINEL: invocationSentinel,
+      TMPDIR: temporaryDir,
+    },
+  });
+
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Unsupported tar implementation; expected GNU tar or bsdtar\./);
+  assert.equal(result.stderr.includes(repoRoot), false, result.stderr);
+  assert.equal(result.stderr.includes(testRoot), false, result.stderr);
+  assert.equal(fs.existsSync(invocationSentinel), false, "unknown tar must not touch CLI payloads");
+  assert.equal(fs.readdirSync(temporaryDir).length, 0, "unknown tar must fail before staging");
+  assert.equal(fs.existsSync(tarball), false);
+  assert.equal(fs.existsSync(checksum), false);
+});
+
+test("package_cli.sh rejects a real source AppleDouble entry before archive or checksum", () => {
+  const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-cli-source-appledouble-"));
+  const fixtureRoot = path.join(testRoot, "checkout");
+  const outputDir = path.join(testRoot, "output");
+  copyCliPackagingFixture(fixtureRoot);
+  fs.mkdirSync(outputDir);
+  fs.writeFileSync(path.join(fixtureRoot, "broker-core", "._codex-appledouble-probe"), "metadata\n");
+  const { checksum, tarball } = finalCliPaths(outputDir);
+  fs.writeFileSync(tarball, "stale tar bytes\n");
+  fs.writeFileSync(checksum, "stale checksum\n");
+
+  const result = spawnSync(
+    "bash",
+    [path.join(fixtureRoot, "scripts/package_cli.sh"), "--output-dir", outputDir],
+    { encoding: "utf8", cwd: fixtureRoot },
+  );
+
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Refusing to package AppleDouble metadata under broker-core\./);
+  assert.equal(result.stderr.includes(fixtureRoot), false, result.stderr);
+  assert.equal(result.stderr.includes(testRoot), false, result.stderr);
+  assert.equal(fs.existsSync(tarball), false);
+  assert.equal(fs.existsSync(checksum), false);
+  assert.deepEqual(fs.readdirSync(outputDir), []);
+});
+
+test("package_cli.sh rejects AppleDouble metadata synthesized while staging", () => {
+  const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-cli-staged-appledouble-"));
+  const outputDir = path.join(testRoot, "output");
+  const fakeBin = path.join(testRoot, "fake-bin");
+  fs.mkdirSync(outputDir);
+  fs.mkdirSync(fakeBin);
+  const { firstLine, tarBinary } = installedTarIdentity();
+  fs.writeFileSync(
+    path.join(fakeBin, "tar"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "--version" ]]; then
+  printf '%s\n' "$SIMBROKER_TEST_TAR_VERSION"
+  exit 0
+fi
+destination=''
+extract=false
+previous=''
+for arg in "$@"; do
+  if [[ "$previous" == "-C" ]]; then
+    destination="$arg"
+  fi
+  if [[ "$arg" == "-xf" ]]; then
+    extract=true
+  fi
+  previous="$arg"
+done
+"$SIMBROKER_TEST_REAL_TAR" "$@"
+if [[ "$extract" == true && -n "$destination" ]]; then
+  printf '%s\n' metadata > "$destination/._codex-staged-appledouble"
+fi
+`,
+    { mode: 0o755 },
+  );
+
+  const result = spawnSync("bash", [path.join(repoRoot, "scripts/package_cli.sh"), "--output-dir", outputDir], {
+    encoding: "utf8",
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
+      SIMBROKER_TEST_REAL_TAR: tarBinary,
+      SIMBROKER_TEST_TAR_VERSION: firstLine,
+    },
+  });
+
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Refusing to package AppleDouble metadata under simulator-broker-/);
+  assert.equal(result.stderr.includes(repoRoot), false, result.stderr);
+  assert.equal(result.stderr.includes(testRoot), false, result.stderr);
+  const { checksum, tarball } = finalCliPaths(outputDir);
+  assert.equal(fs.existsSync(tarball), false);
+  assert.equal(fs.existsSync(checksum), false);
+});
+
+test("package_cli.sh rejects a raw-invalid candidate before archive or checksum publication", () => {
+  const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-cli-invalid-candidate-"));
+  const outputDir = path.join(testRoot, "output");
+  const fakeBin = path.join(testRoot, "fake-bin");
+  fs.mkdirSync(outputDir);
+  fs.mkdirSync(fakeBin);
+  const { checksum, tarball } = finalCliPaths(outputDir);
+  fs.writeFileSync(tarball, "stale tar bytes\n");
+  fs.writeFileSync(checksum, "stale checksum\n");
+  const { firstLine, tarBinary } = installedTarIdentity();
+  fs.writeFileSync(
+    path.join(fakeBin, "tar"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "--version" ]]; then
+  printf '%s\n' "$SIMBROKER_TEST_TAR_VERSION"
+  exit 0
+fi
+args=("$@")
+for ((index = 0; index < \${#args[@]}; index += 1)); do
+  if [[ "\${args[$index]}" == "-czf" ]]; then
+    archive="\${args[$((index + 1))]}"
+    printf '%s\n' 'not a tar archive' | gzip -c > "$archive"
+    exit 0
+  fi
+done
+exec "$SIMBROKER_TEST_REAL_TAR" "$@"
+`,
+    { mode: 0o755 },
+  );
+
+  const result = spawnSync("bash", [path.join(repoRoot, "scripts/package_cli.sh"), "--output-dir", outputDir], {
+    encoding: "utf8",
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
+      SIMBROKER_TEST_REAL_TAR: tarBinary,
+      SIMBROKER_TEST_TAR_VERSION: firstLine,
+    },
+  });
+
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.equal(
+    result.stderr,
+    "CLI tar validation failed: archive violates the portable USTAR contract.\n",
+  );
+  assert.equal(result.stderr.includes(repoRoot), false, result.stderr);
+  assert.equal(result.stderr.includes(testRoot), false, result.stderr);
+  assert.equal(fs.existsSync(tarball), false);
+  assert.equal(fs.existsSync(checksum), false);
+  assert.deepEqual(fs.readdirSync(outputDir), []);
 });
 
 test("package_cask_zip.sh is the Homebrew cask zip path", () => {

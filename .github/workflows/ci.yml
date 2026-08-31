@@ -1,6 +1,7 @@
 # Public Node test surface. GitHub-hosted Ubuntu does not see the operator
 # home path and has no Simulator, so it runs docs, broker-core, skill
-# ownership, and harness-adoption. Client tests run on GitHub-hosted macOS.
+# ownership, and harness-adoption. Docs and client tests run on
+# GitHub-hosted macOS so archive contracts exercise both GNU tar and bsdtar.
 # Home-path public-surface scanning belongs to `npm test` on the operator
 # machine, not this workflow. Do not raise job budgets to hide hung waits.
 name: Node tests
@@ -53,6 +54,9 @@ jobs:
         with:
           node-version: "20"
           package-manager-cache: false
+
+      - name: Public docs contract
+        run: npm run test:docs
 
       - name: client tests
         # Do not add --test-force-exit. On Node 20 it exits the process while
