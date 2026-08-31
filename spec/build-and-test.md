@@ -92,13 +92,14 @@ A first extracted implementation slice now exists:
   `test:harness-adoption` with a 10-minute budget; macOS runs `test:client`
   with a 15-minute budget. Neither job runs `test:app` or
   `verify:public-surface`. Home-path leak scanning
-  uses `os.homedir()` of the current machine, so GitHub-hosted runners would
-  search for `/home/runner` or `/Users/runner`, not the operator home. The
-  full-repo scan stays on local `npm test`. Do not raise those budgets to
-  hide a hung `simctl` or `brokerd` wait. Broker tests that build an
-  app snapshot, including in-process `startBrokerService`, must inject the
-  fixture `simctl` adapter (`SIMBROKER_SIMCTL_FIXTURE_STATE` or an explicit
-  adapter / snapshot writer). macOS CI runs client tests with
+  uses `os.homedir()` of the current machine, so each runner searches its own
+  account home, not the operator home. Keep runner-home examples symbolic:
+  an environment-specific absolute path can match the runner's real home and
+  correctly fail closed. The full-repo scan stays on local `npm test`. Do not
+  raise those budgets to hide a hung `simctl` or `brokerd` wait. Broker tests
+  that build an app snapshot, including in-process `startBrokerService`, must
+  inject the fixture `simctl` adapter (`SIMBROKER_SIMCTL_FIXTURE_STATE` or an
+  explicit adapter / snapshot writer). macOS CI runs client tests with
   `node --test --test-concurrency=1 --test-timeout=120000` so client files
   cannot interleave and a hung test cannot consume
   `serviceStartupTimeoutMs`. Do not add `--test-force-exit`: on Node 20 it
