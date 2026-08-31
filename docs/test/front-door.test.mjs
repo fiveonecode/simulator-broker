@@ -1021,6 +1021,7 @@ test("package_cli.sh writes a runnable CLI tarball without tests or the app", ()
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-cli-"));
   const fakeBin = path.join(outputDir, "fake-bin");
   const npmInvocationSentinel = path.join(outputDir, "npm-command-was-executed");
+  const appleDoubleProbe = path.join(repoRoot, "broker-core", "._codex-appledouble-probe");
   fs.mkdirSync(fakeBin);
   fs.writeFileSync(
     path.join(fakeBin, "npm"),
@@ -1032,23 +1033,35 @@ printf '%s\n' "$SIMBROKER_TEST_CHECKOUT_ROOT/artifacts/npm/should-not-appear.tgz
 `,
     { mode: 0o755 },
   );
-  const result = spawnSync("bash", [path.join(repoRoot, "scripts/package_cli.sh"), "--output-dir", outputDir], {
-    encoding: "utf8",
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
-      SIMBROKER_TEST_CHECKOUT_ROOT: repoRoot,
-      SIMBROKER_TEST_NPM_SENTINEL: npmInvocationSentinel,
-    },
-  });
+  fs.writeFileSync(appleDoubleProbe, "not-payload\n");
+  let result;
+  try {
+    result = spawnSync("bash", [path.join(repoRoot, "scripts/package_cli.sh"), "--output-dir", outputDir], {
+      encoding: "utf8",
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
+        SIMBROKER_TEST_CHECKOUT_ROOT: repoRoot,
+        SIMBROKER_TEST_NPM_SENTINEL: npmInvocationSentinel,
+      },
+    });
+  } finally {
+    fs.rmSync(appleDoubleProbe, { force: true });
+  }
 
   assert.equal(result.status, 0, result.stderr);
   const tarball = path.join(outputDir, `simulator-broker-${version}-cli.tar.gz`);
   const checksum = `${tarball}.sha256`;
   assert.equal(fs.existsSync(tarball), true, result.stdout);
   assert.equal(fs.existsSync(checksum), true, result.stdout);
-  assertPortableCliTarEntries(readRawTarEntries(tarball));
+  const entries = readRawTarEntries(tarball);
+  assertPortableCliTarEntries(entries);
+  assert.equal(
+    entries.some((entry) => entry.name.split("/").some((segment) => segment === "._codex-appledouble-probe")),
+    false,
+    "pre-existing AppleDouble companions must not be archived",
+  );
 
   const extractDir = path.join(outputDir, "extract");
   fs.mkdirSync(extractDir);
@@ -1084,6 +1097,53 @@ printf '%s\n' "$SIMBROKER_TEST_CHECKOUT_ROOT/artifacts/npm/should-not-appear.tgz
   );
   assert.ok(packagedReadme.includes(`./${cliArchiveDirectory}/bin/simbroker --help`));
   assert.equal(packagedReadme.includes("`./bin/simbroker --help`"), false);
+});
+
+test("package_cli.sh does not pass unsupported tar metadata flags", () => {
+  const script = readRepoFile("scripts/package_cli.sh");
+  assert.equal(
+    script.includes('uname -s'),
+    false,
+    "CLI packaging must probe tar options instead of gating on uname",
+  );
+  assert.ok(script.includes("tar_supports_option --no-mac-metadata"));
+  assert.ok(script.includes("tar_supports_option --no-xattrs"));
+
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-cli-gnu-tar-"));
+  const fakeBin = path.join(outputDir, "fake-bin");
+  const realTar = spawnSync("bash", ["-c", "command -v tar"], { encoding: "utf8" });
+  assert.equal(realTar.status, 0, realTar.stderr);
+  fs.mkdirSync(fakeBin);
+  fs.writeFileSync(
+    path.join(fakeBin, "tar"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+for arg in "$@"; do
+  if [[ "$arg" == "--no-mac-metadata" ]]; then
+    echo "tar: unrecognized option '--no-mac-metadata'" >&2
+    exit 2
+  fi
+done
+exec "$SIMBROKER_TEST_REAL_TAR" "$@"
+`,
+    { mode: 0o755 },
+  );
+
+  const result = spawnSync("bash", [path.join(repoRoot, "scripts/package_cli.sh"), "--output-dir", outputDir], {
+    encoding: "utf8",
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
+      SIMBROKER_TEST_REAL_TAR: realTar.stdout.trim(),
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr.includes("unrecognized option '--no-mac-metadata'"), false, result.stderr);
+  const tarball = path.join(outputDir, `simulator-broker-${version}-cli.tar.gz`);
+  assert.equal(fs.existsSync(tarball), true, result.stdout);
+  assert.equal(fs.existsSync(`${tarball}.sha256`), true, result.stdout);
 });
 
 test("package_cask_zip.sh is the Homebrew cask zip path", () => {

@@ -53,9 +53,12 @@ archive_name="simulator-broker-${version}-cli"
 bundle="$stage/$archive_name"
 mkdir -p "$bundle/bin" "$bundle/broker-core" "$bundle/client"
 
-tar -C "$repo_root/broker-core" --exclude test --exclude '*.test.mjs' -cf - . \
+# Prevent copyfile from synthesizing AppleDouble companions during staging.
+export COPYFILE_DISABLE=1
+
+tar -C "$repo_root/broker-core" --exclude '._*' --exclude test --exclude '*.test.mjs' -cf - . \
   | tar -C "$bundle/broker-core" -xf -
-tar -C "$repo_root/client" --exclude test --exclude '*.test.mjs' -cf - . \
+tar -C "$repo_root/client" --exclude '._*' --exclude test --exclude '*.test.mjs' -cf - . \
   | tar -C "$bundle/client" -xf -
 
 cp "$repo_root/package.json" "$bundle/package.json"
@@ -88,22 +91,43 @@ exec node "$root/client/bin/simbroker.mjs" "$@"
 EOF
 chmod +x "$bundle/bin/simbroker"
 
+staged_appledouble="$(find "$bundle" -name '._*' -print)"
+if [[ -n "$staged_appledouble" ]]; then
+  echo "Refusing to package AppleDouble metadata entries:" >&2
+  printf '%s\n' "$staged_appledouble" >&2
+  exit 1
+fi
+
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd -P)"
 tarball="$output_dir/${archive_name}.tar.gz"
 checksum="$output_dir/${archive_name}.tar.gz.sha256"
+
+tar_supports_option() {
+  local option="$1"
+  local probe="$stage/.tar-option-probe"
+  rm -rf "$probe"
+  mkdir -p "$probe/src"
+  : > "$probe/src/file"
+  tar "$option" --format ustar -C "$probe/src" -cf "$probe/out.tar" file >/dev/null 2>&1
+}
 
 tar_options=(
   --format ustar
   --owner 0
   --group 0
   --numeric-owner
+  --exclude '._*'
 )
-if [[ "$(uname -s)" == "Darwin" ]]; then
-  tar_options+=(--no-mac-metadata --no-xattrs)
+if tar_supports_option --no-mac-metadata; then
+  tar_options+=(--no-mac-metadata)
 fi
+if tar_supports_option --no-xattrs; then
+  tar_options+=(--no-xattrs)
+fi
+rm -rf "$stage/.tar-option-probe"
 
-COPYFILE_DISABLE=1 tar "${tar_options[@]}" -C "$stage" -czf "$tarball" "$archive_name"
+tar "${tar_options[@]}" -C "$stage" -czf "$tarball" "$archive_name"
 
 if command -v shasum >/dev/null 2>&1; then
   (cd "$output_dir" && shasum -a 256 "${archive_name}.tar.gz" > "${archive_name}.tar.gz.sha256")

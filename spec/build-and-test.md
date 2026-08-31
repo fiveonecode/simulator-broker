@@ -63,9 +63,11 @@ A first extracted implementation slice now exists:
 - `scripts/package_cli.sh` packages the Node CLI runtime into a versioned
   top-level directory inside a portable USTAR tarball without XcodeGen or an
   app build. The archive suppresses macOS COPYFILE and extended-attribute
-  metadata, contains no AppleDouble or PAX records, and normalizes every
-  header to numeric uid/gid `0` without host user or group names; newcomer
-  commands invoke
+  metadata by probing tar for `--no-mac-metadata` and `--no-xattrs` instead of
+  gating on `uname`, excludes AppleDouble `._*` names while staging, refuses
+  leftover staged `._*` paths before writing the gzip checksum, contains no
+  AppleDouble or PAX records, and normalizes every header to numeric uid/gid
+  `0` without host user or group names; newcomer commands invoke
   `./simulator-broker-<version>-cli/bin/simbroker`, not `./bin/simbroker`
 - `Formula/simbroker.rb` installs that GitHub Release tarball through Homebrew.
   `brew install fiveonecode/simulator-broker/simbroker` clones
@@ -175,7 +177,7 @@ The current deterministic verification contract includes implementation tests pl
 | --- | --- | --- |
 | SB-PKG-CLI-001 | `scripts/package_cli.sh` treats static README Markdown as literal payload data and interpolates only the validated package version and derived archive directory. README command examples must never execute or contribute captured stdout while the archive is built. | `docs/test/front-door.test.mjs` `package_cli.sh writes a runnable CLI tarball without tests or the app` fake-command sentinel |
 | SB-PKG-CLI-002 | The README extracted from the final CLI tarball contains the literal `` `npm run package:npm` `` example and contains neither the exact packaging checkout root nor command-fixture output. | The same extracted-archive test |
-| SB-PKG-CLI-003 | The final CLI gzip contains only regular-file and directory USTAR records under the single versioned root. Every raw header has numeric uid/gid `0` and empty user/group names; AppleDouble `._*`, PAX global/extended headers, and serialized xattrs are forbidden. | `docs/test/front-door.test.mjs` `SB-PKG-CLI-003 raw CLI tar validation rejects hidden metadata and host ownership` plus the final archive assertion in `package_cli.sh writes a runnable CLI tarball without tests or the app` |
+| SB-PKG-CLI-003 | The final CLI gzip contains only regular-file and directory USTAR records under the single versioned root. Every raw header has numeric uid/gid `0` and empty user/group names; AppleDouble `._*`, PAX global/extended headers, and serialized xattrs are forbidden. Metadata-suppression flags are added only when the selected `tar` accepts them. Pre-existing AppleDouble `._*` entries are excluded from staging, and any leftover staged `._*` path fails packaging before the checksum is written. | `docs/test/front-door.test.mjs` `SB-PKG-CLI-003 raw CLI tar validation rejects hidden metadata and host ownership`, the planted AppleDouble assertion in `package_cli.sh writes a runnable CLI tarball without tests or the app`, and `package_cli.sh does not pass unsupported tar metadata flags` |
 
 These are final-payload checks because a source-only public-surface scan cannot
 observe shell interpretation during archive generation. Any command execution,
@@ -185,8 +187,10 @@ tar headers, validates their checksums, and parses any PAX body directly;
 ordinary macOS tar listings and extractions are not acceptable evidence because
 they can consume or hide AppleDouble and extended-attribute records. The
 negative verifier covers PAX xattrs, AppleDouble paths, and non-normalized host
-ownership on both macOS and Ubuntu. This contract does not prohibit generic
-temporary-directory guidance.
+ownership on both macOS and Ubuntu. Packaging probes tar capabilities rather
+than `uname` so Homebrew GNU tar on Darwin does not receive bsdtar-only flags,
+and a planted source `._*` companion must not appear in the final gzip. This
+contract does not prohibit generic temporary-directory guidance.
 
 ### Release asset contract
 
