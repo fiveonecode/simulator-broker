@@ -789,9 +789,28 @@ test("root package stays private and package_npm.sh packs a runnable simbroker b
 
 test("package_cli.sh writes a runnable CLI tarball without tests or the app", () => {
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-package-cli-"));
+  const fakeBin = path.join(outputDir, "fake-bin");
+  const npmInvocationSentinel = path.join(outputDir, "npm-command-was-executed");
+  fs.mkdirSync(fakeBin);
+  fs.writeFileSync(
+    path.join(fakeBin, "npm"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+: > "$SIMBROKER_TEST_NPM_SENTINEL"
+printf '%s\n' 'SIMBROKER_PACKAGE_TEST_COMMAND_OUTPUT'
+printf '%s\n' "$SIMBROKER_TEST_CHECKOUT_ROOT/artifacts/npm/should-not-appear.tgz"
+`,
+    { mode: 0o755 },
+  );
   const result = spawnSync("bash", [path.join(repoRoot, "scripts/package_cli.sh"), "--output-dir", outputDir], {
     encoding: "utf8",
     cwd: repoRoot,
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
+      SIMBROKER_TEST_CHECKOUT_ROOT: repoRoot,
+      SIMBROKER_TEST_NPM_SENTINEL: npmInvocationSentinel,
+    },
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -814,6 +833,24 @@ test("package_cli.sh writes a runnable CLI tarball without tests or the app", ()
   assert.equal(fs.existsSync(path.join(root, "app")), false);
   assert.equal(fs.existsSync(path.join(root, "LICENSE")), true);
   const packagedReadme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+  assert.equal(
+    fs.existsSync(npmInvocationSentinel),
+    false,
+    "CLI README generation must not execute Markdown command examples",
+  );
+  assert.equal(
+    packagedReadme.includes(repoRoot),
+    false,
+    "the generated README must not capture the exact packaging checkout root",
+  );
+  assert.equal(packagedReadme.includes("SIMBROKER_PACKAGE_TEST_COMMAND_OUTPUT"), false);
+  assert.ok(
+    packagedReadme.includes(
+      "Formula/simbroker.rb. The packable npm CLI is packages/simbroker\n"
+      + "(`npm run package:npm`). The macOS operator app is separate.\n",
+    ),
+    "the generated README must preserve its literal Markdown command",
+  );
   assert.ok(packagedReadme.includes(`./${cliArchiveDirectory}/bin/simbroker --help`));
   assert.equal(packagedReadme.includes("`./bin/simbroker --help`"), false);
 });
