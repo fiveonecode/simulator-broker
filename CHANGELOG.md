@@ -7,7 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.5] - 2026-09-01
+
+Alpha 5 is the provenance-safe recovery release for the immutable failed
+Alpha 4 tag. It keeps the same four-custom-asset contract and rebuilds every
+asset from the corrected source tree.
+
+### Fixed
+
+- RR19 distinguishes a documented hosted-runner path from a private
+  runtime-home leak while retaining positive and negative public-source
+  regression coverage.
+- RR20 packages the CLI README as literal data, so Markdown command examples
+  cannot execute or capture checkout-root output during archive creation.
+- RR21 generates the app dSYM before stripping deployment debug records, then
+  rejects build paths, STABS, embedded DWARF, unexpected architectures, and
+  leaks in the complete Mach-O container or either required slice.
+- RR22 makes CLI packaging emit portable raw USTAR with normalized ownership,
+  safe paths and modes, no AppleDouble or PAX metadata, and stale-output
+  cleanup, with the same contract exercised on macOS and Ubuntu.
+- RR23 gives cask ZIP packaging explicit metadata-suppression flags and a
+  validated hidden candidate, rejecting AppleDouble, unsafe or extra roots,
+  unsupported entry types, and stale public outputs before final publication.
+
 ## [0.1.0-alpha.4] - 2026-08-31
+
+The `v0.1.0-alpha.4` tag is preserved as immutable failed-release evidence.
+Its workflow stopped before creating a GitHub Release or uploading any custom
+asset because the public-source check treated a documented hosted-runner path
+as a private home-path leak. The tag must not be republished; Alpha 5
+supersedes it.
 
 This release hardens the public install, upgrade, and dashboard paths used for
 the first broader Simulator Broker announcement. It also makes the complete

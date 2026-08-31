@@ -51,7 +51,7 @@ does not require XcodeGen. The app still needs the CLI installed separately.
 ## Install the CLI with npm
 
 ```bash
-npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.4/simbroker-0.1.0-alpha.4.tgz
+npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.5/simbroker-0.1.0-alpha.5.tgz
 command -v simbroker
 simbroker --help
 ```
@@ -76,8 +76,8 @@ To install from a tagged Alpha without cloning, download
 then run:
 
 ```bash
-tar -xzf simulator-broker-0.1.0-alpha.4-cli.tar.gz
-./simulator-broker-0.1.0-alpha.4-cli/bin/simbroker --help
+tar -xzf simulator-broker-0.1.0-alpha.5-cli.tar.gz
+./simulator-broker-0.1.0-alpha.5-cli/bin/simbroker --help
 ```
 
 The archive is the Node CLI only and contains that versioned top-level
