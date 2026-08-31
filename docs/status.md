@@ -35,7 +35,9 @@ This Alpha already includes:
   `simulators repair --alias <alias>`
 - CLI-only install through `bash scripts/install_local.sh --cli-only`, plus
   the contributor app+CLI path `npm run install:local`
-- tagged Alpha CLI tarball through `npm run package:cli` and GitHub Releases
+- tagged Alpha GitHub Releases with exactly four custom assets: the CLI
+  tarball, its `.sha256` checksum, the packable npm tarball, and the signed,
+  notarized app zip. GitHub's generated source archives appear separately
 - public Node test CI: GitHub-hosted Ubuntu for broker-core and
   harness-adoption plus the public docs contract, GitHub-hosted macOS for
   client tests. Tagged releases run the public docs contract before packaging.

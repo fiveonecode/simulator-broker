@@ -3,11 +3,16 @@
 ## Supported Versions
 
 Security fixes are considered for the current `main` branch and for the latest
-tagged Alpha (`0.1.0-alpha.3`). Older Alpha tags are not supported. The
-published CLI artifacts are the GitHub Release tarball, the Homebrew
-formula that installs that tarball, and the packable `simbroker` npm
-package, and the signed, notarized operator app zip
-`Simulator-Broker-0.1.0-alpha.3.zip`.
+tagged Alpha (`0.1.0-alpha.4`). Older Alpha tags are not supported. The
+published Alpha has exactly four custom GitHub Release assets:
+
+1. `simulator-broker-0.1.0-alpha.4-cli.tar.gz`
+2. `simulator-broker-0.1.0-alpha.4-cli.tar.gz.sha256`
+3. `simbroker-0.1.0-alpha.4.tgz`
+4. `Simulator-Broker-0.1.0-alpha.4.zip`
+
+The Homebrew formula and cask install the matching CLI and signed, notarized
+app archives. GitHub's generated source archives appear separately.
 
 ## Reporting A Vulnerability
 

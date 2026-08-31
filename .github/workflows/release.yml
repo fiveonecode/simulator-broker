@@ -1,6 +1,6 @@
-# Publish the Alpha CLI tarball and the packable npm CLI when a version
-# tag is pushed. After merge, create the matching tag (example:
-# v0.1.0-alpha.1). This workflow does not build or attach the macOS app.
+# Publish the Alpha CLI tarball, its SHA-256 checksum, and the packable npm
+# CLI when a version tag is pushed. The operator attaches the signed,
+# notarized macOS app zip, completing the four-custom-asset Release contract.
 name: Release CLI
 
 on:
@@ -61,7 +61,7 @@ jobs:
           fi
           gh release create "${GITHUB_REF_NAME}" \
             --title "Simulator Broker ${GITHUB_REF_NAME}" \
-            --notes "Alpha CLI and npm package. Install the CLI with \`brew install fiveonecode/simulator-broker/simbroker\` or \`npm install -g\` the attached \`simbroker-${version}.tgz\`. Install the operator app with \`brew install --cask fiveonecode/simulator-broker/simulator-broker\`. Node.js 20 or newer is required. macOS and Xcode are still required to create and run iOS Simulators. This workflow attaches the CLI tarball and npm package; the signed, notarized operator app zip is attached to the same GitHub Release by the operator. See CHANGELOG.md." \
+            --notes "Alpha release artifacts. Install the CLI with \`brew install fiveonecode/simulator-broker/simbroker\` or \`npm install -g\` the attached \`simbroker-${version}.tgz\`. Install the operator app with \`brew install --cask fiveonecode/simulator-broker/simulator-broker\`. Node.js 20 or newer is required. macOS and Xcode are still required to create and run iOS Simulators. This workflow attaches three custom assets: the CLI tarball, its SHA-256 checksum, and the npm package. The operator attaches the signed, notarized app zip to complete exactly four custom assets; GitHub source archives are generated separately. See CHANGELOG.md." \
             "${prerelease_args[@]}" \
             "$asset" \
             "$checksum" \

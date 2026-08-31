@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.4] - 2026-08-31
+
+This release hardens the public install, upgrade, and dashboard paths used for
+the first broader Simulator Broker announcement. It also makes the complete
+GitHub Release inventory explicit: CLI archive, CLI checksum, npm tarball, and
+notarized app zip.
+
 ### Added
 
 - `scripts/package_cask_zip.sh` (`npm run package:cask-zip`) writes the
@@ -18,6 +25,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `codesign --verify --deep --strict` and an unstapled app with
   `xcrun stapler validate`. It does not build, sign, notarize, tag, or
   publish.
+- Correlated installed-app smoke evidence now proves that the launched
+  `/Applications` app decoded the freshly prepared broker snapshot and
+  completed a manual refresh under one exact process, executable, state root,
+  and snapshot generation.
+
+### Changed
+
+- Public onboarding now keeps Homebrew CLI, Homebrew cask, guided setup,
+  reinstall, and direct tagged-asset commands aligned and CI-gated. Bash PATH
+  persistence follows the login files Bash actually reads, while reinstall
+  keeps host configuration and broker state unless reset is explicit.
+- GitHub workflows use maintained Node 24 action runtimes with explicit cache
+  behavior, and the agent/reliability contract now examines interacting
+  conditions, degraded operation, recovery, and residual risk without adding
+  unnecessary operational coupling.
+- The app's timestamp wording and Automatic shutdown guidance now distinguish
+  snapshot age from refresh time and explain intentional warm Simulator reuse.
+- Completion fixtures and durable task evidence remain public-safe even when a
+  checkout lives beneath a private machine path.
+
+### Fixed
+
+- `simbroker setup --help` follows the normal help path instead of entering
+  setup dispatch, and installed daemon health is checked against the current
+  runtime across upgrades before commands are exposed.
+- The Simulators pane remains usable at the minimum supported window size.
+- Dashboard refresh failures now fail closed: stale service authority cannot
+  enable mutations, queued or cancelled setup/refresh work cannot publish
+  after lifecycle loss, and verified recovery restores authority only after a
+  current exact-status success.
 
 ## [0.1.0-alpha.3] - 2026-08-29
 

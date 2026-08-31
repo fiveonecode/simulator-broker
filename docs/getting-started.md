@@ -51,7 +51,7 @@ does not require XcodeGen. The app still needs the CLI installed separately.
 ## Install the CLI with npm
 
 ```bash
-npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.3/simbroker-0.1.0-alpha.3.tgz
+npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.4/simbroker-0.1.0-alpha.4.tgz
 command -v simbroker
 simbroker --help
 ```
@@ -76,12 +76,22 @@ To install from a tagged Alpha without cloning, download
 then run:
 
 ```bash
-tar -xzf simulator-broker-0.1.0-alpha.3-cli.tar.gz
-./simulator-broker-0.1.0-alpha.3-cli/bin/simbroker --help
+tar -xzf simulator-broker-0.1.0-alpha.4-cli.tar.gz
+./simulator-broker-0.1.0-alpha.4-cli/bin/simbroker --help
 ```
 
 The archive is the Node CLI only and contains that versioned top-level
 directory.
+
+A complete tagged Alpha has exactly four custom GitHub Release assets:
+
+1. `simulator-broker-<version>-cli.tar.gz`
+2. `simulator-broker-<version>-cli.tar.gz.sha256`
+3. `simbroker-<version>.tgz`
+4. `Simulator-Broker-<version>.zip`
+
+GitHub's generated source archives appear separately and are not part of that
+four-asset install contract.
 
 - If Homebrew is present and `$(brew --prefix)/bin` is writable, the wrapper
   is installed there so a new login shell already has it on `PATH`.
