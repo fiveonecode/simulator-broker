@@ -150,6 +150,18 @@ A first extracted implementation slice now exists:
 
 The current deterministic verification contract includes implementation tests plus spec integrity.
 
+### CLI archive README contract
+
+| ID | Requirement | Verifier |
+| --- | --- | --- |
+| SB-PKG-CLI-001 | `scripts/package_cli.sh` treats static README Markdown as literal payload data and interpolates only the validated package version and derived archive directory. README command examples must never execute or contribute captured stdout while the archive is built. | `docs/test/front-door.test.mjs` `package_cli.sh writes a runnable CLI tarball without tests or the app` fake-command sentinel |
+| SB-PKG-CLI-002 | The README extracted from the final CLI tarball contains the literal `` `npm run package:npm` `` example and contains neither the exact packaging checkout root nor command-fixture output. | The same extracted-archive test |
+
+These are final-payload checks because a source-only public-surface scan cannot
+observe shell interpretation during archive generation. Any command execution,
+captured output, or exact checkout-root leak fails `test:docs` before release
+packaging. This contract does not prohibit generic temporary-directory guidance.
+
 ### Release asset contract
 
 A complete tagged Alpha has exactly four custom GitHub Release assets:
@@ -469,7 +481,7 @@ Add stronger profiles next for:
 - `./script/build_and_run.sh --telemetry` proves the app emits filterable `AppLifecycle` and `Refresh` unified logs during a live run, while `bash scripts/test_app.sh` exercises `Setup` and `Commands` events in focused app tests
 - the installer prints the installed CLI path, app path when an app was installed, env helper path, any current-shell PATH warning, PATH persist result, and the next command (`command -v simbroker` after persist, or `source "<env-helper>"` when persist is skipped)
 - `bash scripts/install_local.sh --cli-only` installs the CLI runtime without invoking `xcodegen` or `xcodebuild` and without requiring an app bundle
-- `npm run package:cli` writes `artifacts/cli/simulator-broker-<version>-cli.tar.gz` plus a SHA-256 checksum and does not invoke XcodeGen or `xcodebuild`
+- `npm run package:cli` writes `artifacts/cli/simulator-broker-<version>-cli.tar.gz` plus a SHA-256 checksum, does not invoke XcodeGen or `xcodebuild`, and its extracted README preserves literal Markdown without executing package commands or capturing the exact checkout root
 - `npm run package:cask-zip` writes `artifacts/distribution/Simulator-Broker-<version>.zip` plus a SHA-256 checksum from a Developer ID-signed, stapled `Simulator Broker.app` using `ditto -c -k --keepParent`. It verifies the sealed signature with `codesign --verify --deep --strict`, requires `CFBundleIdentifier`/`Identifier` `dev.codex.simulator-broker-app`, runs `xcrun stapler validate` before writing the zip, and does not build, sign, notarize, staple, tag, or publish
 - `.github/workflows/ci.yml` runs `test:docs`, `test:broker-core`, and
   `test:harness-adoption` on `ubuntu-latest` (10 minutes) and `test:client` on

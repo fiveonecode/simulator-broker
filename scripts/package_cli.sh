@@ -62,22 +62,23 @@ cp "$repo_root/package.json" "$bundle/package.json"
 cp "$repo_root/LICENSE" "$bundle/LICENSE"
 cp "$repo_root/CHANGELOG.md" "$bundle/CHANGELOG.md"
 
-cat > "$bundle/README.md" <<EOF
-# Simulator Broker CLI ${version}
-
+{
+  printf '# Simulator Broker CLI %s\n\n' "$version"
+  cat <<'EOF'
 Alpha CLI runtime. Node.js 20 or newer is required. Creating and running iOS
 Simulators still requires macOS and Xcode.
 
 From the directory where you extracted the tarball, run:
 
-    ./${archive_name}/bin/simbroker --help
-
-If your shell is already inside ${archive_name}, run ./bin/simbroker --help.
-
+EOF
+  printf '    ./%s/bin/simbroker --help\n\n' "$archive_name"
+  printf 'If your shell is already inside %s, run ./bin/simbroker --help.\n\n' "$archive_name"
+  cat <<'EOF'
 This archive is the Node CLI only. Homebrew installs it through
 Formula/simbroker.rb. The packable npm CLI is packages/simbroker
 (`npm run package:npm`). The macOS operator app is separate.
 EOF
+} > "$bundle/README.md"
 
 cat > "$bundle/bin/simbroker" <<'EOF'
 #!/usr/bin/env bash
