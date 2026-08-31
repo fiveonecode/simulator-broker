@@ -91,15 +91,18 @@ A first extracted implementation slice now exists:
   and `package_cask_zip.sh`, not `package:local`). The cask pins the
   published zip SHA-256.
 - `scripts/package_cask_zip.sh` (`npm run package:cask-zip`) writes that
-  app-only zip with `ditto -c -k --keepParent`. It does not build, sign,
-  notarize, staple, tag, or publish. Version, missing-app, bundle-name,
-  and `CFBundleIdentifier` (`dev.codex.simulator-broker-app`) checks run
-  before the Darwin/`ditto` gate so `spec-only` stays portable. After
-  `codesign --verify --deep --strict` and Developer ID inspection it runs
-  `xcrun stapler validate` and refuses a missing app, a signature that
-  does not verify, an ad-hoc or non-Developer ID signature, the wrong
-  sealed identifier, an unstapled app, and a zip that contains the
-  distribution payload instead of `Simulator Broker.app`.
+  app-only zip from the immutable signed app with explicit
+  `ditto -c -k --norsrc --noextattr --noacl --noqtn --keepParent`; it does
+  not depend on ambient `DITTONORSRC` or `COPYFILE_DISABLE` and does not
+  build, mutate, sign, notarize, staple, tag, or publish. Version,
+  missing-app, bundle-name, and `CFBundleIdentifier`
+  (`dev.codex.simulator-broker-app`) checks run before the Darwin/`ditto`
+  gate so `spec-only` stays portable. After `codesign --verify --deep
+  --strict` and Developer ID inspection it runs `xcrun stapler validate`.
+  A hidden candidate must pass `scripts/validate_cask_zip.py` before its
+  checksum exists or either final filename becomes visible. Both candidates
+  have mode `0644` before ordered same-directory renames, and any failure
+  removes candidates plus stale/final zip and checksum paths.
 - public GitHub-hosted CI splits by machine: Ubuntu runs the managed-skill
   ownership check, `test:docs`, `test:broker-core`, and
   `test:harness-adoption` with a 10-minute budget; macOS runs `test:docs` and
@@ -204,6 +207,30 @@ before staging. Real source and synthesized staged `._*` companions are input
 failures, never hidden exclusions. A raw-invalid candidate and its checksum are
 not published, and failure messages do not expose checkout or build-root paths.
 This contract does not prohibit generic temporary-directory guidance.
+
+### Cask ZIP payload contract
+
+| ID | Requirement | Verifier |
+| --- | --- | --- |
+| SB-PKG-CASK-001 | Cask packaging must use the explicit `ditto` metadata-suppression flags, leave the signed app unchanged, and validate the hidden candidate through Python `zipfile` before checksum or publication. The archive must have one nonempty `Simulator Broker.app` tree with unique safe names, the essential signed-app entries, no `._*` or `__MACOSX` components, comments, encryption, or special file types, and every regular payload must be readable with a valid CRC. | `scripts/validate_cask_zip.py`; `docs/test/front-door.test.mjs` `SB-PKG-CASK-001 cask ZIP validation rejects metadata and unsafe structure`; real-macOS planted resource-fork/xattr success; leaking-`ditto` failure |
+| SB-PKG-CASK-002 | Packaging removes stale final zip/checksum paths before work. It writes hidden zip/checksum candidates, sets both to `0644` before either final rename, and removes candidates and both final paths on any failure. Diagnostics must not print checkout, app, output, or temporary paths for candidate-validation failures. | `docs/test/front-door.test.mjs` real-`ditto` mode/checksum assertions and leaking-`ditto` stale-output/hidden-candidate regression |
+
+This defense covers the confirmed interaction: signed-app resource or xattr
+metadata, default `ditto` serialization, filtered inspection, and ambient
+environment state could combine to publish AppleDouble entries. The explicit
+flags remove that metadata, while a separate final-candidate inventory and
+readability check blocks a silent recurrence. Standard `ditto` time and numeric
+UID/GID data in benign `0x5855` extra fields remains allowed; this contract does
+not claim ownership normalization.
+
+The validator intentionally uses the platform Python standard library instead
+of a second ZIP grammar or decompressor. It cross-checks referenced local
+headers while reading every central-directory `ZipInfo`, but does not prove the
+absence of an orphan local record that no central entry references. That
+residual requires both a defect or compromise in the trusted system `ditto`
+producer and a consumer that acts on unreferenced records. It is accepted here
+because the smaller defense catches the observed high-consequence path without
+adding a fragile archive-parser subsystem.
 
 ### Release asset contract
 
@@ -534,7 +561,7 @@ Add stronger profiles next for:
 - the installer prints the installed CLI path, app path when an app was installed, env helper path, any current-shell PATH warning, PATH persist result, and the next command (`command -v simbroker` after persist, or `source "<env-helper>"` when persist is skipped)
 - `bash scripts/install_local.sh --cli-only` installs the CLI runtime without invoking `xcodegen` or `xcodebuild` and without requiring an app bundle
 - `npm run package:cli` writes `artifacts/cli/simulator-broker-<version>-cli.tar.gz` plus a SHA-256 checksum, does not invoke XcodeGen or `xcodebuild`, emits only normalized raw USTAR payload records without macOS metadata or host ownership, and its extracted README preserves literal Markdown without executing package commands or capturing the exact checkout root
-- `npm run package:cask-zip` writes `artifacts/distribution/Simulator-Broker-<version>.zip` plus a SHA-256 checksum from a Developer ID-signed, stapled `Simulator Broker.app` using `ditto -c -k --keepParent`. It verifies the sealed signature with `codesign --verify --deep --strict`, requires `CFBundleIdentifier`/`Identifier` `dev.codex.simulator-broker-app`, runs `xcrun stapler validate` before writing the zip, and does not build, sign, notarize, staple, tag, or publish
+- `npm run package:cask-zip` writes `artifacts/distribution/Simulator-Broker-<version>.zip` plus a SHA-256 checksum from an unchanged Developer ID-signed, stapled `Simulator Broker.app` using explicit `ditto` metadata suppression. It verifies the sealed signature with `codesign --verify --deep --strict`, requires `CFBundleIdentifier`/`Identifier` `dev.codex.simulator-broker-app`, runs `xcrun stapler validate`, applies the `SB-PKG-CASK-001` final-candidate validator, publishes only mode-`0644` zip/checksum candidates, and does not build, sign, notarize, staple, tag, or publish
 - `.github/workflows/ci.yml` runs `test:docs`, `test:broker-core`, and
   `test:harness-adoption` on `ubuntu-latest` (10 minutes), then runs `test:docs`
   and `test:client` on `macos-latest` (15 minutes). `.github/workflows/release.yml` runs

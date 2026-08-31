@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +28,119 @@ const customReleaseAssetTemplates = [
   "simbroker-<version>.tgz",
   "Simulator-Broker-<version>.zip",
 ];
+
+const caskZipRoot = "Simulator Broker.app";
+
+function writeCaskZipFixture(entries, { archiveComment = "" } = {}) {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-cask-zip-fixture-"));
+  const fixture = path.join(fixtureRoot, "fixture.zip");
+  const result = spawnSync(
+    "python3",
+    [
+      "-c",
+      `import json, sys, zipfile
+entries = json.loads(sys.argv[2])
+with zipfile.ZipFile(sys.argv[1], "w") as archive:
+    archive.comment = sys.argv[3].encode("utf-8")
+    for item in entries:
+        info = zipfile.ZipInfo(item["name"])
+        info.create_system = 3
+        info.external_attr = (item["mode"] & 0xffff) << 16
+        info.compress_type = zipfile.ZIP_STORED
+        info.comment = item.get("comment", "").encode("utf-8")
+        archive.writestr(info, item.get("data", "").encode("utf-8"))
+`,
+      fixture,
+      JSON.stringify(entries),
+      archiveComment,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  return fixture;
+}
+
+function runCaskZipValidator(fixture) {
+  return spawnSync(
+    "python3",
+    [path.join(repoRoot, "scripts/validate_cask_zip.py"), fixture, caskZipRoot],
+    { encoding: "utf8" },
+  );
+}
+
+function basicCaskZipEntries(extraEntries = []) {
+  return [
+    { name: `${caskZipRoot}/`, mode: 0o040755 },
+    { name: `${caskZipRoot}/Contents/`, mode: 0o040755 },
+    { data: "plist-marker", name: `${caskZipRoot}/Contents/Info.plist`, mode: 0o100644 },
+    { name: `${caskZipRoot}/Contents/MacOS/`, mode: 0o040755 },
+    { data: "executable", name: `${caskZipRoot}/Contents/MacOS/SimulatorBrokerApp`, mode: 0o100755 },
+    { data: "resources", name: `${caskZipRoot}/Contents/CodeResources`, mode: 0o100644 },
+    { name: `${caskZipRoot}/Contents/_CodeSignature/`, mode: 0o040755 },
+    { data: "seal", name: `${caskZipRoot}/Contents/_CodeSignature/CodeResources`, mode: 0o100644 },
+    ...extraEntries,
+  ];
+}
+
+function makeCaskAppFixture(prefix) {
+  const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const app = path.join(testRoot, "Simulator Broker.app");
+  const outputDir = path.join(testRoot, "output");
+  const fakeBin = path.join(testRoot, "fake-bin");
+  fs.mkdirSync(path.join(app, "Contents", "MacOS"), { recursive: true });
+  fs.mkdirSync(path.join(app, "Contents", "Resources"), { recursive: true });
+  fs.mkdirSync(path.join(app, "Contents", "_CodeSignature"), { recursive: true });
+  fs.mkdirSync(outputDir);
+  fs.mkdirSync(fakeBin);
+  fs.writeFileSync(
+    path.join(app, "Contents", "Info.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleExecutable</key><string>SimulatorBrokerApp</string>
+  <key>CFBundleIdentifier</key><string>dev.codex.simulator-broker-app</string>
+  <key>CFBundleName</key><string>Simulator Broker</string>
+</dict></plist>
+`,
+  );
+  const executable = path.join(app, "Contents", "MacOS", "SimulatorBrokerApp");
+  fs.writeFileSync(executable, "fixture executable\n");
+  fs.chmodSync(executable, 0o755);
+  fs.writeFileSync(path.join(app, "Contents", "_CodeSignature", "CodeResources"), "fixture seal\n");
+  fs.writeFileSync(path.join(app, "Contents", "CodeResources"), "fixture resources\n");
+  const metadataFile = path.join(app, "Contents", "Resources", "metadata.txt");
+  fs.writeFileSync(metadataFile, "fixture metadata\n");
+  return { app, fakeBin, metadataFile, outputDir, testRoot };
+}
+
+function writeCaskVerificationShims(fakeBin) {
+  fs.writeFileSync(
+    path.join(fakeBin, "codesign"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "--verify" ]]; then
+  exit 0
+fi
+if [[ "\${1:-}" == "-dv" ]]; then
+  printf '%s\n' 'Authority=Developer ID Application: Test Signer (TEAMID)' >&2
+  printf '%s\n' 'Identifier=dev.codex.simulator-broker-app' >&2
+  exit 0
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(fakeBin, "xcrun"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+[[ "\${1:-}" == "stapler" ]]
+[[ "\${2:-}" == "validate" ]]
+exit 0
+`,
+    { mode: 0o755 },
+  );
+}
 
 function assertPortableCliTarEntries(entries) {
   return assertPortableCliTarEntriesForRoot(entries, cliArchiveDirectory);
@@ -1258,6 +1372,49 @@ exec "$SIMBROKER_TEST_REAL_TAR" "$@"
   assert.deepEqual(fs.readdirSync(outputDir), []);
 });
 
+test("SB-PKG-CASK-001 cask ZIP validation rejects metadata and unsafe structure", () => {
+  const valid = writeCaskZipFixture(basicCaskZipEntries());
+  assert.equal(runCaskZipValidator(valid).status, 0);
+  const forbiddenEntryCases = [
+    [`${caskZipRoot}/Contents/._CodeResources`, 0o100644],
+    [`${caskZipRoot}/__MACOSX/metadata`, 0o100644],
+    ["Other.app/payload", 0o100644],
+    [`${caskZipRoot}/../Other.app/payload`, 0o100644],
+    [`${caskZipRoot}\\Contents\\payload`, 0o100644],
+    [`${caskZipRoot}/Contents/Fifo`, 0o010644],
+    [`${caskZipRoot}/Contents/OtherLink`, 0o120755],
+  ];
+  for (const [name, mode] of forbiddenEntryCases) {
+    const result = runCaskZipValidator(writeCaskZipFixture(basicCaskZipEntries([{ name, mode }])));
+    assert.notEqual(result.status, 0, name);
+    assert.equal(result.stderr.includes(repoRoot), false, result.stderr);
+  }
+
+  const duplicate = writeCaskZipFixture([
+    ...basicCaskZipEntries(),
+    { name: `${caskZipRoot}/Contents/Info.plist`, mode: 0o100644 },
+  ]);
+  assert.notEqual(runCaskZipValidator(duplicate).status, 0);
+  assert.notEqual(
+    runCaskZipValidator(writeCaskZipFixture(basicCaskZipEntries(), { archiveComment: "comment" })).status,
+    0,
+  );
+  assert.notEqual(
+    runCaskZipValidator(writeCaskZipFixture(basicCaskZipEntries([
+      { comment: "comment", name: `${caskZipRoot}/Contents/commented`, mode: 0o100644 },
+    ]))).status,
+    0,
+  );
+
+  const corrupt = writeCaskZipFixture(basicCaskZipEntries());
+  const corruptBytes = fs.readFileSync(corrupt);
+  const markerOffset = corruptBytes.indexOf(Buffer.from("plist-marker"));
+  assert.ok(markerOffset >= 0);
+  corruptBytes[markerOffset] ^= 0xff;
+  fs.writeFileSync(corrupt, corruptBytes);
+  assert.notEqual(runCaskZipValidator(corrupt).status, 0);
+});
+
 test("package_cask_zip.sh is the Homebrew cask zip path", () => {
   const script = readRepoFile("scripts/package_cask_zip.sh");
   const pkg = JSON.parse(readRepoFile("package.json"));
@@ -1265,7 +1422,8 @@ test("package_cask_zip.sh is the Homebrew cask zip path", () => {
   const gettingStarted = readRepoFile("docs/getting-started.md");
 
   assert.ok(pkg.scripts["package:cask-zip"].includes("package_cask_zip.sh"));
-  assert.ok(script.includes("ditto -c -k --keepParent"));
+  assert.ok(script.includes("ditto -c -k --norsrc --noextattr --noacl --noqtn --keepParent"));
+  assert.ok(script.includes("scripts/validate_cask_zip.py"));
   assert.ok(script.includes("Simulator Broker.app"));
   assert.ok(script.includes("Developer ID Application"));
   assert.ok(script.includes("dev.codex.simulator-broker-app"));
@@ -1293,6 +1451,102 @@ test("package_cask_zip.sh is the Homebrew cask zip path", () => {
   const openPr = tagged.indexOf("Open a pull request");
   assert.ok(pinIndex >= 0 && verifyAfterPin >= 0 && openPr > verifyAfterPin);
   assert.ok(gettingStarted.includes("npm run package:cask-zip"));
+});
+
+test("package_cask_zip.sh suppresses planted macOS metadata without mutating the signed app", {
+  skip: process.platform !== "darwin",
+}, () => {
+  const { app, fakeBin, metadataFile, outputDir } = makeCaskAppFixture(
+    "simbroker-package-cask-zip-real-ditto-",
+  );
+  writeCaskVerificationShims(fakeBin);
+  const plantedXattr = spawnSync("xattr", ["-w", "dev.codex.simulator-broker.test", "value", metadataFile], {
+    encoding: "utf8",
+  });
+  assert.equal(plantedXattr.status, 0, plantedXattr.stderr);
+  const plantedResourceFork = spawnSync(
+    "xattr",
+    ["-wx", "com.apple.ResourceFork", "00010203", metadataFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(plantedResourceFork.status, 0, plantedResourceFork.stderr);
+  const env = {
+    ...process.env,
+    PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
+  };
+  delete env.COPYFILE_DISABLE;
+  delete env.DITTONORSRC;
+
+  const result = spawnSync(
+    "bash",
+    [path.join(repoRoot, "scripts/package_cask_zip.sh"), "--app", app, "--output-dir", outputDir],
+    { cwd: repoRoot, encoding: "utf8", env },
+  );
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+
+  const zipName = `Simulator-Broker-${version}.zip`;
+  const zipPath = path.join(outputDir, zipName);
+  const checksumPath = `${zipPath}.sha256`;
+  const validation = runCaskZipValidator(zipPath);
+  assert.equal(validation.status, 0, validation.stderr);
+  assert.equal(fs.statSync(zipPath).mode & 0o777, 0o644);
+  assert.equal(fs.statSync(checksumPath).mode & 0o777, 0o644);
+  const expectedHash = createHash("sha256").update(fs.readFileSync(zipPath)).digest("hex");
+  assert.equal(fs.readFileSync(checksumPath, "utf8"), `${expectedHash}  ${zipName}\n`);
+  assert.equal(spawnSync("xattr", ["-p", "dev.codex.simulator-broker.test", metadataFile]).status, 0);
+  assert.equal(spawnSync("xattr", ["-px", "com.apple.ResourceFork", metadataFile]).status, 0);
+});
+
+test("package_cask_zip.sh rejects a leaking ditto candidate and clears stale outputs", {
+  skip: process.platform !== "darwin",
+}, () => {
+  const { app, fakeBin, outputDir, testRoot } = makeCaskAppFixture(
+    "simbroker-package-cask-zip-leaking-ditto-",
+  );
+  writeCaskVerificationShims(fakeBin);
+  const invalidZip = writeCaskZipFixture(basicCaskZipEntries([
+    { name: `${caskZipRoot}/Contents/._CodeResources`, mode: 0o100644 },
+  ]));
+  const argsLog = path.join(testRoot, "ditto-args.log");
+  fs.writeFileSync(
+    path.join(fakeBin, "ditto"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "$SIMBROKER_TEST_DITTO_ARGS_LOG"
+destination=''
+for argument in "$@"; do
+  destination="$argument"
+done
+cp "$SIMBROKER_TEST_INVALID_CASK_ZIP" "$destination"
+`,
+    { mode: 0o755 },
+  );
+  const zipName = `Simulator-Broker-${version}.zip`;
+  fs.writeFileSync(path.join(outputDir, zipName), "stale zip\n");
+  fs.writeFileSync(path.join(outputDir, `${zipName}.sha256`), "stale checksum\n");
+  const env = {
+    ...process.env,
+    PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
+    SIMBROKER_TEST_DITTO_ARGS_LOG: argsLog,
+    SIMBROKER_TEST_INVALID_CASK_ZIP: invalidZip,
+  };
+  delete env.COPYFILE_DISABLE;
+  delete env.DITTONORSRC;
+  const result = spawnSync(
+    "bash",
+    [path.join(repoRoot, "scripts/package_cask_zip.sh"), "--app", app, "--output-dir", outputDir],
+    { cwd: repoRoot, encoding: "utf8", env },
+  );
+
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /^Cask ZIP validation failed: entry \d+ contains AppleDouble metadata\.\n$/);
+  assert.equal(result.stderr.includes(repoRoot), false, result.stderr);
+  assert.equal(result.stderr.includes(testRoot), false, result.stderr);
+  assert.deepEqual(
+    fs.readFileSync(argsLog, "utf8").trimEnd().split("\n").slice(0, 7),
+    ["-c", "-k", "--norsrc", "--noextattr", "--noacl", "--noqtn", "--keepParent"],
+  );
+  assert.deepEqual(fs.readdirSync(outputDir), []);
 });
 
 test("package_cask_zip.sh refuses a missing app", () => {
