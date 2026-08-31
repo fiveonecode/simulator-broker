@@ -438,13 +438,15 @@ final class BrokerDashboardStore {
       return
     }
 
+    let lifecycleGeneration = storeStopGeneration
+
     BrokerLogger.appLifecycle.info(
       "Dashboard store starting stateRoot=\(self.stateRootPath, privacy: .public) refreshIntervalSeconds=\(self.refreshInterval.components.seconds, privacy: .public)"
     )
     BrokerLogger.appLifecycle.info("Refresh loop started")
 
     refreshTask = Task {
-      await refresh()
+      await refresh(expectedStopGeneration: lifecycleGeneration)
       while Task.isCancelled == false {
         do {
           try await Task.sleep(for: refreshInterval)
@@ -457,7 +459,7 @@ final class BrokerDashboardStore {
         if isApplyingAction {
           continue
         }
-        await refresh(silent: true)
+        await refresh(silent: true, expectedStopGeneration: lifecycleGeneration)
       }
     }
   }
@@ -468,16 +470,24 @@ final class BrokerDashboardStore {
       BrokerLogger.appLifecycle.info("Refresh loop stopping")
     }
     let stoppedRefreshTask = refreshTask
+    let stoppedSetupTask = setupTask
+    let hadActiveSetupTask = setupTask != nil
     storeStopGeneration += 1
     feedbackClearTask?.cancel()
     refreshTask?.cancel()
     setupTask?.cancel()
+    if hadActiveSetupTask {
+      pendingSetupConfirmation = nil
+      setupPlan = nil
+      setupPhase = .idle
+      isApplyingAction = false
+    }
     feedbackClearTask = nil
     isRefreshing = false
     visibleRefreshCount = 0
     refreshTask = nil
     setupTask = nil
-    return stoppedRefreshTask
+    return stoppedRefreshTask ?? stoppedSetupTask
   }
 
   func clearFeedback() {
@@ -513,9 +523,10 @@ final class BrokerDashboardStore {
     }
   }
 
-  func refreshNow() {
+  @discardableResult
+  func refreshNow() -> Task<Void, Never> {
     let stopGeneration = storeStopGeneration
-    Task {
+    return Task {
       await refresh(expectedStopGeneration: stopGeneration)
     }
   }
@@ -626,12 +637,19 @@ final class BrokerDashboardStore {
     setupTask = Task { [weak self] in
       guard let self else { return }
       defer {
-        if generation == setupGeneration {
+        if generation == setupGeneration, stopGeneration == storeStopGeneration {
           isApplyingAction = false
           setupTask = nil
         }
       }
       do {
+        guard Task.isCancelled == false,
+              generation == setupGeneration,
+              stopGeneration == storeStopGeneration,
+              serviceStatusUnverified == false
+        else {
+          throw CancellationError()
+        }
         let plan = try await loadGuidedSetupPlan()
         try Task.checkCancellation()
         guard generation == setupGeneration, serviceStatusUnverified == false else {
@@ -654,7 +672,8 @@ final class BrokerDashboardStore {
         if plan.status == .ready {
           try await requireRefreshAfterMutation(
             preservingGuidedSetup: true,
-            expectedSetupGeneration: generation
+            expectedSetupGeneration: generation,
+            expectedStopGeneration: stopGeneration
           )
           try Task.checkCancellation()
           try requireLiveServiceAfterSetupRefresh()
@@ -663,23 +682,37 @@ final class BrokerDashboardStore {
           setActionMessage("Setup complete — brokerd is running and all managed simulators are healthy.")
           return
         }
-        try await applyGuidedSetup(plan, expectedSetupGeneration: generation)
+        try await applyGuidedSetup(
+          plan,
+          expectedSetupGeneration: generation,
+          expectedStopGeneration: stopGeneration
+        )
       } catch is CancellationError {
         await refreshAfterSetupCancellation(
           expectedSetupGeneration: generation,
           expectedStopGeneration: stopGeneration
         )
-        if generation == setupGeneration {
+        if generation == setupGeneration, stopGeneration == storeStopGeneration {
           pendingSetupConfirmation = nil
           setupPlan = nil
           setupPhase = .idle
         }
       } catch {
-        _ = await refresh(silent: true, expectedSetupGeneration: generation)
-        if generation == setupGeneration {
-          setupPhase = setupPlan == nil ? .idle : .awaitingConfirmation
-          lastActionMessage = nil
-          lastErrorMessage = error.localizedDescription
+        _ = await refresh(
+          silent: true,
+          expectedSetupGeneration: generation,
+          expectedStopGeneration: stopGeneration
+        )
+        if generation == setupGeneration, stopGeneration == storeStopGeneration {
+          if Task.isCancelled {
+            pendingSetupConfirmation = nil
+            setupPlan = nil
+            setupPhase = .idle
+          } else {
+            setupPhase = setupPlan == nil ? .idle : .awaitingConfirmation
+            lastActionMessage = nil
+            lastErrorMessage = error.localizedDescription
+          }
         }
       }
     }
@@ -708,29 +741,50 @@ final class BrokerDashboardStore {
     setupTask = Task { [weak self] in
       guard let self else { return }
       defer {
-        if generation == setupGeneration {
+        if generation == setupGeneration, stopGeneration == storeStopGeneration {
           isApplyingAction = false
           setupTask = nil
         }
       }
       do {
-        try await applyGuidedSetup(setupPlan, expectedSetupGeneration: generation)
+        guard Task.isCancelled == false,
+              generation == setupGeneration,
+              stopGeneration == storeStopGeneration,
+              serviceStatusUnverified == false
+        else {
+          throw CancellationError()
+        }
+        try await applyGuidedSetup(
+          setupPlan,
+          expectedSetupGeneration: generation,
+          expectedStopGeneration: stopGeneration
+        )
       } catch is CancellationError {
         await refreshAfterSetupCancellation(
           expectedSetupGeneration: generation,
           expectedStopGeneration: stopGeneration
         )
-        if generation == setupGeneration {
+        if generation == setupGeneration, stopGeneration == storeStopGeneration {
           pendingSetupConfirmation = nil
           self.setupPlan = nil
           setupPhase = .idle
         }
       } catch {
-        _ = await refresh(silent: true, expectedSetupGeneration: generation)
-        if generation == setupGeneration {
-          setupPhase = .awaitingConfirmation
-          lastActionMessage = nil
-          lastErrorMessage = error.localizedDescription
+        _ = await refresh(
+          silent: true,
+          expectedSetupGeneration: generation,
+          expectedStopGeneration: stopGeneration
+        )
+        if generation == setupGeneration, stopGeneration == storeStopGeneration {
+          if Task.isCancelled {
+            pendingSetupConfirmation = nil
+            self.setupPlan = nil
+            setupPhase = .idle
+          } else {
+            setupPhase = .awaitingConfirmation
+            lastActionMessage = nil
+            lastErrorMessage = error.localizedDescription
+          }
         }
       }
     }
@@ -1059,6 +1113,9 @@ final class BrokerDashboardStore {
     if let expectedSetupGeneration, expectedSetupGeneration != setupGeneration {
       return .discarded
     }
+    guard Task.isCancelled == false else {
+      return .discarded
+    }
     let refreshMode = silent ? "silent" : "manual"
     refreshGeneration += 1
     let generation = refreshGeneration
@@ -1132,6 +1189,10 @@ final class BrokerDashboardStore {
         completeRefresh(generation: generation, with: outcome)
         return outcome
       }
+      guard Task.isCancelled == false else {
+        completeRefresh(generation: generation, with: .discarded)
+        return .discarded
+      }
       if let partialFailure = error as? BrokerSnapshotPartialLoadError,
         partialFailure.recoveredState.service == nil
           || partialFailure.recoveredState.serviceRequiresRestart
@@ -1167,13 +1228,15 @@ final class BrokerDashboardStore {
   private func requireRefreshAfterMutation(
     silent: Bool = false,
     preservingGuidedSetup: Bool = false,
-    expectedSetupGeneration: Int? = nil
+    expectedSetupGeneration: Int? = nil,
+    expectedStopGeneration: Int? = nil
   ) async throws {
     try Task.checkCancellation()
     var outcome = await refresh(
       silent: silent,
       preservingGuidedSetup: preservingGuidedSetup,
-      expectedSetupGeneration: expectedSetupGeneration
+      expectedSetupGeneration: expectedSetupGeneration,
+      expectedStopGeneration: expectedStopGeneration
     )
     var followedGenerations: Set<Int> = []
 
@@ -1534,8 +1597,16 @@ final class BrokerDashboardStore {
 
   private func applyGuidedSetup(
     _ plan: BrokerSetupPlan,
-    expectedSetupGeneration: Int
+    expectedSetupGeneration: Int,
+    expectedStopGeneration: Int
   ) async throws {
+    guard Task.isCancelled == false,
+          expectedSetupGeneration == setupGeneration,
+          expectedStopGeneration == storeStopGeneration,
+          serviceStatusUnverified == false
+    else {
+      throw CancellationError()
+    }
     let cliURL = try requireCLIURL()
     setupPhase = .applying
     var arguments = [
@@ -1562,7 +1633,8 @@ final class BrokerDashboardStore {
     }
     try await requireRefreshAfterMutation(
       preservingGuidedSetup: true,
-      expectedSetupGeneration: expectedSetupGeneration
+      expectedSetupGeneration: expectedSetupGeneration,
+      expectedStopGeneration: expectedStopGeneration
     )
     try requireLiveServiceAfterSetupRefresh()
     setupPlan = nil
