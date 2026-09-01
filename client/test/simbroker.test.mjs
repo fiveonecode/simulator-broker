@@ -2521,9 +2521,26 @@ test("project validate can discover the project file from --repo-root", () => {
 
 test("project forget removes an inactive registration and refreshes the local app snapshot", () => {
   const fixture = makeFixture();
+  const leaseFilePath = path.join(fixture.root, "forgotten-project-lease.json");
 
   assert.equal(runCli(fixture, "host", "init").status, 0);
   assert.equal(runCli(fixture, "project", "validate", "--repo-root", fixture.repoRoot).status, 0);
+  const acquired = runCli(
+    fixture,
+    "lease",
+    "acquire",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--owner-pid",
+    String(process.pid),
+    "--lease-file",
+    leaseFilePath,
+  );
+  assert.equal(acquired.status, 0, acquired.stderr);
+  const released = runCli(fixture, "lease", "release", "--lease-file", leaseFilePath);
+  assert.equal(released.status, 0, released.stderr);
 
   const forgotten = runCli(fixture, "project", "forget", "--project-id", "cli-demo");
   assert.equal(forgotten.status, 0);
@@ -2532,6 +2549,8 @@ test("project forget removes an inactive registration and refreshes the local ap
   assert.equal(Object.hasOwn(readJson(path.join(fixture.stateRoot, "known-projects.json")).projects, "cli-demo"), false);
   const snapshot = readJson(path.join(fixture.stateRoot, "app-snapshot.json"));
   assert.equal(snapshot.projects.some((project) => project.projectId === "cli-demo"), false);
+  assert.equal(snapshot.recentEvents.some((event) => event.type === "lease.acquired" && event.projectId === "cli-demo"), true);
+  assert.equal(snapshot.recentEvents.some((event) => event.type === "lease.released" && event.projectId === "cli-demo"), true);
 
   const repeated = runCli(fixture, "project", "forget", "--project-id", "cli-demo");
   assert.equal(repeated.status, 0);

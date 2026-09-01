@@ -3209,7 +3209,7 @@ function summarizeProjectRecords(activeLeases, pins, recentEvents, knownProjects
   }
 
   for (const event of recentEvents) {
-    const project = ensureProject(event.projectId ?? null, null, event.projectId ? (knownProjects.projects[event.projectId] ?? null) : null);
+    const project = event.projectId ? (byProject.get(event.projectId) ?? null) : null;
     if (!project) {
       continue;
     }
