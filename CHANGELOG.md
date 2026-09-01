@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.7] - 2026-09-01
+
+Alpha 7 keeps the Alpha 6 install and four-custom-asset contract while fixing
+one app read-model regression found during the release canary.
+
+### Fixed
+
+- Forgetting an inactive project now keeps it out of the app's Projects list
+  even when its lease history remains available in Events.
+
 ## [0.1.0-alpha.6] - 2026-09-01
 
 Alpha 6 is the promotion-readiness follow-up to Alpha 5. It keeps the same
