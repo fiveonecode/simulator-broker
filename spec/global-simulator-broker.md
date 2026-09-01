@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.16.7`
-> **Last Updated:** `2026-08-31`
+> **Version:** `0.16.8`
+> **Last Updated:** `2026-09-01`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -251,6 +251,22 @@ Current implementation slice:
 - stable non-zero exit codes shared by direct CLI mode and service-backed CLI mode
 - local install, package, and smoke scripts under `scripts/`, including CLI-only install through `install_local.sh --cli-only` and PATH persistence through Homebrew prefix bin or one guarded login-profile line
 - `host init --bootstrap-config` warns that it creates real iOS Simulator devices before those devices are created
+
+#### Project initialization caller-context contract
+
+`project init` resolves repository identity at the CLI boundary before direct or
+service-backed dispatch. This prevents a resident `brokerd` process from making
+project identity depend on the directory where the daemon happened to start.
+
+| ID | Requirement | Verifier |
+| --- | --- | --- |
+| SB-PROJECT-INIT-001 | The CLI sends both an absolute `projectFilePath` and an absolute `repoRoot` with every `project init` request. With neither path flag, the project file is `<caller cwd>/.simulator-broker/project.json` and the repository root is the caller working directory. With a caller-resolved project file and no explicit repo root, the root is one directory above the file's containing directory, matching the canonical `.simulator-broker/project.json` layout. | `client/test/simbroker.test.mjs` `project init keeps caller repo identity when a resident service was launched elsewhere` |
+| SB-PROJECT-INIT-002 | An explicit `--repo-root` remains authoritative for project identity. An explicit `--project-file` remains authoritative for the file location. The canonical paired form points that file at `<repo-root>/.simulator-broker/project.json`, and direct and service-backed dispatch use the same absolute values. | The same resident-service regression plus `project init scaffolds a starter repo config that can be validated immediately` |
+| SB-PROJECT-INIT-003 | A resident service launched from another working directory must return and register the caller repository identity. Repeating the same init without overwrite fails with `project-config-exists` and a caller-root recovery command. A following capacity check discovers the created project and reports its project ID; `repo.repoRoot` remains `null` by the public-safe capacity redaction contract. | `client/test/simbroker.test.mjs` `project init keeps caller repo identity when a resident service was launched elsewhere` |
+
+These rules add no retry or service-side path discovery. The caller resolves the
+context once and the daemon treats it as request data. This keeps the recovery
+boundary explicit while avoiding a second working-directory-dependent path.
 
 ### `app`
 
@@ -599,6 +615,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.16.8 | 2026-09-01 | Required `project init` to carry caller-resolved repository identity across direct and resident-service dispatch, including repeat-init recovery and the intentionally redacted capacity response. |
 | 0.16.7 | 2026-08-31 | App restart-required status requires canonical exit code `3`, queued refreshes retain lifecycle ownership, and missing-host probe failures clear stale live-service authority while remaining onboarding. |
 | 0.16.6 | 2026-08-30 | Lifecycle cancellation preserves cached authority, service transitions invalidate stale setup, setup recovery cannot restart after stop, and path-qualified unverified guidance remains visible. |
 | 0.16.5 | 2026-08-30 | App distinguishes exact verified live runtime incompatibility from generic unverified status and offers cooperative restart without command authority. |
