@@ -206,12 +206,12 @@ struct RootView: View {
       || store.serviceRequiresRestart
     {
       VStack(alignment: .leading, spacing: 10) {
-        if store.canOfferReadOnlyFinishSetup {
+        if store.canOfferServiceRecoveryAction, let actionTitle = store.guidedSetupActionTitle {
           StatusMessageCard(
             color: .orange,
             message: store.serviceAvailabilityMessage,
             symbolName: "bolt.slash.fill",
-            actionTitle: "Finish setup",
+            actionTitle: actionTitle,
             onAction: resumeGuidedSetup,
             onDismiss: nil
           )
