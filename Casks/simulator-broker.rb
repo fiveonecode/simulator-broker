@@ -4,7 +4,7 @@ cask "simulator-broker" do
 
   url "https://github.com/fiveonecode/simulator-broker/releases/download/v#{version}/Simulator-Broker-#{version}.zip"
   name "Simulator Broker"
-  desc "macOS operator app for the local iOS Simulator control plane"
+  desc "Operator app for the local iOS Simulator control plane"
   homepage "https://github.com/fiveonecode/simulator-broker"
 
   depends_on macos: :sonoma
