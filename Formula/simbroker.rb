@@ -1,8 +1,8 @@
 class Simbroker < Formula
   desc "Local iOS Simulator control plane CLI"
   homepage "https://github.com/fiveonecode/simulator-broker"
-  url "https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.5/simulator-broker-0.1.0-alpha.5-cli.tar.gz"
-  sha256 "429c6477ff3a85f90a660693bda5527963a89942a8e8052eee31086a5ecc3ddd"
+  url "https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.6/simulator-broker-0.1.0-alpha.6-cli.tar.gz"
+  sha256 "400791caaf5de9a0eecffc3f9ff48798280a44b25de2f2688a00a15a45489960"
   license "MIT"
 
   depends_on macos: :sonoma

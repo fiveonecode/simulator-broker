@@ -164,7 +164,7 @@ A first extracted implementation slice now exists:
   fixtures inject `processController.currentPid` so hardcoded fixture
   PIDs cannot match the GitHub Actions test-runner pid. Containment still
   skips the live `process.pid` when `currentPid` is omitted.
-- tagged versions such as `v0.1.0-alpha.5` attach exactly four custom assets
+- tagged versions such as `v0.1.0-alpha.6` attach exactly four custom assets
   to a GitHub Release: the CLI tarball, its `.sha256` checksum, the packable
   `simbroker-<version>.tgz`, and the notarized
   `Simulator-Broker-<version>.zip`. GitHub-generated source archives are not
