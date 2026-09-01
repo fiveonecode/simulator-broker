@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.6] - 2026-09-01
+
+Alpha 6 is the promotion-readiness follow-up to Alpha 5. It keeps the same
+installation and four-custom-asset contract while correcting two first-run and
+recovery clarity gaps found during live two-host validation.
+
+### Fixed
+
+- A configured Mac whose local controller is stopped now offers **Start
+  service** in the app instead of the misleading **Finish setup** label;
+  genuinely unfinished setup states retain their setup-specific actions.
+- `simbroker project init` now resolves repository identity in the caller
+  before dispatching through a resident `brokerd`, so the documented no-flag
+  newcomer flow works even when the service was launched from another
+  directory.
+
 ## [0.1.0-alpha.5] - 2026-09-01
 
 Alpha 5 is the provenance-safe recovery release for the immutable failed
