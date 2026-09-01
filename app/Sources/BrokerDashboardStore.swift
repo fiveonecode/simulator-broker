@@ -311,11 +311,24 @@ final class BrokerDashboardStore {
       && serviceStatusUnverified == false
   }
 
-  var canOfferReadOnlyFinishSetup: Bool {
+  var canOfferServiceRecoveryAction: Bool {
     (startupState == .readOnlySnapshot || serviceRequiresRestart)
       && canStartBrokerService
       && isApplyingAction == false
       && serviceStatusUnverified == false
+  }
+
+  var guidedSetupActionTitle: String? {
+    switch startupState {
+    case .missingCLI, .serviceStatusUnverified, .ready:
+      return nil
+    case .needsHostBootstrap:
+      return "Complete first-time setup"
+    case .needsServiceStart, .readOnlySnapshot:
+      return serviceRequiresRestart ? "Finish setup" : "Start service"
+    case .needsSnapshotRefresh:
+      return "Finish setup"
+    }
   }
 
   var serviceAvailabilityMessage: String {

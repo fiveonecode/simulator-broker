@@ -350,7 +350,7 @@ struct BrokerSetupView: View {
         }
 
         HStack(spacing: 12) {
-          if let primaryActionTitle = primaryActionTitle {
+          if let primaryActionTitle = store.guidedSetupActionTitle {
             Button(primaryActionTitle, action: performPrimaryAction)
             .buttonStyle(.borderedProminent)
             .disabled(store.isApplyingAction || primaryActionEnabled == false)
@@ -551,19 +551,6 @@ struct BrokerSetupView: View {
       return store.canRunLocalBrokerCommands
     case .serviceStatusUnverified, .ready:
       return false
-    }
-  }
-
-  private var primaryActionTitle: String? {
-    switch store.startupState {
-    case .missingCLI, .serviceStatusUnverified, .ready:
-      return nil
-    case .needsHostBootstrap:
-      return "Complete first-time setup"
-    case .needsServiceStart, .readOnlySnapshot:
-      return "Finish setup"
-    case .needsSnapshotRefresh:
-      return "Finish setup"
     }
   }
 

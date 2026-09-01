@@ -310,7 +310,7 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertFalse(store.canSendCommands)
     XCTAssertEqual(store.startupState, .serviceStatusUnverified)
     XCTAssertTrue(store.serviceStatusUnverified)
-    XCTAssertFalse(store.canOfferReadOnlyFinishSetup)
+    XCTAssertFalse(store.canOfferServiceRecoveryAction)
     XCTAssertEqual(store.serviceStatusText, "status unverified")
   }
 
@@ -347,7 +347,7 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertEqual(store.startupState, .serviceStatusUnverified)
     XCTAssertEqual(store.lastErrorMessage, "Snapshot refresh failed once")
     XCTAssertTrue(store.serviceStatusUnverified)
-    XCTAssertFalse(store.canOfferReadOnlyFinishSetup)
+    XCTAssertFalse(store.canOfferServiceRecoveryAction)
     XCTAssertEqual(store.serviceStatusText, "status unverified")
     XCTAssertEqual(
       store.serviceAvailabilityMessage,
@@ -403,7 +403,7 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertEqual(store.commandStatusText, "Status unverified")
     XCTAssertEqual(store.serviceStatusText, "status unverified")
     XCTAssertFalse(store.canStartBrokerService)
-    XCTAssertFalse(store.canOfferReadOnlyFinishSetup)
+    XCTAssertFalse(store.canOfferServiceRecoveryAction)
     XCTAssertEqual(
       store.serviceAvailabilityMessage,
       "Broker commands are disabled because current brokerd status could not be verified. Refresh before starting setup or sending commands."
@@ -597,7 +597,7 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertFalse(store.serviceStatusUnverified)
     XCTAssertEqual(store.startupState, .readOnlySnapshot)
     XCTAssertTrue(store.canStartBrokerService)
-    XCTAssertTrue(store.canOfferReadOnlyFinishSetup)
+    XCTAssertTrue(store.canOfferServiceRecoveryAction)
   }
 
   func testUnreadableSnapshotWithValidatedLiveServiceRemainsUnverified() async throws {
@@ -655,7 +655,8 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertFalse(store.serviceStatusUnverified)
     XCTAssertFalse(store.canSendCommands)
     XCTAssertTrue(store.canStartBrokerService)
-    XCTAssertTrue(store.canOfferReadOnlyFinishSetup)
+    XCTAssertTrue(store.canOfferServiceRecoveryAction)
+    XCTAssertEqual(store.guidedSetupActionTitle, "Finish setup")
     XCTAssertEqual(store.startupState, .needsServiceStart)
     XCTAssertEqual(store.commandStatusText, "Restart required")
     XCTAssertEqual(store.serviceStatusText, "brokerd restart required")
@@ -781,7 +782,7 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertEqual(store.startupState, .serviceStatusUnverified)
     XCTAssertFalse(store.canSendCommands)
     XCTAssertFalse(store.canStartBrokerService)
-    XCTAssertFalse(store.canOfferReadOnlyFinishSetup)
+    XCTAssertFalse(store.canOfferServiceRecoveryAction)
   }
 
   func testRefreshFailureDismissesGuidedSetupConfirmationAndBlocksLocalApply() async throws {
@@ -1327,10 +1328,24 @@ final class BrokerDashboardStoreTests: XCTestCase {
       "Broker commands are disabled because brokerd is not running. Start the service to enable pinning, release, and lifecycle actions."
     )
     XCTAssertTrue(store.canStartBrokerService)
-    XCTAssertTrue(store.canOfferReadOnlyFinishSetup)
+    XCTAssertTrue(store.canOfferServiceRecoveryAction)
+    XCTAssertEqual(store.guidedSetupActionTitle, "Start service")
 
     store.isApplyingAction = true
-    XCTAssertFalse(store.canOfferReadOnlyFinishSetup)
+    XCTAssertFalse(store.canOfferServiceRecoveryAction)
+  }
+
+  func testConfiguredStoppedServiceActionStartsService() {
+    let loadedState = makeLoadedState(snapshot: nil, service: nil)
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: RecordingCommandClient(),
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+
+    XCTAssertEqual(store.startupState, .needsServiceStart)
+    XCTAssertEqual(store.guidedSetupActionTitle, "Start service")
   }
 
   func testStartupStatePrioritizesMissingHostBootstrapWhenServiceExists() {
@@ -1364,6 +1379,7 @@ final class BrokerDashboardStoreTests: XCTestCase {
     store.loadedState = loadedState
 
     XCTAssertEqual(store.startupState, .needsHostBootstrap)
+    XCTAssertEqual(store.guidedSetupActionTitle, "Complete first-time setup")
   }
 
   func testGuidedSetupPreviewsThenAppliesTheExactPlan() async throws {

@@ -1,8 +1,8 @@
 # Guided `simbroker setup`
 
 > **Document ID:** `GSB-SETUP-001`
-> **Version:** `1.0.33`
-> **Last Updated:** `2026-08-30`
+> **Version:** `1.0.34`
+> **Last Updated:** `2026-09-01`
 > **Status:** `Active`
 > **Owner:** `spec-steward`, `ios-dev`
 > **Target:** Shipped on `v0.1.0-alpha.3`
@@ -420,8 +420,12 @@ is already `ready` refreshes the current snapshot before reporting that
 success, matching confirmed apply. Failure of a confirmable plan refreshes
 first, preserves the sheet, and shows completed stages and recovery.
 Automatic finishing failure stays off the sheet and surfaces the recovery
-error on the dashboard. The read-only snapshot `Finish setup` action is hidden
-while setup is applying so an in-progress run can only be stopped through Stop.
+error on the dashboard. A configured host with stopped `brokerd` labels its
+recovery action `Start service`; an incompatible live runtime keeps the
+`Finish setup` action, and missing host configuration keeps `Complete
+first-time setup`. The
+read-only recovery action is hidden while setup is applying so an in-progress
+run can only be stopped through Stop.
 Displayed setup failures include the CLI `logPath`, `doctorIssues` including
 per-issue `remediationCommands` when present, and incomplete rollback count
 when those fields are present.
@@ -625,6 +629,7 @@ long-running plan/handoff/evaluation, and a passing `agent:complete`.
 
 | Version | Date | Author | Changes |
 |---|---|---|---|
+| 1.0.34 | 2026-09-01 | `spec-steward`, `ios-dev` | Give configured stopped-service recovery an explicit `Start service` action while preserving `Finish setup` for runtime restart and first-time setup copy for missing configuration |
 | 1.0.33 | 2026-08-30 | `spec-steward`, `ios-dev` | Make app live-service reads and mutations require the exact generated broker runtime version |
 | 1.0.32 | 2026-08-30 | `spec-steward`, `ios-dev` | Treat a live unhealthy `brokerd` as setup finishing work with service action `start`, and honor first SIGINT/SIGTERM while replacing that daemon |
 | 1.0.31 | 2026-08-29 | `spec-steward`, `ios-dev` | Record Target as shipped on `v0.1.0-alpha.3` so the spec matches the tagged Homebrew, npm, and notarized-app artifacts that include guided setup |
