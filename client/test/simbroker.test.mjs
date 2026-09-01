@@ -191,6 +191,7 @@ function spawnCli(fixture, ...args) {
     "--state-root", fixture.stateRoot,
     ...args,
   ], {
+    cwd: fixture.cwd,
     encoding: "utf8",
     env: {
       ...process.env,
@@ -2439,6 +2440,75 @@ test("project init scaffolds a starter repo config that can be validated immedia
   const validateResult = runCli(fixture, "project", "validate", "--repo-root", fixture.repoRoot);
   assert.equal(validateResult.status, 0);
   assert.equal(validateResult.json.projectConfig.purposes.some((purpose) => purpose.id === "agent-ui-session"), true);
+});
+
+test("project init keeps caller repo identity when a resident service was launched elsewhere", (t) => {
+  const fixture = makeFixture();
+  const serviceCwd = path.join(fixture.root, "service-launch");
+  const callerRepoRoot = path.join(fixture.root, "fresh-consumer");
+  fs.mkdirSync(serviceCwd, { recursive: true });
+  fs.mkdirSync(callerRepoRoot, { recursive: true });
+  const canonicalCallerRepoRoot = fs.realpathSync(callerRepoRoot);
+  const serviceFixture = { ...fixture, cwd: serviceCwd };
+  const callerFixture = { ...fixture, cwd: callerRepoRoot };
+  t.after(() => {
+    runCli(serviceFixture, "service", "stop");
+  });
+
+  assert.equal(runCli(serviceFixture, "host", "init").status, 0);
+  assert.equal(runCli(serviceFixture, "service", "start").status, 0);
+
+  const initialized = runCli(callerFixture, "project", "init");
+  assert.equal(initialized.status, 0, initialized.stderr);
+  assert.equal(initialized.json.transport, "service");
+  assert.equal(initialized.json.repoRoot, canonicalCallerRepoRoot);
+  assert.equal(initialized.json.projectFilePath, path.join(canonicalCallerRepoRoot, ".simulator-broker/project.json"));
+  assert.equal(initialized.json.projectConfig.projectName, "Fresh Consumer");
+
+  const knownProject = readJson(path.join(fixture.stateRoot, "known-projects.json"))
+    .projects[initialized.json.projectConfig.projectId];
+  assert.equal(knownProject.projectFilePath, initialized.json.projectFilePath);
+  assert.equal(knownProject.repoRoot, canonicalCallerRepoRoot);
+
+  const repeated = runCli(callerFixture, "project", "init");
+  assert.equal(repeated.status, 2);
+  assert.equal(repeated.json.reasonCode, "project-config-exists");
+  assert.equal(repeated.json.projectFilePath, initialized.json.projectFilePath);
+  assert.ok(repeated.json.suggestedCommand.includes(canonicalCallerRepoRoot));
+  assert.equal(repeated.json.suggestedCommand.includes(serviceCwd), false);
+
+  const capacity = runCli(
+    callerFixture,
+    "capacity",
+    "check",
+    "--purpose",
+    "agent-ui-session",
+    "--json",
+  );
+  assert.equal(capacity.status, 0, capacity.stderr);
+  assert.equal(capacity.json.transport, "service");
+  assert.equal(capacity.json.repo.configured, true);
+  assert.equal(capacity.json.repo.projectId, initialized.json.projectConfig.projectId);
+  assert.equal(capacity.json.repo.repoRoot, null);
+
+  const explicitRepoRoot = path.join(fixture.root, "explicit-consumer");
+  const explicitProjectFilePath = path.join(explicitRepoRoot, ".simulator-broker/project.json");
+  const explicit = runCli(
+    callerFixture,
+    "project",
+    "init",
+    "--repo-root",
+    explicitRepoRoot,
+    "--project-file",
+    explicitProjectFilePath,
+    "--project-id",
+    "explicit-consumer",
+  );
+  assert.equal(explicit.status, 0, explicit.stderr);
+  assert.equal(explicit.json.transport, "service");
+  assert.equal(explicit.json.repoRoot, path.resolve(explicitRepoRoot));
+  assert.equal(explicit.json.projectFilePath, path.resolve(explicitProjectFilePath));
+  assert.equal(explicit.json.projectConfig.projectId, "explicit-consumer");
 });
 
 test("project validate can discover the project file from --repo-root", () => {

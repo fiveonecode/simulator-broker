@@ -620,13 +620,16 @@ function lifecycleOptions(flags) {
 function projectInitOptions(paths, flags) {
   const repoRoot = flagValue(flags, "repo-root");
   const resolvedRepoRoot = repoRoot ? path.resolve(repoRoot) : null;
+  const projectFilePath = path.resolve(
+    paths.projectFilePath ?? path.join(resolvedRepoRoot ?? process.cwd(), DEFAULT_PROJECT_FILE),
+  );
   return {
     iosVersion: flagValue(flags, "ios-version"),
     overwrite: parseBooleanFlag(flags, "overwrite"),
-    projectFilePath: paths.projectFilePath ?? path.join(resolvedRepoRoot ?? process.cwd(), DEFAULT_PROJECT_FILE),
+    projectFilePath,
     projectId: flagValue(flags, "project-id"),
     projectName: flagValue(flags, "project-name"),
-    repoRoot: resolvedRepoRoot,
+    repoRoot: resolvedRepoRoot ?? path.resolve(path.dirname(projectFilePath), ".."),
   };
 }
 
