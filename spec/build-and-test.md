@@ -136,9 +136,12 @@ A first extracted implementation slice now exists:
   Darwin `npm test`. The script scans the staged payload and archive
   name; it does not rerun the full-repo `verify:public-surface` scan. Before
   staging or signing, including with `--skip-build`, the script requires the
-  app's `SimulatorBrokerExpectedRuntimeVersion` `Info.plist` value to exactly
-  match the root `package.json` version. A stale or missing value fails before
-  `codesign` so a version bump cannot silently reuse an older app build. The
+  app's `SimulatorBrokerExpectedRuntimeVersion`, `CFBundleShortVersionString`,
+  and `CFBundleVersion` `Info.plist` values to exactly match the root
+  `package.json` version. Finder and About therefore show the same public
+  Alpha version as the runtime compatibility key. A stale or missing value
+  fails before `codesign` so a version bump cannot silently reuse an older
+  app build. The
   XcodeGen Release configuration generates a `dwarf-with-dsym` companion and
   deployment-postprocesses the app executable with debugging-symbol stripping;
   Swift-symbol stripping stays disabled. This removes source and DerivedData
