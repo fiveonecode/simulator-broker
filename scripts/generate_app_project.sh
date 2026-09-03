@@ -60,6 +60,10 @@ fs.writeFileSync(
     `  <string>$(PRODUCT_NAME)</string>\n`+
     `  <key>CFBundlePackageType</key>\n`+
     `  <string>APPL</string>\n`+
+    `  <key>CFBundleShortVersionString</key>\n`+
+    `  <string>${runtimeVersion}</string>\n`+
+    `  <key>CFBundleVersion</key>\n`+
+    `  <string>${runtimeVersion}</string>\n`+
     `  <key>LSApplicationCategoryType</key>\n`+
     `  <string>public.app-category.developer-tools</string>\n`+
     `  <key>SimulatorBrokerExpectedRuntimeVersion</key>\n`+

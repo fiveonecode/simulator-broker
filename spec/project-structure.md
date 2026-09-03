@@ -30,7 +30,7 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
   README screenshot; not source of truth
 - `examples/` — executable sample repos and smoke fixtures for broker adoption patterns; not source of truth
 - `references/` — public-safe reference notes; copied product snapshots are not checked in
-- `app/` — XcodeGen spec, SwiftUI source, and XCTest coverage for the macOS operator app; supported generation atomically emits an ignored `Sources/Generated/BrokerRuntimeVersion.generated.swift` constant and `Generated/SimulatorBrokerApp-Info.plist` runtime compatibility key from the root package version before XcodeGen runs
+- `app/` — XcodeGen spec, SwiftUI source, and XCTest coverage for the macOS operator app; supported generation atomically emits an ignored `Sources/Generated/BrokerRuntimeVersion.generated.swift` constant and `Generated/SimulatorBrokerApp-Info.plist` runtime compatibility plus Finder/About version keys from the root package version before XcodeGen runs
 - `broker-core/` — reusable broker logic; current file-backed slice, lease containment helpers, shared `simctl` adapter, and error-contract boundaries live here
 - `client/` — CLI, local service, and compatibility layer; `client/bin/` contains `simbroker` and `brokerd`, `client/service/` contains the Unix-socket authority implementation, and `client/public-surface.mjs` implements the public text safety gate
 - `client/setup-preflight.mjs` — bounded read-only macOS/Xcode/path/disk setup

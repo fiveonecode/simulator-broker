@@ -34,6 +34,8 @@ function prepareDistributionAppSource(t, runtimeVersion = packageRuntimeVersion)
 
   fs.mkdirSync(contentsPath, { recursive: true });
   writeJson(infoPlistPath, {
+    CFBundleShortVersionString: runtimeVersion,
+    CFBundleVersion: runtimeVersion,
     SimulatorBrokerExpectedRuntimeVersion: runtimeVersion,
   });
   t.after(() => {
@@ -788,6 +790,87 @@ test("package_distribution rejects a stale app runtime version before signing", 
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Release app runtime compatibility version .* does not match package\.json/);
+  assert.equal(fs.existsSync(signingMarker), false);
+  assert.equal(fs.existsSync(path.join(outputDir, "SimulatorBroker-macOS-distribution")), false);
+  assert.equal(fs.existsSync(appSource), true);
+});
+
+function prepareDistributionAppSourceWithoutKey(t, omittedKey) {
+  const appSource = prepareDistributionAppSource(t);
+  const infoPlistPath = path.join(appSource, "Contents", "Info.plist");
+  const payload = JSON.parse(fs.readFileSync(infoPlistPath, "utf8"));
+  delete payload[omittedKey];
+  writeJson(infoPlistPath, payload);
+  return appSource;
+}
+
+function runSkipBuildPackage(root, outputDir, fakePathDir, signingMarker) {
+  return spawnSync("bash", [
+    path.resolve("scripts/package_distribution.sh"),
+    "--skip-build",
+    "--output-dir",
+    outputDir,
+    "--team-id",
+    "TEAMID",
+    "--signing-identity",
+    "Developer ID Application: Example (TEAMID)",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: root,
+      PATH: `${fakePathDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      SIMBROKER_PACKAGE_TEST_CODESIGN_MARKER: signingMarker,
+    },
+  });
+}
+
+function writeFakeSigningTools(fakePathDir, signingMarker) {
+  fs.mkdirSync(fakePathDir, { recursive: true });
+  fs.writeFileSync(path.join(fakePathDir, "security"), [
+    "#!/usr/bin/env bash",
+    "printf '  1) ABC \"Developer ID Application: Example (TEAMID)\"\\n'",
+    "",
+  ].join("\n"));
+  fs.writeFileSync(path.join(fakePathDir, "codesign"), [
+    "#!/usr/bin/env bash",
+    "printf 'invoked\\n' >> \"$SIMBROKER_PACKAGE_TEST_CODESIGN_MARKER\"",
+    "",
+  ].join("\n"));
+  fs.chmodSync(path.join(fakePathDir, "security"), 0o755);
+  fs.chmodSync(path.join(fakePathDir, "codesign"), 0o755);
+  return signingMarker;
+}
+
+test("package_distribution rejects a missing Finder short version before signing", { skip: skipDistributionPayloadScan }, (t) => {
+  const root = makeTempDir();
+  const outputDir = path.join(root, "out");
+  const fakePathDir = path.join(root, "fake-path");
+  const signingMarker = path.join(root, "codesign-invoked");
+  const appSource = prepareDistributionAppSourceWithoutKey(t, "CFBundleShortVersionString");
+  writeFakeSigningTools(fakePathDir, signingMarker);
+
+  const result = runSkipBuildPackage(root, outputDir, fakePathDir, signingMarker);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Release app is missing CFBundleShortVersionString/);
+  assert.equal(fs.existsSync(signingMarker), false);
+  assert.equal(fs.existsSync(path.join(outputDir, "SimulatorBroker-macOS-distribution")), false);
+  assert.equal(fs.existsSync(appSource), true);
+});
+
+test("package_distribution rejects a missing Finder build version before signing", { skip: skipDistributionPayloadScan }, (t) => {
+  const root = makeTempDir();
+  const outputDir = path.join(root, "out");
+  const fakePathDir = path.join(root, "fake-path");
+  const signingMarker = path.join(root, "codesign-invoked");
+  const appSource = prepareDistributionAppSourceWithoutKey(t, "CFBundleVersion");
+  writeFakeSigningTools(fakePathDir, signingMarker);
+
+  const result = runSkipBuildPackage(root, outputDir, fakePathDir, signingMarker);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Release app is missing CFBundleVersion/);
   assert.equal(fs.existsSync(signingMarker), false);
   assert.equal(fs.existsSync(path.join(outputDir, "SimulatorBroker-macOS-distribution")), false);
   assert.equal(fs.existsSync(appSource), true);

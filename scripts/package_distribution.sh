@@ -263,15 +263,25 @@ process.stdout.write(runtimeVersion);
 NODE
 )"
 app_info_plist="$app_source/Contents/Info.plist"
-if [[ ! -f "$app_info_plist" ]] \
-  || ! app_runtime_version="$(plutil -extract "$app_runtime_info_key" raw -o - "$app_info_plist" 2>/dev/null)"; then
-  echo "Release app is missing $app_runtime_info_key. Rebuild the app before packaging it." >&2
-  exit 1
-fi
-if [[ "$app_runtime_version" != "$expected_runtime_version" ]]; then
-  echo "Release app runtime compatibility version ($app_runtime_version) does not match package.json ($expected_runtime_version). Rebuild the app before packaging it." >&2
-  exit 1
-fi
+require_app_info_string() {
+  local key="$1"
+  local label="$2"
+  local value=""
+
+  if [[ ! -f "$app_info_plist" ]] \
+    || ! value="$(plutil -extract "$key" raw -o - "$app_info_plist" 2>/dev/null)"; then
+    echo "Release app is missing $key. Rebuild the app before packaging it." >&2
+    exit 1
+  fi
+  if [[ "$value" != "$expected_runtime_version" ]]; then
+    echo "Release app $label ($value) does not match package.json ($expected_runtime_version). Rebuild the app before packaging it." >&2
+    exit 1
+  fi
+}
+
+require_app_info_string "$app_runtime_info_key" "runtime compatibility version"
+require_app_info_string "CFBundleShortVersionString" "Finder short version"
+require_app_info_string "CFBundleVersion" "Finder build version"
 
 bundle_root="$output_dir/$archive_name"
 payload_root="$bundle_root/payload"
