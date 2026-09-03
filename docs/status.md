@@ -49,7 +49,8 @@ This Alpha already includes:
 - Homebrew formula `fiveonecode/simulator-broker/simbroker` for the Alpha CLI
   tarball. Homebrew clones `fiveonecode/homebrew-simulator-broker` for that
   tap name; `Formula/` and `Casks/` in this repository stay the source of
-  truth. Packable `simbroker` npm CLI (`npm run package:npm`), and a
+  truth. That tap runs hosted `script/verify.sh` on pull requests and
+  `main`. Packable `simbroker` npm CLI (`npm run package:npm`), and a
   Homebrew cask that installs `Simulator Broker.app` from the signed,
   notarized GitHub Release zip when that zip is attached
 - local-debug packaging through `npm run package:local`

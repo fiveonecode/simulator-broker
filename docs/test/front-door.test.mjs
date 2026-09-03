@@ -832,6 +832,30 @@ test("Homebrew one-liner is documented against the homebrew-simulator-broker tap
   assert.ok(syncScript.includes("Formula/simbroker.rb"));
 });
 
+test("public tap hosted CI and Autopilot contract are documented", () => {
+  const buildAndTest = readRepoFile("spec/build-and-test.md");
+  const structure = readRepoFile("spec/project-structure.md");
+  const agents = readRepoFile("spec/agents.md");
+  const status = readRepoFile("docs/status.md");
+  const specIndex = readRepoFile("spec/README.md");
+
+  for (const body of [buildAndTest, structure, specIndex, status]) {
+    assert.ok(
+      body.includes("script/verify.sh"),
+      "product docs must name the tap verify script",
+    );
+  }
+
+  assert.ok(buildAndTest.includes("brew style"));
+  assert.ok(buildAndTest.includes("brew audit --strict"));
+  assert.ok(buildAndTest.includes("empty-livecheck"));
+  assert.ok(agents.includes("SB-TAP-CI-001"));
+  assert.ok(agents.includes("SB-TAP-AP-001"));
+  assert.ok(agents.includes("bash script/verify.sh"));
+  assert.ok(agents.includes("verify.command` remains `npm test"));
+  assert.ok(structure.includes("autopilot.yml"));
+});
+
 test("sync_homebrew_tap.sh copies Formula and Casks into a tap checkout", () => {
   const tapDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-homebrew-tap-"));
   const init = spawnSync("git", ["init", tapDir], { encoding: "utf8" });

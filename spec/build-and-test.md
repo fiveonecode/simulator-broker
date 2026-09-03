@@ -87,7 +87,13 @@ A first extracted implementation slice now exists:
   `fiveonecode/homebrew-simulator-broker`. `scripts/sync_homebrew_tap.sh`
   copies `Formula/` and `Casks/` into a tap checkout only when
   `Formula/simbroker.rb` exists. `--check-remote` compares this tree to
-  the published tap formula and is not part of `spec-only`
+  the published tap formula and is not part of `spec-only`. The tap's
+  pull-request and `main` workflow runs `script/verify.sh`: `brew style`,
+  `brew audit --strict` for the formula and cask, formula `--online`
+  audit, and cask `--online` audit that may report only the known Alpha
+  GitHub pre-release and empty-livecheck findings. That script is also
+  the tap `autopilot.yml` verify command. Product `spec-only` does not
+  execute the tap workflow.
 - `scripts/package_npm.sh` (`npm run package:npm`) packs `packages/simbroker`
   with a `bin` field; the repo-root package stays `private`
 - `Casks/simulator-broker.rb` installs `Simulator Broker.app` from
