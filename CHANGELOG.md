@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The public Homebrew tap now runs hosted `brew style` / `brew audit`
+  verification on pull requests and `main`, using the same command as its
+  Autopilot origin contract.
+
 ## [0.1.0-alpha.7] - 2026-09-01
 
 Alpha 7 keeps the Alpha 6 install and four-custom-asset contract while fixing

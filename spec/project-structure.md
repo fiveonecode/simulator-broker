@@ -15,7 +15,8 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
 - `Formula/` — Homebrew CLI formula for the tagged Alpha tarball. Source of
   truth for the tap; Homebrew clones
   `fiveonecode/homebrew-simulator-broker` when a stranger runs
-  `brew install fiveonecode/simulator-broker/simbroker`
+  `brew install fiveonecode/simulator-broker/simbroker`. That tap owns
+  its pull-request CI, `script/verify.sh`, and origin `autopilot.yml`.
 - `Casks/` — Homebrew cask for the signed, notarized operator app zip.
   Synced to the same tap.
 - `packages/simbroker/` — packable npm CLI metadata and `bin` wrapper; the

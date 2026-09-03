@@ -91,6 +91,24 @@ In scope: origin Autopilot verification command, protected verifier paths, and `
 
 Missing origin `autopilot.yml` → Autopilot `waiting_external_prereq` / `external_prereq.missing`. Uncovered or overlapping `autopilot.yml` → spec-only / config-contract fail.
 
+## Public tap Autopilot and CI contract
+Related: `fiveonecode/homebrew-simulator-broker` `autopilot.yml`, `script/verify.sh`, `.github/workflows/ci.yml`
+
+The Homebrew tap is a separate GitHub repository. It does not use this
+repository's `autopilot.yml` or `npm test`.
+
+| ID | Requirement | Verifier |
+|----|-------------|----------|
+| SB-TAP-AP-001 | Tap origin default branch contains regular-file `autopilot.yml` whose `verify.command` is `bash script/verify.sh` | Tap hosted CI; tap `script/verify.sh` |
+| SB-TAP-CI-001 | Tap pull requests and `main` pushes run `script/verify.sh` | Tap `.github/workflows/ci.yml`; tap hosted CI |
+| SB-TAP-CI-002 | `script/verify.sh` runs `brew style`, `brew audit --strict` for formula and cask, formula `--online` audit, and cask `--online` audit that fails on any finding other than Alpha GitHub pre-release or empty livecheck | `bash script/verify.sh`; tap hosted CI |
+| SB-TAP-AP-002 | Product `autopilot.yml` `verify.command` remains `npm test` | SB-AP-002; `verify:spec-only` |
+
+Installing the Autopilot or Connector GitHub App on the tap is an operator
+org action. This contract does not authorize a product-repo App install to
+cover the tap. The reviewer of record for tap pull requests is Bugbot until
+those Apps actually run on the tap.
+
 ## Verification model
 
 Use `npm run agent:verify -- --profile <profile-id> --paths <files> --session-dir <dir>` for deterministic checks.
