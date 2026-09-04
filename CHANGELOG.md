@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.8] - 2026-09-04
+
+Alpha 8 keeps the Alpha 7 install and four-custom-asset contract while fixing
+the missing Finder/About version metadata and giving the public Homebrew tap
+its own hosted verification.
+
 ### Changed
 
 - The public Homebrew tap now runs hosted `brew style` / `brew audit`

@@ -1,6 +1,6 @@
 {
   "name": "simbroker",
-  "version": "0.1.0-alpha.7",
+  "version": "0.1.0-alpha.8",
   "private": false,
   "description": "CLI for the local iOS Simulator control plane",
   "license": "MIT",
