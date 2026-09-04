@@ -79,7 +79,7 @@ simbroker idle enable --grace-seconds <60-86400> --actor-type human --actor-id <
 Other CLI install options:
 
 ```bash
-npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.7/simbroker-0.1.0-alpha.7.tgz
+npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.8/simbroker-0.1.0-alpha.8.tgz
 simbroker --help
 ```
 
@@ -102,8 +102,8 @@ are also attached to those releases. The archive contains a versioned top-level
 directory:
 
 ```bash
-tar -xzf simulator-broker-0.1.0-alpha.7-cli.tar.gz
-./simulator-broker-0.1.0-alpha.7-cli/bin/simbroker --help
+tar -xzf simulator-broker-0.1.0-alpha.8-cli.tar.gz
+./simulator-broker-0.1.0-alpha.8-cli/bin/simbroker --help
 ```
 
 `simbroker` help and `simbroker doctor` print human-readable text by default.
