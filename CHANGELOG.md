@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verification on pull requests and `main`, using the same command as its
   Autopilot origin contract.
 
+### Fixed
+
+- Generated app bundles now wire `CFBundleShortVersionString` and
+  `CFBundleVersion` from the root package version, so Finder and About show
+  the Alpha version, and distribution packaging fails closed before signing
+  when either key is missing or stale.
+
 ## [0.1.0-alpha.7] - 2026-09-01
 
 Alpha 7 keeps the Alpha 6 install and four-custom-asset contract while fixing

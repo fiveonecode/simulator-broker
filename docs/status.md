@@ -54,7 +54,9 @@ This Alpha already includes:
   Homebrew cask that installs `Simulator Broker.app` from the signed,
   notarized GitHub Release zip when that zip is attached
 - local-debug packaging through `npm run package:local`
-- signed distribution packaging through `npm run package:distribution`
+- signed distribution packaging through `npm run package:distribution`, which
+  fails closed before signing when the generated app bundle's Finder and
+  About version keys do not match the root package version
 - Homebrew cask zip through `npm run package:cask-zip` after Developer ID
   notarization of the payload app
 - `simbroker project init` for `.simulator-broker/project.json`
