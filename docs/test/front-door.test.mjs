@@ -680,15 +680,15 @@ test("public release contract inventories exactly four custom assets", () => {
   );
 });
 
-test("on-demand OCR review uses the maintained hosted action runtime contract", () => {
-  const ocr = readRepoFile(".github/workflows/ocr-review.yml");
-
-  assert.ok(ocr.includes("runs-on: ubuntu-latest"));
-  assertHostedNodeActionContract(ocr, {
-    checkoutCount: 2,
-    setupNodeCount: 1,
-    nodeVersion: "22",
-  });
+test("does not ship an OpenCodeReview workflow", () => {
+  assert.equal(
+    fs.existsSync(path.join(repoRoot, ".github/workflows/ocr-review.yml")),
+    false,
+  );
+  assert.equal(
+    fs.existsSync(path.join(repoRoot, ".github/workflows/ocr-reusable.yml")),
+    false,
+  );
 });
 
 test("hosted workflow action contract fails closed when setup-node caching becomes implicit", () => {
