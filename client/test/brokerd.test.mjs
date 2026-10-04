@@ -2810,6 +2810,7 @@ test("service-backed repair can force-override a conflicting lease and audit the
   );
   assert.equal(repair.status, 0);
   assert.equal(repair.json.transport, "service");
+  assert.equal(repair.json.servedBy.transport, "unix-http");
   assert.equal(repair.json.revokedLease.leaseId, acquire.json.lease.leaseId);
   assert.equal(repair.json.simulator.health, "healthy");
   assert.equal(repair.json.simulator.powerState, "shutdown");
@@ -2823,6 +2824,46 @@ test("service-backed repair can force-override a conflicting lease and audit the
   assert.equal(events.status, 0);
   assert.ok(events.json.events.some((event) => event.type === "lease.revoked" && event.leaseId === acquire.json.lease.leaseId));
   assert.ok(events.json.events.some((event) => event.type === "simulator.repaired" && event.alias === "ui-1"));
+});
+
+test("service-backed purpose repair omits host paths from success JSON", async (t) => {
+  const fixture = makeFixture();
+  t.after(async () => stopServiceIfRunning(fixture));
+
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  const registryPath = path.join(fixture.stateRoot, "registry.json");
+  const registry = readJson(registryPath);
+  registry.aliases["ui-1"].health = "repair-needed";
+  registry.aliases["ui-1"].driftReason = "boot-on-acquire-failed";
+  writeJson(registryPath, registry);
+  assert.equal(runCli(fixture, "service", "start").status, 0);
+
+  const repair = runCli(
+    fixture,
+    "simulators",
+    "repair",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--actor-type",
+    "agent",
+    "--actor-id",
+    "agent-1",
+    "--json",
+  );
+
+  assert.equal(repair.status, 0, repair.stderr);
+  assert.equal(repair.json.transport, "service");
+  assert.equal(repair.json.command, "simulators.repair");
+  assert.equal(repair.json.status, "repaired");
+  assert.equal(repair.json.purposeId, "agent-ui-session");
+  assert.equal(Object.hasOwn(repair.json, "servedBy"), false);
+  const serialized = JSON.stringify(repair.json);
+  assert.equal(serialized.includes(fixture.root), false);
+  assert.equal(serialized.includes("ui-1"), false);
+  assert.equal(serialized.includes("SIM-UI-1"), false);
+  assert.equal(serialized.includes("agent-1"), false);
 });
 
 test("service HTTP error responses expose stable status classes and exit codes", async (t) => {

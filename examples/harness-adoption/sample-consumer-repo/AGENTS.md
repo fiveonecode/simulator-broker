@@ -7,7 +7,7 @@ Use Simulator Broker for broker-managed simulator work in this repo.
 - Use `bash scripts/run-agent-build-test.sh` for unattended agent build or test runs.
 - Use `simbroker lease explain --repo-root "$PWD" --purpose <purpose>` and `simbroker host status` when a lease request is denied.
 - Use `simbroker lease show --lease-file "$SIMBROKER_LEASE_FILE"` and `simbroker events watch` for deeper diagnosis while a run is active.
-- When `capacity check` reports `repair_needed`, or `recommendedAction` is `repair_matching_simulators`, repair that purpose once and then retry acquire once:
+- When `capacity check` reports `recommendedAction` `repair_matching_simulators`, repair that purpose once and then retry acquire once. A `repair_needed` status with `install_runtime` or `run_broker_doctor` follows that action:
 
   `simbroker simulators repair --repo-root "$PWD" --purpose <purpose> --actor-type agent --actor-id <id> --json`
 

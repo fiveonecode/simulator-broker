@@ -31,9 +31,10 @@ This Alpha already includes:
   only after a host config exists and after `capacity check` for
   `agent-ui-session`. Read `purposes[].status`, not the top-level
   `status`. Stop on `unavailable` and preview with `capacity reconcile`.
-  On `repair_needed` or `repair_matching_simulators`, run
+  On `recommendedAction` `repair_matching_simulators`, run
   `simulators repair --repo-root <repo> --purpose <purpose> --actor-type agent --actor-id <id>`
-  once. Exit `0` retries the check. Exit `5` waits for a human. Exit `4`
+  once. A `repair_needed` status with `install_runtime` or `run_broker_doctor`
+  follows that action. Exit `0` retries the check. Exit `5` waits for a human. Exit `4`
   stops after one local `doctor` read of `driftReason`
 - CLI-only install through `bash scripts/install_local.sh --cli-only`, plus
   the contributor app+CLI path `npm run install:local`

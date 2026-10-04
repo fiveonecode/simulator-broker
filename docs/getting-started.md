@@ -192,8 +192,9 @@ Read `purposes[].status` (and `summary` counts), not the top-level
 If `purposes[].status` is `unavailable`, stop. Preview missing capacity
 with `simbroker capacity reconcile --json`. Do not acquire a lease.
 
-If `purposes[].status` is `repair_needed`, or `recommendedAction` is
-`repair_matching_simulators`, repair that purpose once:
+If `purposes[].recommendedAction` is `repair_matching_simulators`, repair
+that purpose once. When status is `repair_needed` and the action is
+`install_runtime` or `run_broker_doctor`, follow that action:
 
 ```bash
 simbroker simulators repair \

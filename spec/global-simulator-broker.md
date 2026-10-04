@@ -445,13 +445,15 @@ can therefore replace the device. Wrapper scripts stay acquire-only and must
 not hide this command.
 
 Direct and service-backed execution share this command. The service budget
-remains the existing alias-repair budget of 10 minutes.
+remains the existing single-alias repair execution budget, including the
+pending-retirement extension already used by `simulators repair`.
 
 Success JSON is schema version `1` and is public-safe. It contains `ok`,
 `command: "simulators.repair"`, `purposeId`, integer counts `repaired`,
 `failed`, and `held`, `status`, sorted `reasons`, and `schemaVersion`. It must
 not contain aliases, simulator IDs, paths, actor IDs, or raw `simctl` text.
-The event log may keep the alias and the detailed cause.
+Service-backed success omits `servedBy`. The event log may keep the alias and
+the detailed cause.
 
 `status` is `repaired` when at least one match was repaired and none failed,
 `nothing_to_repair` when every count is zero, `held` when nothing was repaired

@@ -1376,7 +1376,13 @@ export async function startBrokerService(paths, options = {}) {
         if (payload?.snapshotRefresh?.ok === false && shouldSurfaceServiceSnapshotRefreshError(body, payload.snapshotRefresh)) {
           throw serviceSnapshotRefreshError(payload.snapshotRefresh);
         }
-        const serviceMetadata = body.group === "capacity" || body.group === "idle" ? {} : { servedBy: metadata };
+        const purposeRepair = body.group === "simulators"
+          && body.command === "repair"
+          && typeof body.options?.purposeId === "string"
+          && body.options.purposeId.trim() !== "";
+        const serviceMetadata = body.group === "capacity" || body.group === "idle" || purposeRepair
+          ? {}
+          : { servedBy: metadata };
         sendJson(response, 200, {
           ok: true,
           ...payload,

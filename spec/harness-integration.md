@@ -179,7 +179,7 @@ The repo's agent instructions such as `AGENTS.md`, `CLAUDE.md`, or equivalent mu
 - select simulators by repo purpose, not by hardcoded alias
 - use `lease explain`, `host status`, `lease show`, and `events watch` for diagnosis
 - read `purposes[].status` and `recommendedAction` from `capacity check`
-- when status is `repair_needed` or `recommendedAction` is `repair_matching_simulators`, run purpose repair once, then retry the blocked check or acquire once if the repair exits `0`:
+- when `recommendedAction` is `repair_matching_simulators`, run purpose repair once, then retry the blocked check or acquire once if the repair exits `0`:
 
 ```bash
 simbroker simulators repair \
@@ -189,6 +189,8 @@ simbroker simulators repair \
   --actor-id <id> \
   --json
 ```
+
+- a `repair_needed` status with `install_runtime`, `run_broker_doctor`, or `inspect_unknown` follows that action
 
 - exit `5` means a live holder or another project's pin still owns the match. Stop and ask a human. Never pass `--force-override`
 - exit `4` means the repair failed. Run `simbroker doctor` locally, read `driftReason`, and stop. Do not run purpose repair a second time for that denial
@@ -204,7 +206,7 @@ simbroker simulators repair \
 Any CI or scheduled automation that uses simulators must:
 
 - acquire by purpose before simulator work starts
-- use the same one-attempt purpose repair as an agent, with `--actor-type ci` and a stable actor id, when the purpose is `repair_needed`
+- use the same one-attempt purpose repair as an agent, with `--actor-type ci` and a stable actor id, when `recommendedAction` is `repair_matching_simulators`
 - pass stable `--actor-type ci`
 - pass stable `--job-id` and `--job-kind` when available
 - release in a cleanup step that still runs after failure
@@ -216,15 +218,18 @@ This is the canonical harness flow for local scripts, agent sessions, and CI.
 1. Validate broker project policy.
 2. Run `simbroker capacity check --repo-root "$PWD" --purpose <purpose> --json`
    when the workflow needs an explicit preflight capacity report.
-3. If a purpose is `repair_needed`, or its `recommendedAction` is
-   `repair_matching_simulators`, run purpose repair once for that purpose.
-   Exit `0` retries the check or acquire once. Exit `5` stops for a human.
-   Exit `4` stops after one local doctor read. Do not pass `--force-override`.
+3. If `recommendedAction` is `repair_matching_simulators`, run purpose repair
+   once for that purpose. Exit `0` retries the check or acquire once. Exit `5`
+   stops for a human. Exit `4` stops after one local doctor read. Do not pass
+   `--force-override`. A `repair_needed` status with `install_runtime`,
+   `run_broker_doctor`, or `inspect_unknown` follows that action.
 4. If check reports missing structural capacity, a human operator may run
    `simbroker capacity reconcile` to preview a deterministic additive plan and
    then apply that exact plan with `--apply --confirm <plan-id> --actor-type
    human --actor-id <operator-id>`. A plan blocked only because simulators
-   need repair is not an apply plan. The agent runs purpose repair instead.
+   need repair is not an apply plan. The agent runs purpose repair when
+   `recommendedAction` is `repair_matching_simulators`. A provisioning blocker
+   keeps its own recommended action.
 5. Acquire a lease by purpose.
 6. Read simulator metadata from the lease artifact. Successful acquisition
    means the selected simulator has already been booted by the broker.
@@ -331,7 +336,7 @@ Required diagnostic commands:
 Harness behavior rules:
 
 - use `lease explain` when acquire fails and the failure needs a structured explanation
-- use purpose repair once when the denial is `repair_needed`, then retry acquire once on exit `0`
+- use purpose repair once when `recommendedAction` is `repair_matching_simulators`, then retry acquire once on exit `0`
 - use `host status` or `events watch` for operator-visible debugging
 - keep doctor output on the local machine. Do not copy aliases, simulator IDs, or host paths into public logs
 - treat the lease artifact as the canonical per-run handle for release and inspection
@@ -446,6 +451,6 @@ The harness-awareness phase is complete only when:
 
 | Version | Date | Summary |
 | --- | --- | --- |
-| 0.5.0 | 2026-10-05 | Taught agents to repair a `repair_needed` purpose once, then retry acquire, and to stop for a human when a live holder remains. |
+| 0.5.0 | 2026-10-05 | Taught agents to repair a purpose once when capacity recommends `repair_matching_simulators`, then retry acquire, and to stop for a human when a live holder remains. |
 | 0.4.1 | 2026-08-10 | Clarified that successful acquisition returns a broker-booted simulator. |
 | 0.4.0 | 2026-07-20 | Added capacity check and operator-confirmed reconcile guidance for simulator-dependent harness preflights. |

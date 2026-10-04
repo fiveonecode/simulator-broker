@@ -59,9 +59,9 @@ A first extracted implementation slice now exists:
   `host init --bootstrap-config` remains advanced and keeps its iOS 18 default.
   Homebrew does not create simulators. Hello world requires setup ready and a
   passing `capacity check --purpose agent-ui-session` (`purposes[].status`, not
-  top-level `status`). `unavailable` stops at reconcile. `repair_needed`,
-  or `recommendedAction` `repair_matching_simulators`, runs purpose repair
-  once (`simulators repair --repo-root <repo> --purpose <purpose> --actor-type agent --actor-id <id>`).
+  top-level `status`). `unavailable` stops at reconcile. `recommendedAction`
+  `repair_matching_simulators` runs purpose repair once (`simulators repair --repo-root <repo> --purpose <purpose> --actor-type agent --actor-id <id>`).
+  A `repair_needed` status with `install_runtime` or `run_broker_doctor` follows that action.
   Exit `0` retries the check. Exit `5` waits for a human. Exit `4` stops
   after one local `doctor` read of `driftReason`. The cask is the default
   app install and does not require XcodeGen; XcodeGen is source-build-only.
