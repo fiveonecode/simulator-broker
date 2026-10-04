@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.16.8`
-> **Last Updated:** `2026-09-01`
+> **Version:** `0.17.0`
+> **Last Updated:** `2026-10-05`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -139,11 +139,27 @@ Current implementation slice:
 - host bootstrap and final state refresh/event recording run under broker mutation authority; failed bootstrap provisioning rolls back only simulators created by that bootstrap attempt before host config commit
 - forced host replacement persists previous managed simulator IDs that require retirement in the first durable replacement host-config write
 - simulator repair persists replaced simulator IDs as pending retirements when old-device shutdown or deletion fails after the repaired host config commits, and later repair/maintenance attempts must retry those pending retirements until deletion succeeds
-- registry synchronization against `simctl` so missing, unavailable, or mismatched simulators become `repair-needed`
+- registry synchronization against `simctl` marks a missing device
+  `repair-needed` with `simulator-missing`, an unavailable device with
+  `simulator-unavailable`, and a family or runtime mismatch with
+  `simulator-config-mismatch`. Synchronization never clears `repair-needed`.
+  A leftover `repairing` entry becomes `repair-needed` with
+  `repair-interrupted` on the next load. Only a successful repair returns
+  the alias to `healthy`
 - reset-on-acquire coordination behind a dedicated reset lock with rollback on reset failure
-- boot-on-acquire with lease rollback and `repair-needed` state on boot failure
+- boot-on-acquire with lease rollback and `repair-needed`
+  (`boot-on-acquire-failed`) when boot fails. The real `simctl` adapter treats
+  a boot result whose text says the device is already `Booted` or `Booting`
+  as underway, then still runs `bootstatus`. A timeout and every other
+  non-zero boot result still fail
 - policy-driven idle shutdown under the mutation lock, with stale recovery
   starting a fresh grace period and shutdown failures becoming repair-needed
+  (`idle-shutdown-failed`). The real `simctl` adapter treats an already
+  `Shutdown` device as success and waits out `Shutting Down` by polling
+  `simctl list` until `Shutdown` or the existing command timeout. A device in
+  any other state gets one more shutdown attempt. Timeout and every other
+  shutdown failure still fail, and the scheduler does not retry a
+  repair-needed alias
 
 ### `brokerd`
 
@@ -238,10 +254,16 @@ Current implementation slice:
 - `pin create` and `pin clear`
 - `capacity check` and `capacity reconcile` for public-safe capacity diagnosis,
   deterministic reconcile preview, and human-confirmed additive capacity apply
-- `doctor`
+- `doctor`. Human text stays the default. `--json` issues for an unhealthy
+  alias include `alias`, `driftReason`, `health`, `reasonCode:
+  alias-unhealthy`, and path-qualified `remediationCommands` for
+  `simbroker host status` and `simbroker simulators repair --alias <alias>`.
+  Human text appends `Reason: <driftReason>` when that string is non-empty
 - `service start`, `service status`, and `service stop`
 - automatic service routing when `brokerd` is available
-- `simulators boot`, `simulators shutdown`, `simulators erase`, and `simulators repair`
+- `simulators boot`, `simulators shutdown`, `simulators erase`, and
+  `simulators repair`. Alias repair remains the operator and app command.
+  Purpose repair is the agent and CI command and is specified below
 - `idle status`, human-attributed `idle enable` and `idle disable`, immediate
   `idle reconcile`, and count-only `idle cleanup` preview plus confirmed apply
 - policy-enabled normal lease acquisition lazily starts `brokerd` when needed;
@@ -347,8 +369,10 @@ Default operational decisions for v1:
   warm-reuse ordering chooses among them; no legacy rotation mode exists
 - acquisition succeeds only after the selected simulator is booted
 - active-holder lifecycle actions require an active lease ID or lease file reference; actor ID and actor type are attribution metadata, not authorization credentials
-- only humans may force-override another live holder for urgent repair
-- human-forced repair overrides must include `forceOverride`, `overrideReason`, `expectedAlias`, and `expectedLeaseId`
+- only humans may force-override another live holder for urgent repair, and
+  only through alias repair
+- human-forced alias repair overrides must include `forceOverride`, `overrideReason`, `expectedAlias`, and `expectedLeaseId`
+- purpose repair rejects `--force-override` for every actor type, including human
 - direct out-of-band boot or shutdown is observable drift but not automatically blocking when alias identity is intact
 - destructive or identity-changing out-of-band drift is blocking until repair completes
 - broker health states are `healthy`, `state-drift`, `repair-needed`, and `repairing`
@@ -360,8 +384,10 @@ Failure-contract defaults for v1:
 - exit code `2` means invalid request, including malformed flags, unknown
   commands, invalid config, or missing broker files
 - exit code `3` means unavailable capacity or transient broker-side unavailability, including exhaustion, conflicts, missing runtimes, service unavailability, expired service command queue budgets, or bounded process-sampler timeouts
-- exit code `4` means the requested alias needs repair before work can proceed
-- exit code `5` means human override or override confirmation is required before the action may continue
+- exit code `4` means repair is required or a repair attempt failed. This
+  includes an alias that needs repair, `purpose-repair-failed`, and
+  `capacity-repair-required`. HTTP status is `423`
+- exit code `5` means human override or override confirmation is required before the action may continue. Purpose repair uses `human-override-required` when every unhealthy match is held and nothing was repaired. HTTP status is `412`
 - setup confirmation-required and stale-plan errors use `5`; setup prerequisite
   and non-alias health failures use `3`; alias health uses `4`; cooperative
   SIGINT/SIGTERM interruption uses `130`/`143`
@@ -373,6 +399,106 @@ Failure-contract defaults for v1:
 - app mutation flows must not clear or overwrite snapshot refresh errors after a successful broker mutation; a mutation is user-visible success only after the follow-up snapshot refresh succeeds or is superseded by a newer successful refresh
 - a current-generation app refresh failure preserves the last readable snapshot, tooling, and runtime paths but clears cached service authority until a later successful refresh validates exact service status; a live-status probe timeout, non-success HTTP response, or malformed response is a refresh failure rather than confirmed service absence, except that exact HTTP `409` status with reason `service-runtime-incompatible`, exit code `3`, `running: true`, and matching selected service identity is verified live-but-unhealthy state that disables commands while retaining guided cooperative restart; a snapshot-only decode failure after confirmed service absence or verified restart-required status preserves recovery affordances, while the same failure after a validated healthy service remains unverified; the unverified state takes precedence even when no snapshot is cached and applies on first load when host configuration already exists; every validated service-authority or runtime-health transition, including confirmed absence to a live service, dismisses pending mutation confirmations and invalidates delayed idle or lifecycle responses, revocation also cancels guided setup still previewing or awaiting confirmation; every operator, polling-loop, and setup-owned refresh captures the dashboard-store lifecycle generation before its task is queued, queued setup work verifies its setup and lifecycle ownership plus current service-authority eligibility before any local command begins, setup tasks publish completion or failure state only while that captured generation still owns the flow, and an intentional setup cancellation refresh runs outside the cancelled task and publishes only while its setup generation and captured lifecycle generation still own the flow so a late result cannot poison a replacement setup or restart work after lifecycle shutdown; cancellation of a dashboard refresh, including a loader that surfaces a non-cancellation failure after cancellation, is discarded without revoking cached authority or publishing an error, while mutation and setup callers propagate cancellation and every superseded-generation waiter is resumed exactly once; service and local-setup confirmation paths reject revoked authority and must not present or offer recovery from unverified brokerd status; a true missing-host first load and a later failure after a cached missing-host success remain onboarding, including when that later failure must first clear stale live-service authority cached after an external host-config deletion; a superseded failure must not downgrade newer loaded state, and setup already applying is not interrupted by refresh-driven dismissal; the unverified-status CLI fallback uses the same selected host-config, state-root, and service-socket paths as setup and remains visible after a cached-snapshot refresh failure, not only on first-run setup
 - service HTTP status classes should stay aligned with the same failure groups: `400` invalid request, `404` unknown route, `409` unavailable or conflict, `412` override-required, `423` repair-needed, and `500` internal failure
+
+### Purpose-scoped repair
+
+Agents and CI repair a purpose themselves. They do not wait for the app Repair
+button, and they do not call `xcrun simctl` on a broker-managed simulator.
+Registry sync does not clear `repair-needed` after the device looks fine again.
+Only a successful repair sets `healthy`.
+
+```bash
+simbroker simulators repair \
+  --repo-root <repo> \
+  --purpose <purpose> \
+  --actor-type <agent|ci|human> \
+  --actor-id <id> \
+  --json
+```
+
+The alias form stays available for the app, doctor, and a human operator:
+
+```bash
+simbroker simulators repair --alias <alias>
+```
+
+`--alias` together with `--purpose` is `invalid-flag` (exit `2`).
+`--force-override` on the purpose form is `invalid-flag` (exit `2`) for every
+actor type. `--actor-type` must be `agent`, `ci`, or `human`, and
+`--actor-id` is required.
+
+Purpose repair takes one capacity lock and then one lease lock for the whole
+call. It must not call the alias-repair entrypoint from inside those locks.
+It uses the same structural match as capacity check. It repairs a match only
+when that match is `repair-needed` or `repairing`, has no active lease, and is
+not pinned for another project or for another purpose of this project. A pin
+for this project and this purpose, including a project-wide pin, does not block
+repair. Aliases are visited in alias order. One alias failure does not skip
+the remaining matches. A lease or other-purpose pin that appears before that
+alias is mutated counts as held, not failed.
+
+Repair reuses the current device when it is available and matches the
+preferred runtime and device type, renaming it when needed. Otherwise it
+creates a replacement and retires the old simulator ID. That is the same
+replacement behavior as the app Repair button. A newer preferred device type
+can therefore replace the device. Wrapper scripts stay acquire-only and must
+not hide this command.
+
+Direct and service-backed execution share this command. The service budget
+remains the existing alias-repair budget of 10 minutes.
+
+Success JSON is schema version `1` and is public-safe. It contains `ok`,
+`command: "simulators.repair"`, `purposeId`, integer counts `repaired`,
+`failed`, and `held`, `status`, sorted `reasons`, and `schemaVersion`. It must
+not contain aliases, simulator IDs, paths, actor IDs, or raw `simctl` text.
+The event log may keep the alias and the detailed cause.
+
+`status` is `repaired` when at least one match was repaired and none failed,
+`nothing_to_repair` when every count is zero, `held` when nothing was repaired
+and at least one match is held, and `failed` when any repair failed. A mix of
+repaired and held matches with no failure is `repaired`.
+
+Stable `reasons` values are:
+
+- `simulator-missing`
+- `simulator-unavailable`
+- `simulator-config-mismatch`
+- `boot-on-acquire-failed`
+- `reset-on-acquire-failed`
+- `idle-shutdown-failed`
+- `repair-interrupted`
+- `repair-failed`
+- `unhealthy-alias` for any other stored drift string
+
+Exit `0` when status is `repaired` or `nothing_to_repair`, including a repaired
+result that also counted held matches. Exit `4` with `purpose-repair-failed`
+when any repair failed, even if a sibling was repaired. Exit `5` with
+`human-override-required` when nothing was repaired and at least one match is
+held. The thrown error payload carries the same public summary.
+
+An agent runs this command at most once for a denial, then retries the blocked
+`capacity check` or `lease acquire` once. Exit `5` stops for a human. Exit `4`
+stops after one local `simbroker doctor` read of `driftReason`. Doctor output,
+aliases, simulator IDs, and host paths stay out of public logs.
+
+| ID | Requirement | Verifier |
+| --- | --- | --- |
+| SB-PURPOSE-REPAIR-001 | One purpose repair clears every unleased repair-needed structural match, leaves the simulator ID in place when the device can be reused, and lets a later acquire succeed. Public JSON has counts and stable reasons only. | `broker-core/test/broker-core.test.mjs` `purpose repair clears an unleased repair-needed alias and acquire can proceed` |
+| SB-PURPOSE-REPAIR-002 | A live holder is left untouched. The command exits `5` with `human-override-required` and does not publish the alias, simulator ID, or holder identity. | `broker-core/test/broker-core.test.mjs` `purpose repair leaves a live holder untouched and requires a human` |
+| SB-PURPOSE-REPAIR-003 | Force override and an alias selector are `invalid-flag` exit `2` in core and at the CLI, including an unknown actor type. | `broker-core/test/broker-core.test.mjs` `purpose repair rejects force override and an alias selector`; `client/test/simbroker.test.mjs` `purpose repair rejects an alias, force override, and unknown actor type` |
+| SB-PURPOSE-REPAIR-004 | One failed alias returns exit `4` with `purpose-repair-failed`, keeps the repaired sibling, and hides the alias and private error text. | `broker-core/test/broker-core.test.mjs` `purpose repair reports a failed alias without hiding a repaired sibling`; `broker-core/test/error-contract.test.mjs` exit `4` and HTTP `423` for `purpose-repair-failed` |
+| SB-PURPOSE-REPAIR-005 | Sole repair-needed capacity uses `recommendedAction: repair_matching_simulators`, null action kind, and a blocked reconcile with no create action. | `broker-core/test/broker-core.test.mjs` `purpose repair clears an unleased repair-needed alias and acquire can proceed` |
+| SB-DOCTOR-DRIFT-001 | Doctor JSON includes `driftReason` and an alias-repair remediation command. Human text prints that reason. | `broker-core/test/broker-core.test.mjs` `doctor reports the drift reason and an alias repair command`; `client/test/simbroker.test.mjs` `doctor human formatter includes the drift reason` |
+| SB-SIMCTL-RACE-001 | Real `simctl boot` continues to `bootstatus` for current state `Booted` or `Booting`. Real `simctl shutdown` waits from `Shutting Down` to `Shutdown` and times out if that wait never finishes. Other non-zero results still fail. | `broker-core/test/broker-core.test.mjs` `system simctl boot continues when the device is already booted or booting`, `system simctl shutdown waits until a shutting-down device reaches Shutdown`, `system simctl shutdown fails when a shutting-down device never finishes` |
+
+Implementation map:
+
+- `broker-core/index.mjs` owns purpose repair, the capacity recommendation, and doctor issue fields
+- `broker-core/simctl.mjs` owns in-progress boot and shutdown tolerance
+- `broker-core/error-contract.mjs` owns `purpose-repair-failed`
+- `client/command-dispatch.mjs` owns the purpose flag split, help line, and doctor reason text
+- the macOS app Repair button stays alias repair
+- `examples/harness-adoption/sample-consumer-repo/scripts/` stays acquire-only
 
 ## 7. Public-safe idle lifecycle contract
 
@@ -411,9 +537,12 @@ Reconciliation takes the broker mutation lock, re-reads leases and inventory,
 and shuts down only registered aliases that are booted, healthy, unleased,
 unpinned, non-`manual-persistent`, and at or beyond the recorded release time
 plus grace. Stale recovery records a new release time and therefore restarts
-grace. Unknown externally booted devices remain untouched. Shutdown failure
-marks the alias `repair-needed` with `idle-shutdown-failed`, so the scheduler
-does not repeatedly retry it.
+grace. Unknown externally booted devices remain untouched. The real `simctl`
+adapter waits out current state `Shutting Down` until `Shutdown` or the
+command timeout, and retries shutdown once when the device is in any other
+non-shutdown state. Timeout and every other shutdown failure mark the alias
+`repair-needed` with `idle-shutdown-failed`, so the scheduler does not
+repeatedly retry it.
 
 `brokerd` reconciles immediately at startup and every 30 seconds thereafter,
 without overlapping runs, and refreshes the app snapshot after each run. A
@@ -453,6 +582,14 @@ blocking reasons, and recommended action live in JSON. Blocking reasons include
 `no-matching-capacity`, `matching-capacity-busy`, `pin-conflict`,
 `runtime-not-found`, `device-type-not-found`, `repair-needed`,
 `missing-host-config`, `missing-project-file`, and `inventory-unavailable`.
+
+When every structural match is blocked only by `repair-needed`, purpose status
+is `repair_needed`, `recommendedAction` is `repair_matching_simulators`, and
+the reconcile action kind is null. Reconcile status is `blocked` and the plan
+contains no create action. The broker must not plan replacement capacity for
+that state. Apply of that blocked plan fails with `capacity-repair-required`
+(exit `4`) before mutation. A provisioning blocker, when one is present, keeps
+that blocker's recommended action instead of `repair_matching_simulators`.
 
 Reconcile preview is non-mutating:
 
@@ -615,6 +752,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.17.0 | 2026-10-05 | Added purpose-scoped repair for agents and CI, pointed sole repair-needed capacity at that command, and stopped treating an in-progress boot or shutdown as a new repair-needed failure. |
 | 0.16.8 | 2026-09-01 | Required `project init` to carry caller-resolved repository identity across direct and resident-service dispatch, including repeat-init recovery and the intentionally redacted capacity response. |
 | 0.16.7 | 2026-08-31 | App restart-required status requires canonical exit code `3`, queued refreshes retain lifecycle ownership, and missing-host probe failures clear stale live-service authority while remaining onboarding. |
 | 0.16.6 | 2026-08-30 | Lifecycle cancellation preserves cached authority, service transitions invalidate stale setup, setup recovery cannot restart after stop, and path-qualified unverified guidance remains visible. |

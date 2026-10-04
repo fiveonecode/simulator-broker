@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Agents and CI can repair unleased simulators for one repo purpose with
+  `simbroker simulators repair --repo-root <repo> --purpose <purpose>
+  --actor-type <agent|ci|human> --actor-id <id>`. The public JSON reports
+  counts, a status, and stable reason codes. A live holder still requires a
+  human. This form rejects `--force-override`.
+
+### Changed
+
+- When repair-needed is the only capacity blocker, `capacity check`
+  recommends `repair_matching_simulators` and `capacity reconcile` stays
+  blocked instead of planning a replacement simulator.
+- `doctor --json` includes each unhealthy alias's `driftReason` and
+  path-qualified remediation commands. The harness guide and adoption skill
+  tell agents to repair a purpose once, then retry acquire.
+
+### Fixed
+
+- A simulator that is already `Booted` or `Booting` is no longer marked
+  repair-needed only because `simctl boot` refused the overlapping boot.
+  A shutdown that is already `Shutting Down` is waited out within the
+  existing command timeout. Real boot, reset, and shutdown failures still
+  stay repair-needed until a successful repair.
+
 ## [0.1.0-alpha.8] - 2026-09-04
 
 Alpha 8 keeps the Alpha 7 install and four-custom-asset contract while fixing
