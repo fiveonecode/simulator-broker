@@ -29,7 +29,7 @@ Use this skill when a repo needs to adopt Simulator Broker as part of its human 
 
 - Add or update `.simulator-broker/project.json`.
 - Add one shared broker-aware lease helper plus thin flow-specific wrappers when the repo has multiple simulator workflow classes.
-- Update agent instructions so agents acquire by purpose and avoid direct `simctl` mutation on broker-managed aliases.
+- Update agent instructions so agents acquire by purpose, repair a `repair_needed` purpose once, and avoid direct `simctl` mutation on broker-managed aliases.
 - Update CI or automation wiring when the repo uses simulators in unattended runs.
 
 ### 4. Preserve the broker model
@@ -43,8 +43,31 @@ Use this skill when a repo needs to adopt Simulator Broker as part of its human 
   - `simbroker host status`
   - `simbroker lease show`
   - `simbroker events watch`
+  - `simbroker doctor` after one failed purpose repair
+- Keep wrapper scripts acquire-only. Purpose repair can replace a device, so it stays an explicit command.
 
-### 5. Reuse the sample repo when helpful
+### 5. Repair a purpose before waiting
+
+`spec/harness-integration.md` is the source of truth. When `capacity check` reports `repair_needed`, or `recommendedAction` is `repair_matching_simulators`, an agent repairs that purpose once:
+
+```bash
+simbroker simulators repair \
+  --repo-root "$PWD" \
+  --purpose <purpose> \
+  --actor-type agent \
+  --actor-id <id> \
+  --json
+```
+
+- Exit `0` (`repaired` or `nothing_to_repair`): retry the blocked check or acquire once.
+- Exit `5`: a live holder or another project's pin remains. Stop and ask a human. Never pass `--force-override`.
+- Exit `4`: repair failed. Run `simbroker doctor` locally, read `driftReason`, and stop. Do not repair that denial again.
+- Do not call `xcrun simctl` boot, shutdown, erase, delete, or repair on a broker-managed simulator.
+- Do not paste doctor output, aliases, simulator IDs, or host paths into public logs.
+
+Public `reasons` are `simulator-missing`, `simulator-unavailable`, `simulator-config-mismatch`, `boot-on-acquire-failed`, `reset-on-acquire-failed`, `idle-shutdown-failed`, `repair-interrupted`, `repair-failed`, and `unhealthy-alias`. The command JSON is counts and those codes only. CI uses `--actor-type ci` with a stable actor id. The same-purpose procedure is in the sample `AGENTS.md`.
+
+### 6. Reuse the sample repo when helpful
 
 - Use [examples/harness-adoption/sample-consumer-repo/README.md](../../../examples/harness-adoption/sample-consumer-repo/README.md) as the default pattern for:
   - purpose mapping across manual, agent-interactive, agent-build-test, and CI flows
@@ -53,7 +76,7 @@ Use this skill when a repo needs to adopt Simulator Broker as part of its human 
   - CI runner scripts
 - Adapt the example to the consumer repo instead of copying it blindly.
 
-### 6. Verify the adoption
+### 7. Verify the adoption
 
 - Run `simbroker project validate --repo-root <repo>`.
 - Run `simbroker lease explain --repo-root <repo> --purpose <purpose>`.
