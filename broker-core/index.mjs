@@ -39,7 +39,18 @@ const DEFAULT_LOCK_POLL_MS = 150;
 const LOCK_OWNER_PID_IDENTITY_TOLERANCE_MS = 15_000;
 const DEFAULT_RESET_SETTLE_MS = 250;
 const CAPACITY_SCHEMA_VERSION = 1;
+const PURPOSE_REPAIR_SCHEMA_VERSION = 1;
 const SETUP_SCHEMA_VERSION = 1;
+const PURPOSE_REPAIR_ACTOR_TYPES = new Set(["agent", "ci", "human"]);
+const PUBLIC_DRIFT_REASONS = new Set([
+  "boot-on-acquire-failed",
+  "idle-shutdown-failed",
+  "repair-interrupted",
+  "reset-on-acquire-failed",
+  "simulator-config-mismatch",
+  "simulator-missing",
+  "simulator-unavailable",
+]);
 // Covers fresh-plan inventory, six create/rename pairs, post-commit state load,
 // and the largest late-failure attribution/delete rollback while the lock is held.
 const SETUP_MAX_SIMCTL_COMMANDS_UNDER_CAPACITY_LOCK = 30;
@@ -5013,8 +5024,16 @@ export function doctorBroker(paths, options = {}) {
       if (registryEntry.health !== "healthy" && registryEntry.health !== "state-drift") {
         issues.push({
           alias: hostAlias.alias,
+          driftReason: registryEntry.driftReason,
           health: registryEntry.health,
           reasonCode: "alias-unhealthy",
+          remediationCommands: [
+            setupCliCommandWithSelectedPaths("simbroker host status", paths),
+            setupCliCommandWithSelectedPaths(
+              `simbroker simulators repair --alias ${shellQuoteArgument(hostAlias.alias)}`,
+              paths,
+            ),
+          ],
         });
       }
     }
@@ -6011,7 +6030,7 @@ function evaluatePurposeCapacity({ inventory, projectConfig, purpose, state }) {
 
   if (reasonCodes.size === 1 && reasonCodes.has("repair-needed")) {
     return {
-      actionKind: provisioning.blocker ? null : "create_replacement_capacity",
+      actionKind: null,
       blockingReasons: [publicReason("repair-needed")],
       matched: null,
       privateStructuralCandidates: structuralCandidates,
@@ -6019,7 +6038,7 @@ function evaluatePurposeCapacity({ inventory, projectConfig, purpose, state }) {
       purpose,
       recommendedAction: provisioning.blocker
         ? publicRecommendedActionForProvisioningBlocker(provisioning.blocker)
-        : "create_replacement_capacity",
+        : "repair_matching_simulators",
       requirement: policy.requirement,
       status: "repair_needed",
     };
@@ -6396,9 +6415,6 @@ function buildCapacityPlan(paths, options = {}) {
     };
     existing.privatePurposeEvaluations.push(purposeEvaluation);
     existing.purposeIds.push(purposeEvaluation.purpose.id);
-    if (purposeEvaluation.actionKind === "create_replacement_capacity") {
-      existing.kind = "create_replacement_capacity";
-    }
     actionsByTuple.set(key, existing);
   }
 
@@ -7984,6 +8000,142 @@ export function eraseSimulatorBroker(paths, options = {}) {
 export function repairSimulatorBroker(paths, options = {}) {
   const timestamp = nowIso(options.now);
   return withCapacityLock(paths, () => withLeaseMutationLock(paths, () => runLifecycleActionBroker(paths, "repair", options), {
+    now: timestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  }), {
+    now: timestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.capacityLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  });
+}
+
+function publicDriftReason(driftReason) {
+  return PUBLIC_DRIFT_REASONS.has(driftReason) ? driftReason : "unhealthy-alias";
+}
+
+function purposeRepairSummary(purposeId, counts, reasons) {
+  const status = counts.failed > 0
+    ? "failed"
+    : (counts.repaired > 0 ? "repaired" : (counts.held > 0 ? "held" : "nothing_to_repair"));
+  return {
+    command: "simulators.repair",
+    failed: counts.failed,
+    held: counts.held,
+    purposeId,
+    reasons: [...reasons].sort(),
+    repaired: counts.repaired,
+    schemaVersion: PURPOSE_REPAIR_SCHEMA_VERSION,
+    status,
+  };
+}
+
+function assertPurposeRepairRequest(options) {
+  if (options.forceOverride === true) {
+    throw new BrokerError("Purpose repair does not accept force override.", {
+      reasonCode: "invalid-flag",
+    });
+  }
+  if (typeof options.alias === "string" && options.alias.trim() !== "") {
+    throw new BrokerError("Purpose repair does not accept an alias.", {
+      reasonCode: "invalid-flag",
+    });
+  }
+  const purposeId = requireString(options.purposeId, "purposeId");
+  const actorType = requireString(options.actorType, "actorType");
+  const actorId = requireString(options.actorId, "actorId");
+  if (!PURPOSE_REPAIR_ACTOR_TYPES.has(actorType)) {
+    throw new BrokerError("Purpose repair actorType must be agent, ci, or human.", {
+      actorType,
+      reasonCode: "invalid-flag",
+    });
+  }
+  return { actorId, actorType, purposeId };
+}
+
+function purposeRepairHolderReason(error) {
+  const reasonCode = error?.payload?.reasonCode;
+  return reasonCode === "human-override-required"
+    || reasonCode === "override-required"
+    || reasonCode === "lease-conflict"
+    || reasonCode === "pin-conflict";
+}
+
+export function repairPurposeSimulatorsBroker(paths, options = {}) {
+  const request = assertPurposeRepairRequest(options);
+  const timestamp = nowIso(options.now);
+  return withCapacityLock(paths, () => withLeaseMutationLock(paths, () => {
+    const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+    const { projectConfig } = readProjectConfigOrThrow(paths, options.projectFilePath);
+    const purpose = getPurpose(projectConfig, request.purposeId);
+    const policy = capacityProvisioningPolicy(purpose);
+    const analysis = buildCandidateAnalysis({
+      explicitAlias: null,
+      hostConfig: state.hostConfig,
+      leasesByAlias: state.leasesByAlias,
+      pinsByAlias: state.pinsByAlias,
+      projectConfig,
+      purpose,
+      registry: state.registry,
+    });
+    const structural = analysis
+      .filter((candidate) => structuralCapacityMatches(candidate.hostAlias, purpose, policy.requirement))
+      .sort((left, right) => left.alias.localeCompare(right.alias));
+    const counts = { failed: 0, held: 0, repaired: 0 };
+    const reasons = new Set();
+
+    for (const candidate of structural) {
+      const unhealthy = candidate.reasons.some((reason) => reason.code === "unhealthy-alias");
+      if (!unhealthy) {
+        continue;
+      }
+      reasons.add(publicDriftReason(candidate.registryEntry.driftReason));
+      const held = candidate.reasons.some((reason) =>
+        reason.code === "lease-conflict" || reason.code === "pinned-for-other-project");
+      if (held) {
+        counts.held += 1;
+        continue;
+      }
+      try {
+        runLifecycleActionBroker(paths, "repair", {
+          ...options,
+          actorId: request.actorId,
+          actorType: request.actorType,
+          alias: candidate.alias,
+          forceOverride: false,
+          now: timestamp,
+        });
+        counts.repaired += 1;
+      } catch (error) {
+        if (purposeRepairHolderReason(error)) {
+          counts.held += 1;
+          continue;
+        }
+        counts.failed += 1;
+        reasons.add("repair-failed");
+      }
+    }
+
+    const summary = purposeRepairSummary(request.purposeId, counts, reasons);
+    if (counts.failed > 0) {
+      throw new BrokerError("Purpose repair failed.", {
+        ...summary,
+        reasonCode: "purpose-repair-failed",
+      });
+    }
+    if (counts.repaired === 0 && counts.held > 0) {
+      throw new BrokerError("A human operator must repair the held simulator.", {
+        ...summary,
+        reasonCode: "human-override-required",
+      });
+    }
+    return {
+      ok: true,
+      ...summary,
+    };
+  }, {
     now: timestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,

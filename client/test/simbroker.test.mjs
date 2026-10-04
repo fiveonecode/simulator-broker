@@ -3534,6 +3534,75 @@ test("simulator lifecycle requests honor explicit false for force-override", () 
   assert.equal(request.options.forceOverride, false);
 });
 
+test("purpose repair accepts a purpose and actor without an alias", () => {
+  const fixture = makeFixture();
+  const { flags } = parseArgs([
+    "--repo-root", fixture.repoRoot,
+    "--purpose", "agent-ui-session",
+    "--actor-type", "agent",
+    "--actor-id", "agent-1",
+  ]);
+  const request = createCommandRequest({
+    projectFilePath: fixture.projectFilePath,
+  }, "simulators", "repair", flags);
+
+  assert.equal(request.command, "repair");
+  assert.equal(request.options.purposeId, "agent-ui-session");
+  assert.equal(request.options.actorType, "agent");
+  assert.equal(request.options.actorId, "agent-1");
+  assert.equal(request.options.alias, undefined);
+});
+
+test("purpose repair rejects an alias, force override, and unknown actor type", () => {
+  const fixture = makeFixture();
+  const paths = { projectFilePath: fixture.projectFilePath };
+
+  assert.throws(() => {
+    const { flags } = parseArgs([
+      "--alias", "ui-1",
+      "--purpose", "agent-ui-session",
+      "--actor-type", "agent",
+      "--actor-id", "agent-1",
+    ]);
+    createCommandRequest(paths, "simulators", "repair", flags);
+  }, (error) => error.payload?.reasonCode === "invalid-flag" && error.exitCode === 2);
+
+  assert.throws(() => {
+    const { flags } = parseArgs([
+      "--purpose", "agent-ui-session",
+      "--actor-type", "agent",
+      "--actor-id", "agent-1",
+      "--force-override",
+    ]);
+    createCommandRequest(paths, "simulators", "repair", flags);
+  }, (error) => error.payload?.reasonCode === "invalid-flag" && error.exitCode === 2);
+
+  assert.throws(() => {
+    const { flags } = parseArgs([
+      "--purpose", "agent-ui-session",
+      "--actor-type", "robot",
+      "--actor-id", "agent-1",
+    ]);
+    createCommandRequest(paths, "simulators", "repair", flags);
+  }, (error) => error.payload?.reasonCode === "invalid-flag" && error.payload.actorType === "robot");
+});
+
+test("doctor human formatter includes the drift reason", () => {
+  const text = format({
+    hostConfigPath: "/tmp/host-config.json",
+    issues: [{
+      alias: "ui-1",
+      driftReason: "boot-on-acquire-failed",
+      health: "repair-needed",
+      reasonCode: "alias-unhealthy",
+    }],
+    ok: false,
+    stateRoot: "/tmp/state",
+  });
+
+  assert.match(text, /Alias ui-1: repair-needed\. Reason: boot-on-acquire-failed\./);
+});
+
 test("destructive commands reject unknown flags before constructing options", () => {
   const fixture = makeFixture();
   const paths = {

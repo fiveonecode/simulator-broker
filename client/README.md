@@ -37,7 +37,8 @@ Current command families:
 - `simulators boot`
 - `simulators shutdown`
 - `simulators erase`
-- `simulators repair`
+- `simulators repair` (`--alias` for an operator, or `--purpose` with
+  `--actor-type` and `--actor-id` for one agent or CI repair attempt)
 
 Onboarding helpers now included:
 

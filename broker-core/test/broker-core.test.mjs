@@ -33,6 +33,7 @@ import {
   reconcileIdleBroker,
   registerLeaseProcessBroker,
   reconcileCapacityBroker,
+  repairPurposeSimulatorsBroker,
   repairSimulatorBroker,
   releaseLeaseBroker,
   resolveBrokerPaths,
@@ -4023,6 +4024,94 @@ test("system simctl shutdown propagates failures except already-shutdown results
   assert.doesNotThrow(() => {
     alreadyShutdownAdapter.shutdownDevice("SIM-SHUTDOWN");
   });
+});
+
+test("system simctl boot continues when the device is already booted or booting", () => {
+  for (const state of ["Booted", "Booting"]) {
+    const calls = [];
+    const adapter = createSystemSimctlAdapter({
+      commandRunner(args) {
+        calls.push(args);
+        if (args[0] === "boot") {
+          return {
+            exitCode: 149,
+            stderr: `Unable to boot device in current state: ${state}`,
+            stdout: "",
+          };
+        }
+        return "";
+      },
+    });
+
+    assert.doesNotThrow(() => {
+      adapter.bootDevice("SIM-BOOT");
+    });
+    assert.deepEqual(calls, [
+      ["boot", "SIM-BOOT"],
+      ["bootstatus", "SIM-BOOT", "-b"],
+    ]);
+  }
+});
+
+test("system simctl shutdown waits until a shutting-down device reaches Shutdown", () => {
+  const calls = [];
+  const adapter = createSystemSimctlAdapter({
+    commandRunner(args) {
+      calls.push(args);
+      if (args[0] === "shutdown") {
+        return {
+          exitCode: 405,
+          stderr: "Unable to shutdown device in current state: Shutting Down",
+          stdout: "",
+        };
+      }
+      return JSON.stringify({
+        devices: {
+          "com.apple.CoreSimulator.SimRuntime.iOS-18-2": [
+            { state: "Shutdown", udid: "SIM-SHUTTING" },
+          ],
+        },
+      });
+    },
+  });
+
+  assert.doesNotThrow(() => {
+    adapter.shutdownDevice("SIM-SHUTTING");
+  });
+  assert.deepEqual(calls, [
+    ["shutdown", "SIM-SHUTTING"],
+    ["list", "--json", "devices"],
+  ]);
+});
+
+test("system simctl shutdown fails when a shutting-down device never finishes", () => {
+  let nowMs = 0;
+  const adapter = createSystemSimctlAdapter({
+    commandRunner(args) {
+      if (args[0] === "shutdown") {
+        return {
+          exitCode: 405,
+          stderr: "Unable to shutdown device in current state: Shutting Down",
+          stdout: "",
+        };
+      }
+      return JSON.stringify({
+        devices: {
+          "com.apple.CoreSimulator.SimRuntime.iOS-18-2": [
+            { state: "Shutting Down", udid: "SIM-STUCK" },
+          ],
+        },
+      });
+    },
+    now: () => nowMs,
+    sleep(milliseconds) {
+      nowMs += milliseconds;
+    },
+  });
+
+  assert.throws(() => {
+    adapter.shutdownDevice("SIM-STUCK");
+  }, (error) => error.timedOut === true && error.timeoutMs === SIMCTL_COMMAND_TIMEOUT_MS);
 });
 
 test("system simctl delete propagates failures except already-deleted results", () => {
@@ -12480,6 +12569,192 @@ test("repair rebinds a missing simulator through the default simctl adapter", ()
 
   const updatedFixtureState = readJson(paths.simctl.statePath);
   assert.ok(updatedFixtureState.devices.some((device) => device.udid === repaired.simulator.simulatorId));
+});
+
+test("purpose repair clears an unleased repair-needed alias and acquire can proceed", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-1"].health = "repair-needed";
+  registry.aliases["ui-1"].driftReason = "boot-on-acquire-failed";
+  registry.aliases["ui-2"].health = "repair-needed";
+  registry.aliases["ui-2"].driftReason = "boot-on-acquire-failed";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  const blocked = checkCapacityBroker(resolvedPaths, runtimeOptions(paths, {
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+  }));
+  assert.equal(blocked.purposes[0].status, "repair_needed");
+  assert.equal(blocked.purposes[0].recommendedAction, "repair_matching_simulators");
+  const preview = reconcileCapacityBroker(resolvedPaths, runtimeOptions(paths, {
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+  }));
+  assert.equal(preview.status, "blocked");
+  assert.deepEqual(preview.actions, []);
+  assert.equal(preview.blockedReasons[0].recommendedAction, "repair_matching_simulators");
+
+  const repaired = repairPurposeSimulatorsBroker(resolvedPaths, {
+    actorId: "agent-1",
+    actorType: "agent",
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const serialized = JSON.stringify(repaired);
+  assert.equal(repaired.status, "repaired");
+  assert.equal(repaired.repaired, 2);
+  assert.equal(repaired.failed, 0);
+  assert.equal(repaired.held, 0);
+  assert.deepEqual(repaired.reasons, ["boot-on-acquire-failed"]);
+  assert.equal(serialized.includes("ui-1"), false);
+  assert.equal(serialized.includes("SIM-UI-1"), false);
+  assert.equal(serialized.includes("agent-1"), false);
+  assert.equal(readJson(resolvedPaths.registryPath).aliases["ui-1"].health, "healthy");
+  assert.equal(readJson(paths.hostConfigPath).aliases.find((alias) => alias.alias === "ui-1").simulatorId, "SIM-UI-1");
+
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-1",
+    actorType: "agent",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  assert.equal(typeof lease.leaseId, "string");
+});
+
+test("purpose repair leaves a live holder untouched and requires a human", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-owner",
+    actorType: "agent",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases[lease.alias].health = "repair-needed";
+  registry.aliases[lease.alias].driftReason = "boot-on-acquire-failed";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  assert.throws(() => {
+    repairPurposeSimulatorsBroker(resolvedPaths, {
+      actorId: "agent-2",
+      actorType: "agent",
+      processExists: (pid) => pid === process.pid,
+      purposeId: "agent-ui-session",
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => {
+    const serialized = JSON.stringify(error.payload);
+    assert.equal(error.payload.reasonCode, "human-override-required");
+    assert.equal(error.exitCode, 5);
+    assert.equal(error.payload.status, "held");
+    assert.equal(error.payload.held, 1);
+    assert.equal(error.payload.repaired, 0);
+    assert.equal(serialized.includes(lease.alias), false);
+    assert.equal(serialized.includes(lease.simulatorId), false);
+    assert.equal(serialized.includes("agent-owner"), false);
+    return true;
+  });
+  assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, `${lease.leaseId}.json`)), true);
+  assert.equal(readJson(resolvedPaths.registryPath).aliases[lease.alias].health, "repair-needed");
+});
+
+test("purpose repair rejects force override and an alias selector", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+
+  assert.throws(() => {
+    repairPurposeSimulatorsBroker(resolvedPaths, {
+      actorId: "agent-1",
+      actorType: "agent",
+      forceOverride: true,
+      purposeId: "agent-ui-session",
+    });
+  }, (error) => error.payload?.reasonCode === "invalid-flag" && error.exitCode === 2);
+  assert.throws(() => {
+    repairPurposeSimulatorsBroker(resolvedPaths, {
+      actorId: "agent-1",
+      actorType: "agent",
+      alias: "ui-1",
+      purposeId: "agent-ui-session",
+    });
+  }, (error) => error.payload?.reasonCode === "invalid-flag" && error.exitCode === 2);
+});
+
+test("purpose repair reports a failed alias without hiding a repaired sibling", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-1"].health = "repair-needed";
+  registry.aliases["ui-1"].driftReason = "boot-on-acquire-failed";
+  registry.aliases["ui-2"].health = "repair-needed";
+  registry.aliases["ui-2"].driftReason = "simulator-unavailable";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  assert.throws(() => {
+    repairPurposeSimulatorsBroker(resolvedPaths, {
+      actorId: "agent-1",
+      actorType: "agent",
+      lifecycleAdapter: {
+        repair(context) {
+          if (context.alias === "ui-1") {
+            throw new Error("private runtime detail");
+          }
+        },
+      },
+      processExists: () => true,
+      purposeId: "agent-ui-session",
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => {
+    const serialized = JSON.stringify(error.payload);
+    assert.equal(error.payload.reasonCode, "purpose-repair-failed");
+    assert.equal(error.exitCode, 4);
+    assert.equal(error.payload.failed, 1);
+    assert.equal(error.payload.repaired, 1);
+    assert.equal(error.payload.status, "failed");
+    assert.deepEqual(error.payload.reasons, ["boot-on-acquire-failed", "repair-failed", "simulator-unavailable"]);
+    assert.equal(serialized.includes("ui-1"), false);
+    assert.equal(serialized.includes("private runtime detail"), false);
+    return true;
+  });
+  assert.equal(readJson(resolvedPaths.registryPath).aliases["ui-1"].health, "repair-needed");
+  assert.equal(readJson(resolvedPaths.registryPath).aliases["ui-2"].health, "healthy");
+});
+
+test("doctor reports the drift reason and an alias repair command", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-1"].health = "repair-needed";
+  registry.aliases["ui-1"].driftReason = "boot-on-acquire-failed";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  const report = doctorBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const issue = report.issues.find((candidate) => candidate.alias === "ui-1");
+  assert.equal(issue.driftReason, "boot-on-acquire-failed");
+  assert.equal(issue.reasonCode, "alias-unhealthy");
+  assert.equal(issue.remediationCommands.some((command) => command.includes("simulators repair --alias")), true);
 });
 
 test("repair creates a replacement before deleting a drifted simulator", () => {
