@@ -12891,6 +12891,76 @@ test("purpose repair reports a failed alias without hiding a repaired sibling", 
   assert.equal(readJson(resolvedPaths.registryPath).aliases["ui-2"].health, "healthy");
 });
 
+test("purpose repair stamps a lease reclaimed during an earlier alias with the later discovery time", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const commandStartedAt = "2026-01-01T01:00:00.000Z";
+  const discoveryAt = "2026-01-01T01:02:00.000Z";
+  let nowMs = Date.parse(commandStartedAt);
+  const ownerPid = 424242;
+  let ownerAlive = true;
+  const processExists = (pid) => (pid === ownerPid ? ownerAlive : true);
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+    processExists,
+  });
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "ipad-agent",
+    actorType: "agent",
+    now: () => new Date(nowMs),
+    ownerPid,
+    processExists,
+    purposeId: "agent-ipad-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  assert.equal(lease.alias, "ipad-1");
+
+  const registry = readJson(resolvedPaths.registryPath);
+  registry.aliases["ui-1"].health = "repair-needed";
+  registry.aliases["ui-1"].driftReason = "boot-on-acquire-failed";
+  registry.aliases["ui-2"].health = "repair-needed";
+  registry.aliases["ui-2"].driftReason = "boot-on-acquire-failed";
+  writeJson(resolvedPaths.registryPath, registry);
+
+  const repaired = repairPurposeSimulatorsBroker(resolvedPaths, {
+    actorId: "agent-1",
+    actorType: "agent",
+    lifecycleAdapter: {
+      repair(context) {
+        if (context.alias === "ui-1") {
+          ownerAlive = false;
+          nowMs += 120_000;
+        }
+      },
+    },
+    now: () => new Date(nowMs),
+    processExists,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(repaired.repaired, 2);
+  assert.equal(readJson(resolvedPaths.registryPath).aliases["ipad-1"].lastLeaseReleasedAt, discoveryAt);
+  assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, `${lease.leaseId}.json`)), false);
+
+  const recovered = reconcileIdleBroker(resolvedPaths, {
+    now: discoveryAt,
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(recovered.shutdownCount, 0);
+  assert.equal(
+    readJson(paths.simctl.statePath).devices.find((device) => device.udid === lease.simulatorId).state,
+    "Booted",
+  );
+});
+
 test("doctor reports the drift reason and an alias repair command", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);

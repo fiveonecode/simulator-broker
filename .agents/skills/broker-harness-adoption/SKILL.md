@@ -29,7 +29,7 @@ Use this skill when a repo needs to adopt Simulator Broker as part of its human 
 
 - Add or update `.simulator-broker/project.json`.
 - Add one shared broker-aware lease helper plus thin flow-specific wrappers when the repo has multiple simulator workflow classes.
-- Update agent instructions so agents acquire by purpose, repair a `repair_needed` purpose once, and avoid direct `simctl` mutation on broker-managed aliases.
+- Update agent instructions so agents acquire by purpose, repair a purpose once when `recommendedAction` is `repair_matching_simulators`, and avoid direct `simctl` mutation on broker-managed aliases.
 - Update CI or automation wiring when the repo uses simulators in unattended runs.
 
 ### 4. Preserve the broker model
@@ -48,7 +48,7 @@ Use this skill when a repo needs to adopt Simulator Broker as part of its human 
 
 ### 5. Repair a purpose before waiting
 
-`spec/harness-integration.md` is the source of truth. When `capacity check` reports `repair_needed`, or `recommendedAction` is `repair_matching_simulators`, an agent repairs that purpose once:
+`spec/harness-integration.md` is the source of truth. When `capacity check` reports `recommendedAction` `repair_matching_simulators`, an agent repairs that purpose once:
 
 ```bash
 simbroker simulators repair \
@@ -59,6 +59,7 @@ simbroker simulators repair \
   --json
 ```
 
+- A `repair_needed` status with `install_runtime`, `run_broker_doctor`, or `inspect_unknown` follows that action.
 - Exit `0` (`repaired` or `nothing_to_repair`): retry the blocked check or acquire once.
 - Exit `5`: a live holder or another project's pin remains. Stop and ask a human. Never pass `--force-override`.
 - Exit `4`: repair failed. Run `simbroker doctor` locally, read `driftReason`, and stop. Do not repair that denial again.

@@ -8105,7 +8105,6 @@ export function repairPurposeSimulatorsBroker(paths, options = {}) {
           actorType: request.actorType,
           alias: candidate.alias,
           forceOverride: false,
-          now: timestamp,
         });
         counts.repaired += 1;
       } catch (error) {
