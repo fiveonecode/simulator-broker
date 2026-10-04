@@ -429,6 +429,10 @@ actor type. `--actor-type` must be `agent`, `ci`, or `human`, and
 
 Purpose repair takes one capacity lock and then one lease lock for the whole
 call. It must not call the alias-repair entrypoint from inside those locks.
+The pre-repair state load samples the clock after both locks are held, so a
+dead lease without containment metadata records `lastLeaseReleasedAt` at
+reclaim time. Lock-owner metadata keeps the timestamp captured before the
+waits.
 It uses the same structural match as capacity check. It repairs a match only
 when that match is `repair-needed` or `repairing`, has no active lease, and is
 not pinned for another project or for another purpose of this project. A pin
@@ -490,6 +494,7 @@ aliases, simulator IDs, and host paths stay out of public logs.
 | SB-PURPOSE-REPAIR-003 | Force override and an alias selector are `invalid-flag` exit `2` in core and at the CLI, including an unknown actor type. | `broker-core/test/broker-core.test.mjs` `purpose repair rejects force override and an alias selector`; `client/test/simbroker.test.mjs` `purpose repair rejects an alias, force override, and unknown actor type` |
 | SB-PURPOSE-REPAIR-004 | One failed alias returns exit `4` with `purpose-repair-failed`, keeps the repaired sibling, and hides the alias and private error text. | `broker-core/test/broker-core.test.mjs` `purpose repair reports a failed alias without hiding a repaired sibling`; `broker-core/test/error-contract.test.mjs` exit `4` and HTTP `423` for `purpose-repair-failed` |
 | SB-PURPOSE-REPAIR-005 | Sole repair-needed capacity uses `recommendedAction: repair_matching_simulators`, null action kind, and a blocked reconcile with no create action. | `broker-core/test/broker-core.test.mjs` `purpose repair clears an unleased repair-needed alias and acquire can proceed` |
+| SB-PURPOSE-REPAIR-006 | A dead non-containment lease that exits while purpose repair waits on the capacity lock records `lastLeaseReleasedAt` at the post-lock time. Lock-owner metadata keeps the pre-wait time, and idle reconcile at that post-lock time still has grace left. | `broker-core/test/broker-core.test.mjs` `purpose repair stamps a dead non-containment lease with the post-lock time` |
 | SB-DOCTOR-DRIFT-001 | Doctor JSON includes `driftReason` and an alias-repair remediation command. Human text prints that reason. | `broker-core/test/broker-core.test.mjs` `doctor reports the drift reason and an alias repair command`; `client/test/simbroker.test.mjs` `doctor human formatter includes the drift reason` |
 | SB-SIMCTL-RACE-001 | Real `simctl boot` continues to `bootstatus` for current state `Booted` or `Booting`. Real `simctl shutdown` waits from `Shutting Down` to `Shutdown` and times out if that wait never finishes. Other non-zero results still fail. | `broker-core/test/broker-core.test.mjs` `system simctl boot continues when the device is already booted or booting`, `system simctl shutdown waits until a shutting-down device reaches Shutdown`, `system simctl shutdown fails when a shutting-down device never finishes` |
 

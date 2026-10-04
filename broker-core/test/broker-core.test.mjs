@@ -12961,6 +12961,98 @@ test("purpose repair stamps a lease reclaimed during an earlier alias with the l
   );
 });
 
+test("purpose repair stamps a dead non-containment lease with the post-lock time", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const commandStartedAt = "2026-01-01T01:00:00.000Z";
+  const discoveredAt = "2026-01-01T01:02:00.000Z";
+  let nowMs = Date.parse(commandStartedAt);
+  const leaseOwnerPid = 424242;
+  const lockOwnerPid = 434343;
+  let leaseOwnerAlive = true;
+  let advancedDuringLockWait = false;
+  const processExists = (pid) => {
+    if (pid === lockOwnerPid) {
+      if (!advancedDuringLockWait) {
+        advancedDuringLockWait = true;
+        leaseOwnerAlive = false;
+        nowMs += 120_000;
+      }
+      return false;
+    }
+    return pid === leaseOwnerPid ? leaseOwnerAlive : true;
+  };
+  let capacityLockStartedAt = null;
+  let leaseLockStartedAt = null;
+  const simctlAdapter = {
+    ...paths.simctl.adapter,
+    listDevices() {
+      if (capacityLockStartedAt === null && fs.existsSync(resolvedPaths.capacityLockOwnerPath)) {
+        capacityLockStartedAt = readJson(resolvedPaths.capacityLockOwnerPath).startedAt;
+      }
+      if (leaseLockStartedAt === null && fs.existsSync(resolvedPaths.leaseLockOwnerPath)) {
+        leaseLockStartedAt = readJson(resolvedPaths.leaseLockOwnerPath).startedAt;
+      }
+      return paths.simctl.adapter.listDevices();
+    },
+  };
+
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists }));
+  enableIdlePolicyBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+    processExists,
+  });
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "ipad-agent",
+    actorType: "agent",
+    now: () => new Date(nowMs),
+    ownerPid: leaseOwnerPid,
+    processExists,
+    purposeId: "agent-ipad-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  assert.equal(lease.alias, "ipad-1");
+  fs.mkdirSync(resolvedPaths.capacityLockDir, { recursive: true });
+  writeJson(resolvedPaths.capacityLockOwnerPath, {
+    pid: lockOwnerPid,
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  const repaired = repairPurposeSimulatorsBroker(resolvedPaths, {
+    actorId: "agent-1",
+    actorType: "agent",
+    now: () => new Date(nowMs),
+    processExists,
+    purposeId: "agent-ui-session",
+    simctlAdapter,
+  });
+
+  assert.equal(repaired.status, "nothing_to_repair");
+  assert.equal(readJson(resolvedPaths.registryPath).aliases["ipad-1"].lastLeaseReleasedAt, discoveredAt);
+  assert.equal(capacityLockStartedAt, commandStartedAt);
+  assert.equal(leaseLockStartedAt, commandStartedAt);
+  assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, `${lease.leaseId}.json`)), false);
+  assert.equal(
+    readEventsBroker(resolvedPaths).events.find((event) => event.type === "lease.reclaimed" && event.leaseId === lease.leaseId)?.timestamp,
+    discoveredAt,
+  );
+
+  const recovered = reconcileIdleBroker(resolvedPaths, {
+    now: discoveredAt,
+    processExists: () => false,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(recovered.shutdownCount, 0);
+  assert.equal(
+    readJson(paths.simctl.statePath).devices.find((device) => device.udid === lease.simulatorId).state,
+    "Booted",
+  );
+});
+
 test("doctor reports the drift reason and an alias repair command", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);

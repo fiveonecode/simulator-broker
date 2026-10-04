@@ -8065,9 +8065,10 @@ function purposeRepairHolderReason(error) {
 
 export function repairPurposeSimulatorsBroker(paths, options = {}) {
   const request = assertPurposeRepairRequest(options);
-  const timestamp = nowIso(options.now);
+  const lockTimestamp = nowIso(options.now);
   return withCapacityLock(paths, () => withLeaseMutationLock(paths, () => {
-    const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+    const stateTimestamp = nowIso(options.now);
+    const state = loadBrokerState(paths, stateLoadOptions(options, stateTimestamp));
     const { projectConfig } = readProjectConfigOrThrow(paths, options.projectFilePath);
     const purpose = getPurpose(projectConfig, request.purposeId);
     const policy = capacityProvisioningPolicy(purpose);
@@ -8135,12 +8136,12 @@ export function repairPurposeSimulatorsBroker(paths, options = {}) {
       ...summary,
     };
   }, {
-    now: timestamp,
+    now: lockTimestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
   }), {
-    now: timestamp,
+    now: lockTimestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.capacityLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
