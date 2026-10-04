@@ -198,16 +198,63 @@ export function createSystemSimctlAdapter({
 
   function waitForShutdown(simulatorId) {
     const deadline = now() + SIMCTL_COMMAND_TIMEOUT_MS;
+    let retriedShutdown = false;
+
+    const throwWaitTimeout = () => {
+      const timeout = new Error(`simctl shutdown ${simulatorId} timed out after ${SIMCTL_COMMAND_TIMEOUT_MS}ms`);
+      timeout.exitCode = 124;
+      timeout.timedOut = true;
+      timeout.timeoutMs = SIMCTL_COMMAND_TIMEOUT_MS;
+      throw timeout;
+    };
+
+    const remainingMs = () => deadline - now();
+
     while (now() < deadline) {
-      const listed = JSON.parse(runCommand(["list", "--json", "devices"], {
-        maxBuffer: SIMCTL_INVENTORY_MAX_BUFFER_BYTES,
-      }));
+      const listTimeoutMs = remainingMs();
+      if (listTimeoutMs <= 0) {
+        break;
+      }
+      let listed;
+      try {
+        listed = JSON.parse(runCommand(["list", "--json", "devices"], {
+          maxBuffer: SIMCTL_INVENTORY_MAX_BUFFER_BYTES,
+          timeoutMs: listTimeoutMs,
+        }));
+      } catch (error) {
+        if (error?.timedOut === true) {
+          throwWaitTimeout();
+        }
+        throw error;
+      }
       const state = deviceStateFromInventory(listed, simulatorId);
       if (state === "Shutdown") {
         return;
       }
       if (state !== "Shutting Down") {
-        const retry = runCommand(["shutdown", simulatorId], { allowFailure: true });
+        if (retriedShutdown) {
+          throwWaitTimeout();
+        }
+        retriedShutdown = true;
+        const retryTimeoutMs = remainingMs();
+        if (retryTimeoutMs <= 0) {
+          break;
+        }
+        let retry;
+        try {
+          retry = runCommand(["shutdown", simulatorId], {
+            allowFailure: true,
+            timeoutMs: retryTimeoutMs,
+          });
+        } catch (error) {
+          if (error?.timedOut === true) {
+            throwWaitTimeout();
+          }
+          throw error;
+        }
+        if (retry?.timedOut === true) {
+          throwWaitTimeout();
+        }
         if (!commandResultFailed(retry) || isAlreadyShutdownResult(retry)) {
           return;
         }
@@ -215,17 +262,13 @@ export function createSystemSimctlAdapter({
           throwSimctlResult(["shutdown", simulatorId], retry);
         }
       }
-      const remaining = deadline - now();
-      if (remaining <= 0) {
+      const sleepMs = remainingMs();
+      if (sleepMs <= 0) {
         break;
       }
-      sleep(Math.min(250, remaining));
+      sleep(Math.min(250, sleepMs));
     }
-    const timeout = new Error(`simctl shutdown ${simulatorId} timed out after ${SIMCTL_COMMAND_TIMEOUT_MS}ms`);
-    timeout.exitCode = 124;
-    timeout.timedOut = true;
-    timeout.timeoutMs = SIMCTL_COMMAND_TIMEOUT_MS;
-    throw timeout;
+    throwWaitTimeout();
   }
 
   return {

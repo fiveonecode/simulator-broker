@@ -4114,6 +4114,158 @@ test("system simctl shutdown fails when a shutting-down device never finishes", 
   }, (error) => error.timedOut === true && error.timeoutMs === SIMCTL_COMMAND_TIMEOUT_MS);
 });
 
+test("system simctl shutdown retries an unexpected state only once", () => {
+  const calls = [];
+  let nowMs = 0;
+  const adapter = createSystemSimctlAdapter({
+    commandRunner(args) {
+      calls.push([...args]);
+      if (args[0] === "shutdown") {
+        return {
+          exitCode: 405,
+          stderr: "Unable to shutdown device in current state: Shutting Down",
+          stdout: "",
+        };
+      }
+      const lists = calls.filter((call) => call[0] === "list").length;
+      const state = lists === 2 ? "Shutting Down" : "Booted";
+      return JSON.stringify({
+        devices: {
+          "com.apple.CoreSimulator.SimRuntime.iOS-18-2": [
+            { state, udid: "SIM-RETRY" },
+          ],
+        },
+      });
+    },
+    now: () => nowMs,
+    sleep(milliseconds) {
+      nowMs += milliseconds;
+    },
+  });
+
+  assert.throws(() => {
+    adapter.shutdownDevice("SIM-RETRY");
+  }, (error) => error.timedOut === true && error.timeoutMs === SIMCTL_COMMAND_TIMEOUT_MS);
+  assert.deepEqual(calls.filter((call) => call[0] === "shutdown"), [
+    ["shutdown", "SIM-RETRY"],
+    ["shutdown", "SIM-RETRY"],
+  ]);
+  assert.deepEqual(calls.filter((call) => call[0] === "list"), [
+    ["list", "--json", "devices"],
+    ["list", "--json", "devices"],
+    ["list", "--json", "devices"],
+  ]);
+});
+
+test("system simctl shutdown wait reports a late list overrun as the wait timeout", () => {
+  let nowMs = 0;
+  const calls = [];
+  let lists = 0;
+  const adapter = createSystemSimctlAdapter({
+    commandRunner(args, options) {
+      calls.push({ args: [...args], timeoutMs: options.timeoutMs });
+      if (args[0] === "shutdown") {
+        if (calls.filter((call) => call.args[0] === "shutdown").length === 1) {
+          return {
+            exitCode: 405,
+            stderr: "Unable to shutdown device in current state: Shutting Down",
+            stdout: "",
+          };
+        }
+        return {
+          exitCode: 124,
+          stderr: "",
+          stdout: "",
+          timedOut: true,
+          timeoutMs: options.timeoutMs,
+        };
+      }
+      lists += 1;
+      if (lists === 1) {
+        return JSON.stringify({
+          devices: {
+            "com.apple.CoreSimulator.SimRuntime.iOS-18-2": [
+              { state: "Shutting Down", udid: "SIM-BOUND" },
+            ],
+          },
+        });
+      }
+      const error = new Error(`simctl list --json devices timed out after ${options.timeoutMs}ms`);
+      error.exitCode = 124;
+      error.timedOut = true;
+      error.timeoutMs = options.timeoutMs;
+      throw error;
+    },
+    now: () => nowMs,
+    sleep() {
+      nowMs = SIMCTL_COMMAND_TIMEOUT_MS - 40;
+    },
+  });
+
+  assert.throws(() => {
+    adapter.shutdownDevice("SIM-BOUND");
+  }, (error) => error.timedOut === true
+    && error.exitCode === 124
+    && error.timeoutMs === SIMCTL_COMMAND_TIMEOUT_MS
+    && error.message === `simctl shutdown SIM-BOUND timed out after ${SIMCTL_COMMAND_TIMEOUT_MS}ms`);
+  assert.deepEqual(calls.map((call) => [call.args[0], call.timeoutMs]), [
+    ["shutdown", SIMCTL_COMMAND_TIMEOUT_MS],
+    ["list", SIMCTL_COMMAND_TIMEOUT_MS],
+    ["list", 40],
+  ]);
+});
+
+test("system simctl shutdown wait reports a late retry overrun as the wait timeout", () => {
+  let nowMs = 0;
+  const calls = [];
+  let lists = 0;
+  const adapter = createSystemSimctlAdapter({
+    commandRunner(args, options) {
+      calls.push({ args: [...args], timeoutMs: options.timeoutMs });
+      if (args[0] === "shutdown") {
+        if (calls.filter((call) => call.args[0] === "shutdown").length === 1) {
+          return {
+            exitCode: 405,
+            stderr: "Unable to shutdown device in current state: Shutting Down",
+            stdout: "",
+          };
+        }
+        return {
+          exitCode: 124,
+          stderr: "",
+          stdout: "",
+          timedOut: true,
+          timeoutMs: options.timeoutMs,
+        };
+      }
+      lists += 1;
+      return JSON.stringify({
+        devices: {
+          "com.apple.CoreSimulator.SimRuntime.iOS-18-2": [
+            { state: lists === 1 ? "Shutting Down" : "Booted", udid: "SIM-RETRY-BOUND" },
+          ],
+        },
+      });
+    },
+    now: () => nowMs,
+    sleep() {
+      nowMs = SIMCTL_COMMAND_TIMEOUT_MS - 40;
+    },
+  });
+
+  assert.throws(() => {
+    adapter.shutdownDevice("SIM-RETRY-BOUND");
+  }, (error) => error.timedOut === true
+    && error.timeoutMs === SIMCTL_COMMAND_TIMEOUT_MS
+    && error.message === `simctl shutdown SIM-RETRY-BOUND timed out after ${SIMCTL_COMMAND_TIMEOUT_MS}ms`);
+  assert.deepEqual(calls.map((call) => [call.args[0], call.timeoutMs]), [
+    ["shutdown", SIMCTL_COMMAND_TIMEOUT_MS],
+    ["list", SIMCTL_COMMAND_TIMEOUT_MS],
+    ["list", 40],
+    ["shutdown", 40],
+  ]);
+});
+
 test("system simctl delete propagates failures except already-deleted results", () => {
   const failingAdapter = createSystemSimctlAdapter({
     commandRunner(args, options) {
