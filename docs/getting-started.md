@@ -192,9 +192,26 @@ Read `purposes[].status` (and `summary` counts), not the top-level
 If `purposes[].status` is `unavailable`, stop. Preview missing capacity
 with `simbroker capacity reconcile --json`. Do not acquire a lease.
 
-If `purposes[].status` is `repair_needed`, stop. Run `simbroker doctor`,
-then `simbroker simulators repair --alias <alias>` for the alias doctor
-names. Do not acquire a lease.
+If `purposes[].recommendedAction` is `repair_matching_simulators`, repair
+that purpose once:
+
+```bash
+simbroker simulators repair \
+  --repo-root "$PWD" \
+  --purpose agent-ui-session \
+  --actor-type agent \
+  --actor-id hello-world \
+  --json
+```
+
+Exit `0` means repaired or nothing needed repair. Run `capacity check` again
+and acquire only when `purposes[].status` is `available`. Do not pass
+`--force-override`. Exit `5` means a live holder still owns a matching
+simulator: stop and ask a human. Exit `4` means repair failed: run
+`simbroker doctor`, read `driftReason`, and stop after that one attempt.
+A `repair_needed` status with `install_runtime`, `run_broker_doctor`, or
+`inspect_unknown` follows that recommended action instead of purpose repair.
+Do not call `xcrun simctl` on broker-managed simulators.
 
 If `purposes[].status` is `available`:
 

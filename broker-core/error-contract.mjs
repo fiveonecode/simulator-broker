@@ -62,6 +62,7 @@ const REPAIR_NEEDED_REASON_CODES = new Set([
   "boot-on-acquire-failed",
   "reset-on-acquire-failed",
   "capacity-repair-required",
+  "purpose-repair-failed",
   "unhealthy-alias",
 ]);
 

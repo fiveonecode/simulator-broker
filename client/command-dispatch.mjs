@@ -27,6 +27,7 @@ import {
   reconcileIdleBroker,
   registerLeaseProcessBroker,
   reconcileCapacityBroker,
+  repairPurposeSimulatorsBroker,
   repairSimulatorBroker,
   releaseLeaseBroker,
   shutdownSimulatorBroker,
@@ -506,8 +507,11 @@ function formatDoctorIssue(issue) {
   if (issue.reasonCode === "alias-unhealthy") {
     const alias = typeof issue.alias === "string" ? issue.alias : "unknown";
     const health = typeof issue.health === "string" ? issue.health : "unhealthy";
+    const driftReason = typeof issue.driftReason === "string" && issue.driftReason.trim() !== ""
+      ? ` Reason: ${issue.driftReason}.`
+      : "";
     return [
-      `- Alias ${alias}: ${health}.`,
+      `- Alias ${alias}: ${health}.${driftReason}`,
       ...formatDoctorIssueNextSteps(issue, [
         `  Next: inspect with \`simbroker host status\`, then repair with \`simbroker simulators repair --alias ${shellQuoteArgument(alias)}\` if needed.`,
       ]),
@@ -587,6 +591,40 @@ function eventWatchOptions(flags) {
     "type",
   ]));
   return eventFilters(flags);
+}
+
+function purposeRepairOptions(paths, flags) {
+  rejectUnknownFlags(flags, new Set([
+    "actor-id",
+    "actor-type",
+    "alias",
+    "force-override",
+    "purpose",
+    ...commonRequestFlags(),
+  ]));
+  if (flags.has("alias")) {
+    throw new BrokerError("simulators repair accepts either --alias or --purpose, not both.", {
+      reasonCode: "invalid-flag",
+    });
+  }
+  if (flags.has("force-override")) {
+    throw new BrokerError("Purpose repair does not accept --force-override.", {
+      reasonCode: "invalid-flag",
+    });
+  }
+  const actorType = requireFlag(flags, "actor-type");
+  if (!["agent", "ci", "human"].includes(actorType)) {
+    throw new BrokerError("Purpose repair --actor-type must be agent, ci, or human.", {
+      actorType,
+      reasonCode: "invalid-flag",
+    });
+  }
+  return {
+    actorId: requireFlag(flags, "actor-id"),
+    actorType,
+    projectFilePath: paths.projectFilePath,
+    purposeId: requireFlag(flags, "purpose"),
+  };
 }
 
 function lifecycleOptions(flags) {
@@ -810,6 +848,7 @@ function helpPayload(group) {
         "simulators shutdown --alias <alias>",
         "simulators erase --alias <alias>",
         "simulators repair --alias <alias>",
+        "simulators repair --repo-root <repo> --purpose <purpose> --actor-type <agent|ci|human> --actor-id <id>",
       ],
       group: "simulators",
       usage: "simbroker simulators <command>",
@@ -1028,7 +1067,7 @@ export function createCommandRequest(paths, group, command, flags) {
       return {
         group: "simulators",
         command: "repair",
-        options: lifecycleOptions(flags),
+        options: flags.has("purpose") ? purposeRepairOptions(paths, flags) : lifecycleOptions(flags),
         type: "command",
       };
     case "lease:acquire":
@@ -1398,7 +1437,9 @@ export function executeBrokerCommand(paths, request) {
       payload = eraseSimulatorBroker(paths, options);
       break;
     case "simulators:repair":
-      payload = repairSimulatorBroker(paths, options);
+      payload = options.purposeId
+        ? repairPurposeSimulatorsBroker(paths, options)
+        : repairSimulatorBroker(paths, options);
       break;
     case "lease:acquire":
       payload = acquireLeaseBroker(paths, options);

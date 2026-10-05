@@ -126,6 +126,38 @@ function isAlreadyShutdownResult(result) {
   return /current state:\s*Shutdown/i.test(output) || /already\s+shutdown/i.test(output);
 }
 
+function isShuttingDownResult(result) {
+  const output = `${result.stderr ?? ""}\n${result.stdout ?? ""}`;
+  return /current state:\s*Shutting Down/i.test(output);
+}
+
+function isBootAlreadyUnderwayResult(result) {
+  const output = `${result.stderr ?? ""}\n${result.stdout ?? ""}`;
+  return /current state:\s*(Booted|Booting)/i.test(output);
+}
+
+function commandResultFailed(result) {
+  return typeof result === "object" && result !== null && result.exitCode !== 0;
+}
+
+function deviceStateFromInventory(devicesJson, simulatorId) {
+  const grouped = devicesJson?.devices ?? {};
+  for (const devices of Object.values(grouped)) {
+    if (!Array.isArray(devices)) {
+      continue;
+    }
+    const device = devices.find((candidate) => candidate?.udid === simulatorId);
+    if (device) {
+      return device.state ?? "Shutdown";
+    }
+  }
+  return null;
+}
+
+function defaultSimctlSleep(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)), 0, 0, milliseconds);
+}
+
 function isAlreadyDeletedResult(result) {
   const output = `${result.stderr ?? ""}\n${result.stdout ?? ""}`;
   return /Invalid device/i.test(output) || /Unable to find a device/i.test(output);
@@ -154,16 +186,96 @@ function defaultCommandRunner(args, { allowFailure = false, maxBuffer = undefine
   }
 }
 
-export function createSystemSimctlAdapter({ commandRunner = defaultCommandRunner } = {}) {
+export function createSystemSimctlAdapter({
+  commandRunner = defaultCommandRunner,
+  now = () => Date.now(),
+  sleep = defaultSimctlSleep,
+} = {}) {
   const runCommand = (args, options = {}) => commandRunner(args, {
     timeoutMs: SIMCTL_COMMAND_TIMEOUT_MS,
     ...options,
   });
+
+  function waitForShutdown(simulatorId) {
+    const deadline = now() + SIMCTL_COMMAND_TIMEOUT_MS;
+    let retriedShutdown = false;
+
+    const throwWaitTimeout = () => {
+      const timeout = new Error(`simctl shutdown ${simulatorId} timed out after ${SIMCTL_COMMAND_TIMEOUT_MS}ms`);
+      timeout.exitCode = 124;
+      timeout.timedOut = true;
+      timeout.timeoutMs = SIMCTL_COMMAND_TIMEOUT_MS;
+      throw timeout;
+    };
+
+    const remainingMs = () => deadline - now();
+
+    while (now() < deadline) {
+      const listTimeoutMs = remainingMs();
+      if (listTimeoutMs <= 0) {
+        break;
+      }
+      let listed;
+      try {
+        listed = JSON.parse(runCommand(["list", "--json", "devices"], {
+          maxBuffer: SIMCTL_INVENTORY_MAX_BUFFER_BYTES,
+          timeoutMs: listTimeoutMs,
+        }));
+      } catch (error) {
+        if (error?.timedOut === true) {
+          throwWaitTimeout();
+        }
+        throw error;
+      }
+      const state = deviceStateFromInventory(listed, simulatorId);
+      if (state === "Shutdown") {
+        return;
+      }
+      if (state !== "Shutting Down") {
+        if (retriedShutdown) {
+          throwWaitTimeout();
+        }
+        retriedShutdown = true;
+        const retryTimeoutMs = remainingMs();
+        if (retryTimeoutMs <= 0) {
+          break;
+        }
+        let retry;
+        try {
+          retry = runCommand(["shutdown", simulatorId], {
+            allowFailure: true,
+            timeoutMs: retryTimeoutMs,
+          });
+        } catch (error) {
+          if (error?.timedOut === true) {
+            throwWaitTimeout();
+          }
+          throw error;
+        }
+        if (retry?.timedOut === true) {
+          throwWaitTimeout();
+        }
+        if (!commandResultFailed(retry) || isAlreadyShutdownResult(retry)) {
+          return;
+        }
+        if (!isShuttingDownResult(retry)) {
+          throwSimctlResult(["shutdown", simulatorId], retry);
+        }
+      }
+      const sleepMs = remainingMs();
+      if (sleepMs <= 0) {
+        break;
+      }
+      sleep(Math.min(250, sleepMs));
+    }
+    throwWaitTimeout();
+  }
+
   return {
     bootDevice(simulatorId) {
       const args = ["boot", simulatorId];
       const result = runCommand(args, { allowFailure: true });
-      if (typeof result === "object" && result !== null && result.exitCode !== 0) {
+      if (commandResultFailed(result) && !isBootAlreadyUnderwayResult(result)) {
         throwSimctlResult(args, result);
       }
       runCommand(["bootstatus", simulatorId, "-b"]);
@@ -205,9 +317,14 @@ export function createSystemSimctlAdapter({ commandRunner = defaultCommandRunner
     shutdownDevice(simulatorId) {
       const args = ["shutdown", simulatorId];
       const result = runCommand(args, { allowFailure: true });
-      if (typeof result === "object" && result !== null && result.exitCode !== 0 && !isAlreadyShutdownResult(result)) {
-        throwSimctlResult(args, result);
+      if (!commandResultFailed(result) || isAlreadyShutdownResult(result)) {
+        return;
       }
+      if (isShuttingDownResult(result)) {
+        waitForShutdown(simulatorId);
+        return;
+      }
+      throwSimctlResult(args, result);
     },
   };
 }

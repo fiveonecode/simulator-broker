@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/implementation-plan.md`, `spec/global-simulator-broker.md`, `spec/agents.md`, `spec/build-and-test.md`
 
 > **Document ID:** `GSB-HARNESS-001`
-> **Version:** `0.4.1`
-> **Last Updated:** `2026-08-10`
+> **Version:** `0.5.0`
+> **Last Updated:** `2026-10-05`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 
@@ -178,8 +178,26 @@ The repo's agent instructions such as `AGENTS.md`, `CLAUDE.md`, or equivalent mu
 - use Simulator Broker for broker-managed aliases
 - select simulators by repo purpose, not by hardcoded alias
 - use `lease explain`, `host status`, `lease show`, and `events watch` for diagnosis
-- never call direct `simctl` mutations on broker-managed aliases unless the repo explicitly marks the action as outside broker control
+- read `purposes[].status` and `recommendedAction` from `capacity check`
+- when `recommendedAction` is `repair_matching_simulators`, run purpose repair once, then retry the blocked check or acquire once if the repair exits `0`:
+
+```bash
+simbroker simulators repair \
+  --repo-root "$PWD" \
+  --purpose <purpose> \
+  --actor-type agent \
+  --actor-id <id> \
+  --json
+```
+
+- a `repair_needed` status with `install_runtime`, `run_broker_doctor`, or `inspect_unknown` follows that action
+
+- exit `5` means a live holder or another project's pin still owns the match. Stop and ask a human. Never pass `--force-override`
+- exit `4` means the repair failed. Run `simbroker doctor` locally, read `driftReason`, and stop. Do not run purpose repair a second time for that denial
+- never call `xcrun simctl` boot, shutdown, erase, delete, or repair on a broker-managed simulator
+- never paste doctor output, aliases, simulator IDs, or host paths into public logs
 - never attempt human-only override flows such as forced repair override
+- keep wrapper scripts acquire-only. Purpose repair can replace a device, so it stays an explicit command
 - when the repo ships a macOS app, route desktop build, launch, and focused test work through `xcode-build` and keep a repo-owned `script/build_and_run.sh` plus `.codex/environments/environment.toml` Run action in sync
 - when the repo ships a macOS app, use `swiftui-pro`, `swift-concurrency-pro`, `apple-doc-research`, and `xcode-build` as the desktop-specific review and implementation guide rails
 
@@ -188,6 +206,7 @@ The repo's agent instructions such as `AGENTS.md`, `CLAUDE.md`, or equivalent mu
 Any CI or scheduled automation that uses simulators must:
 
 - acquire by purpose before simulator work starts
+- use the same one-attempt purpose repair as an agent, with `--actor-type ci` and a stable actor id, when `recommendedAction` is `repair_matching_simulators`
 - pass stable `--actor-type ci`
 - pass stable `--job-id` and `--job-kind` when available
 - release in a cleanup step that still runs after failure
@@ -199,18 +218,36 @@ This is the canonical harness flow for local scripts, agent sessions, and CI.
 1. Validate broker project policy.
 2. Run `simbroker capacity check --repo-root "$PWD" --purpose <purpose> --json`
    when the workflow needs an explicit preflight capacity report.
-3. If check reports missing structural capacity, a human operator may run
+3. If `recommendedAction` is `repair_matching_simulators`, run purpose repair
+   once for that purpose. Exit `0` retries the check or acquire once. Exit `5`
+   stops for a human. Exit `4` stops after one local doctor read. Do not pass
+   `--force-override`. A `repair_needed` status with `install_runtime`,
+   `run_broker_doctor`, or `inspect_unknown` follows that action.
+4. If check reports missing structural capacity, a human operator may run
    `simbroker capacity reconcile` to preview a deterministic additive plan and
    then apply that exact plan with `--apply --confirm <plan-id> --actor-type
-   human --actor-id <operator-id>`.
-4. Acquire a lease by purpose.
-5. Read simulator metadata from the lease artifact. Successful acquisition
+   human --actor-id <operator-id>`. A plan blocked only because simulators
+   need repair is not an apply plan. The agent runs purpose repair when
+   `recommendedAction` is `repair_matching_simulators`. A provisioning blocker
+   keeps its own recommended action.
+5. Acquire a lease by purpose.
+6. Read simulator metadata from the lease artifact. Successful acquisition
    means the selected simulator has already been booted by the broker.
-6. Run simulator-dependent work.
-7. Register downstream process metadata.
-8. Monitor memory ceilings when configured.
-9. Contain on forced abort, timeout, or ceiling breach.
-10. Release the lease on success.
+7. Run simulator-dependent work.
+8. Register downstream process metadata.
+9. Monitor memory ceilings when configured.
+10. Contain on forced abort, timeout, or ceiling breach.
+11. Release the lease on success.
+
+Wrapper scripts stay acquire-only. The repair command is a separate step
+because a repair can replace the simulator. Do not fold it into
+`run-agent-ui-session.sh` or the shared lease helper.
+
+Stable public drift reasons an agent may see on the repair result are
+`simulator-missing`, `simulator-unavailable`, `simulator-config-mismatch`,
+`boot-on-acquire-failed`, `reset-on-acquire-failed`, `idle-shutdown-failed`,
+`repair-interrupted`, `repair-failed`, and `unhealthy-alias`. The full command
+contract is in `spec/global-simulator-broker.md`.
 
 Agents and CI may consume capacity check and preview JSON as evidence, but they
 must not run human-confirmed apply unattended. Apply is an operator action that
@@ -290,6 +327,8 @@ Required diagnostic commands:
 - `simbroker capacity reconcile --repo-root <repo> [--purpose <purpose>] --json`
 - `simbroker lease explain --repo-root <repo> --purpose <purpose>`
 - `simbroker host status`
+- `simbroker doctor` for a local `driftReason` after one failed purpose repair
+- `simbroker simulators repair --repo-root <repo> --purpose <purpose> --actor-type <agent|ci|human> --actor-id <id>`
 - `simbroker lease show --lease-file <lease-file>`
 - `simbroker lease contain --lease-file <lease-file> --reason manual-cleanup`
 - `simbroker events watch`
@@ -297,7 +336,9 @@ Required diagnostic commands:
 Harness behavior rules:
 
 - use `lease explain` when acquire fails and the failure needs a structured explanation
+- use purpose repair once when `recommendedAction` is `repair_matching_simulators`, then retry acquire once on exit `0`
 - use `host status` or `events watch` for operator-visible debugging
+- keep doctor output on the local machine. Do not copy aliases, simulator IDs, or host paths into public logs
 - treat the lease artifact as the canonical per-run handle for release and inspection
 - treat `lease.contained` events and evidence bundles as the source of truth for forced-abort, timeout, stale-owner, or memory-ceiling cleanup
 - do not replace broker containment with broad `pkill`, manual simulator shutdown, or host-wide process cleanup
@@ -410,5 +451,6 @@ The harness-awareness phase is complete only when:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.5.0 | 2026-10-05 | Taught agents to repair a purpose once when capacity recommends `repair_matching_simulators`, then retry acquire, and to stop for a human when a live holder remains. |
 | 0.4.1 | 2026-08-10 | Clarified that successful acquisition returns a broker-booted simulator. |
 | 0.4.0 | 2026-07-20 | Added capacity check and operator-confirmed reconcile guidance for simulator-dependent harness preflights. |

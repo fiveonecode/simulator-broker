@@ -25,6 +25,7 @@ test("broker error contract maps reason codes to stable exit codes", () => {
   assert.equal(resolveBrokerExitCode("project-in-use"), BROKER_EXIT_CODES.unavailable);
   assert.equal(resolveBrokerExitCode("unhealthy-alias"), BROKER_EXIT_CODES.repairNeeded);
   assert.equal(resolveBrokerExitCode("capacity-repair-required"), BROKER_EXIT_CODES.repairNeeded);
+  assert.equal(resolveBrokerExitCode("purpose-repair-failed"), BROKER_EXIT_CODES.repairNeeded);
   assert.equal(resolveBrokerExitCode("human-override-required"), BROKER_EXIT_CODES.overrideRequired);
   assert.equal(resolveBrokerExitCode("capacity-plan-stale"), BROKER_EXIT_CODES.overrideRequired);
   assert.equal(resolveBrokerExitCode(INTERNAL_ERROR_REASON_CODE), BROKER_EXIT_CODES.internal);
@@ -54,6 +55,7 @@ test("service-facing HTTP status mapping stays aligned with the exit code contra
   assert.equal(resolveBrokerHttpStatus("project-in-use"), 409);
   assert.equal(resolveBrokerHttpStatus("unhealthy-alias"), 423);
   assert.equal(resolveBrokerHttpStatus("capacity-repair-required"), 423);
+  assert.equal(resolveBrokerHttpStatus("purpose-repair-failed"), 423);
   assert.equal(resolveBrokerHttpStatus("human-override-required"), 412);
   assert.equal(resolveBrokerHttpStatus("capacity-plan-stale"), 412);
   assert.equal(resolveBrokerHttpStatus(INTERNAL_ERROR_REASON_CODE), 500);

@@ -1276,6 +1276,37 @@ test("shared lease wrapper checks detached hosts on successful non-memory runs w
   assert.ok(summary.killedPids.includes(detachedPid));
 });
 
+test("sample agent instructions repair only for repair_matching_simulators", () => {
+  for (const relativePath of ["AGENTS.md", "CLAUDE.md"]) {
+    const text = fs.readFileSync(path.join(SAMPLE_REPO, relativePath), "utf8");
+    const repairAt = text.indexOf("`simbroker simulators repair");
+    const otherActionsAt = text.indexOf("`install_runtime`");
+    assert.ok(repairAt >= 0, relativePath);
+    assert.ok(otherActionsAt > repairAt, relativePath);
+    assert.match(text, /repair_matching_simulators/);
+    assert.match(text, /run_broker_doctor/);
+    assert.match(text, /inspect_unknown/);
+    assert.match(text, /Do not run purpose repair for those actions/);
+    assert.equal(/follows that action:\s*`simbroker simulators repair/.test(text), false, relativePath);
+  }
+});
+
+test("adoption checklist repairs only when capacity recommends repair_matching_simulators", () => {
+  const checklist = fs.readFileSync(
+    path.resolve(".agents/skills/broker-harness-adoption/references/adoption-checklist.md"),
+    "utf8",
+  );
+
+  assert.match(checklist, /once when `recommendedAction` is `repair_matching_simulators`/);
+  assert.equal(
+    /when status is `repair_needed` or `recommendedAction`/.test(checklist),
+    false,
+  );
+  assert.match(checklist, /install_runtime/);
+  assert.match(checklist, /run_broker_doctor/);
+  assert.match(checklist, /inspect_unknown/);
+});
+
 test("sample repo project file validates against the current broker contract", () => {
   const fixture = makeHostFixture();
   const result = runCommand(CLI_PATH, [

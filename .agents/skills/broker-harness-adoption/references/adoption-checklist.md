@@ -8,7 +8,10 @@ Use this checklist after reading `spec/harness-integration.md`.
 - at least one broker-aware wrapper exists
 - wrapper acquires by purpose and emits a deterministic lease artifact
 - wrapper releases on failure and success
-- agent instructions mention Simulator Broker and forbid direct `simctl` mutation on broker-managed aliases
+- agent instructions mention Simulator Broker and forbid direct `simctl` boot, shutdown, erase, delete, or repair on broker-managed simulators
+- agent instructions tell an agent to run `simulators repair --repo-root "$PWD" --purpose <purpose> --actor-type agent --actor-id <id>` once when `recommendedAction` is `repair_matching_simulators`. A `repair_needed` status with `install_runtime`, `run_broker_doctor`, or `inspect_unknown` follows that action
+- exit `0` retries acquire once; exit `5` stops for a human and never uses `--force-override`; exit `4` stops after one local `simbroker doctor` read of `driftReason`
+- wrapper scripts stay acquire-only and do not call purpose repair
 
 ## Pattern matrix when relevant
 
