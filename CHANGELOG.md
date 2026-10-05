@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.9] - 2026-10-05
+
+Alpha 9 keeps the Alpha 8 install and four-custom-asset contract. Agents can
+repair an unleased repair-needed purpose without the app button, and a boot
+or shutdown that is already in progress no longer becomes repair-needed by
+itself.
+
 ### Added
 
 - Agents and CI can repair unleased simulators for one repo purpose with
