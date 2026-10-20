@@ -94,14 +94,15 @@ these is true:
 
 - the device data directory is at least 8 GiB
 - eight leases have completed since the last erase
-- it has been 24 hours since the last erase, or since last use if it was never
-  erased
+- it has been 24 hours since the last erase, or, if it was never erased, since
+  the newest of last release, lease start, and boot
 
 The policy lives in host-config `slotReclaim`. Build reclaim is on by default
 and can be disabled with `"build": { "enabled": false }` or a top-level
 `"enabled": false`. Manual aliases keep human-installed apps and accounts, so
 their reclaim stays **off** unless you set `"manual": { "enabled": true }`.
-The broker never erases a slot that is leased, pinned, or mid-acquire. A
+The broker never erases a slot that is leased, pinned, mid-acquire, or already
+waiting for repair. A failed reclaim stays repair-needed until repair. A
 successful wipe writes a `slot.reclaimed` event and shows up on
 `simbroker host status` and `simbroker doctor`.
 

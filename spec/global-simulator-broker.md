@@ -2,7 +2,7 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.18.0`
+> **Version:** `0.18.1`
 > **Last Updated:** `2026-10-21`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
@@ -144,8 +144,9 @@ Current implementation slice:
 - registry synchronization against `simctl` marks a missing device
   `repair-needed` with `simulator-missing`, an unavailable device with
   `simulator-unavailable`, and a family or runtime mismatch with
-  `simulator-config-mismatch`. Synchronization never clears `repair-needed`.
-  A leftover `repairing` entry becomes `repair-needed` with
+  `simulator-config-mismatch`. An existing `slot-reclaim-failed` reason is
+  preserved across that synchronization. Synchronization never clears
+  `repair-needed`. A leftover `repairing` entry becomes `repair-needed` with
   `repair-interrupted` on the next load. Only a successful repair returns
   the alias to `healthy`
 - reset-on-acquire coordination behind a dedicated reset lock with rollback on reset failure
@@ -604,17 +605,22 @@ human-installed apps and accounts; operators opt in with
 
 Any one threshold is enough: on-disk size at or above `maxDiskBytes`,
 `leasesSinceErase` at or above `maxLeasesSinceErase`, or last erase (or last
-use when never erased) older than `maxAgeSeconds`. Unused never-booted slots
-are not age-triggered.
+use when never erased) older than `maxAgeSeconds`. Last use is the newest
+parseable timestamp among `lastLeaseReleasedAt`, `lastLeaseStartedAt`, and
+`lastBootedAt`. Unused never-booted slots are not age-triggered.
 
 Reclaim takes the broker mutation lock, re-reads leases, and erases only a
 free candidate. It runs after a successful release of that alias, at the start
 of acquire before the new lease file is written, and during the existing
 `brokerd` idle-reconcile loop even when idle policy is unconfigured. A held,
-pinned, or mid-acquire slot is skipped. Erase uses the dedicated reset lock,
+pinned, or mid-acquire slot is skipped. Aliases already `repair-needed` or
+`repairing` are skipped and are not marked `healthy` by reclaim. Disk size is
+measured only for unheld aliases whose class policy is enabled, using one
+shared device listing for that pass. Erase uses the dedicated reset lock,
 then records `lastErasedAt`, resets `leasesSinceErase` to `0`, and shuts the
 device down. Failure marks the alias `repair-needed` with
-`slot-reclaim-failed` and does not retry that alias until repair.
+`slot-reclaim-failed` and does not retry that alias until repair. Registry
+synchronization preserves that reason.
 
 Successful reclaim emits `slot.reclaimed` with alias, class, reason
 (`disk` | `leases` | `age`), and source (`lease-release` | `lease-acquire` |
@@ -820,6 +826,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.18.1 | 2026-10-21 | Preserved `slot-reclaim-failed` across registry sync, skipped reclaim for repair-latched aliases, aged never-erased slots from the newest use timestamp, and limited disk measurement to enabled candidates. |
 | 0.18.0 | 2026-10-21 | Added between-lease disk reclaim for build slots, with host-config policy defaults, manual opt-in, and `slot.reclaimed` events. |
 | 0.17.0 | 2026-10-05 | Added purpose-scoped repair for agents and CI, pointed sole repair-needed capacity at that command, and stopped treating an in-progress boot or shutdown as a new repair-needed failure. |
 | 0.16.8 | 2026-09-01 | Required `project init` to carry caller-resolved repository identity across direct and resident-service dispatch, including repeat-init recovery and the intentionally redacted capacity response. |

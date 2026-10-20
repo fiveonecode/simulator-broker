@@ -2544,19 +2544,26 @@ function syncRegistryWithSimctl(hostConfig, registry, options = {}) {
 
     if (!device || device.isAvailable === false) {
       registryEntry.health = "repair-needed";
-      registryEntry.driftReason = device ? "simulator-unavailable" : "simulator-missing";
+      registryEntry.driftReason = preserveSlotReclaimFailure(
+        registryEntry,
+        device ? "simulator-unavailable" : "simulator-missing",
+      );
       registryEntry.powerState = "shutdown";
       continue;
     }
 
     if (device.deviceFamily !== hostAlias.deviceFamily || !iosVersionSatisfies(device.runtimeVersion ?? "", hostAlias.iosVersion)) {
       registryEntry.health = "repair-needed";
-      registryEntry.driftReason = "simulator-config-mismatch";
+      registryEntry.driftReason = preserveSlotReclaimFailure(registryEntry, "simulator-config-mismatch");
       registryEntry.powerState = device.state === "Booted" ? "booted" : "shutdown";
       continue;
     }
 
     registryEntry.powerState = device.state === "Booted" ? "booted" : "shutdown";
+    if (registryEntry.driftReason === "slot-reclaim-failed") {
+      registryEntry.health = "repair-needed";
+      continue;
+    }
     if (registryEntry.health === "repairing") {
       registryEntry.health = "repair-needed";
       registryEntry.driftReason = registryEntry.driftReason ?? "repair-interrupted";
@@ -2794,12 +2801,39 @@ function markAliasLeaseReleased(registryEntry, timestamp) {
   registryEntry.updatedAt = timestamp;
 }
 
-function measureAliasDiskBytes(simctl, simulatorId) {
+function preserveSlotReclaimFailure(registryEntry, replacement) {
+  return registryEntry?.driftReason === "slot-reclaim-failed" ? "slot-reclaim-failed" : replacement;
+}
+
+function slotReclaimBlockedByRepair(registryEntry) {
+  return registryEntry.health === "repair-needed"
+    || registryEntry.health === "repairing"
+    || registryEntry.driftReason === "slot-reclaim-failed";
+}
+
+function readReclaimDeviceListing(simctl) {
+  if (typeof simctl?.listDevices !== "function") {
+    return undefined;
+  }
+  try {
+    const listed = simctl.listDevices();
+    if (!listed || typeof listed !== "object" || Array.isArray(listed)) {
+      return { devices: {} };
+    }
+    return listed;
+  } catch {
+    return { devices: {} };
+  }
+}
+
+function measureAliasDiskBytes(simctl, simulatorId, devicesJson) {
   if (typeof simctl?.measureDeviceDiskBytes !== "function") {
     return null;
   }
   try {
-    const measured = simctl.measureDeviceDiskBytes(simulatorId);
+    const measured = devicesJson === undefined
+      ? simctl.measureDeviceDiskBytes(simulatorId)
+      : simctl.measureDeviceDiskBytes(simulatorId, devicesJson);
     return Number.isFinite(measured) && measured >= 0 ? measured : null;
   } catch {
     return null;
@@ -2826,6 +2860,15 @@ function performSlotReclaim(paths, state, options, timestamp, {
   let failureCount = 0;
 
   if (policy.enabled === true) {
+    let sharedDevicesJson;
+    let sharedDevicesLoaded = false;
+    const sharedDeviceListing = () => {
+      if (!sharedDevicesLoaded) {
+        sharedDevicesLoaded = true;
+        sharedDevicesJson = readReclaimDeviceListing(simctl);
+      }
+      return sharedDevicesJson;
+    };
     for (const alias of targetAliases) {
       const hostAlias = state.hostConfig.aliases.find((candidate) => candidate.alias === alias);
       if (!hostAlias) {
@@ -2835,18 +2878,25 @@ function performSlotReclaim(paths, state, options, timestamp, {
       if (!registryEntry) {
         continue;
       }
-      // Failed reclaim stays repair-needed until repair clears this marker.
-      if (registryEntry.driftReason === "slot-reclaim-failed") {
-        continue;
-      }
-      const className = classifyReclaimSlot(hostAlias);
       const held = isSlotHeldForReclaim({
         acquiring: acquiringAlias === alias,
         activeLease: state.leasesByAlias.get(alias) ?? null,
         activePin: state.pinsByAlias.get(alias) ?? null,
         registryEntry,
       });
-      const diskBytes = held ? null : measureAliasDiskBytes(simctl, hostAlias.simulatorId);
+      if (held) {
+        skippedHeldCount += 1;
+        continue;
+      }
+      // Failed reclaim and other repair latches stay until repair, not erase.
+      if (slotReclaimBlockedByRepair(registryEntry)) {
+        continue;
+      }
+      const className = classifyReclaimSlot(hostAlias);
+      const classEnabled = Boolean(className && policy[className]?.enabled === true);
+      const diskBytes = classEnabled
+        ? measureAliasDiskBytes(simctl, hostAlias.simulatorId, sharedDeviceListing())
+        : null;
       const leasesSinceErase = registryEntry.leasesSinceErase ?? 0;
       const decision = evaluateSlotReclaim({
         className,
@@ -2858,9 +2908,6 @@ function performSlotReclaim(paths, state, options, timestamp, {
         nowMs: Date.parse(timestamp),
         policy,
       });
-      if (decision.skipReason === "held") {
-        skippedHeldCount += 1;
-      }
       if (decision.reclaim !== true) {
         continue;
       }
@@ -2898,8 +2945,10 @@ function performSlotReclaim(paths, state, options, timestamp, {
           processSampler: options.processSampler,
           timeoutMs: options.resetLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
         });
-        registryEntry.health = "healthy";
-        registryEntry.driftReason = null;
+        if (!slotReclaimBlockedByRepair(registryEntry)) {
+          registryEntry.health = "healthy";
+          registryEntry.driftReason = null;
+        }
         registryEntry.lastErasedAt = timestamp;
         registryEntry.lastShutdownAt = timestamp;
         registryEntry.powerState = "shutdown";

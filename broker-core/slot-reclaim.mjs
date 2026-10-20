@@ -106,12 +106,21 @@ export function lastUsedAtForSlot(registryEntry) {
   if (!registryEntry || typeof registryEntry !== "object") {
     return null;
   }
+  let newest = null;
+  let newestMs = Number.NEGATIVE_INFINITY;
   for (const field of ["lastLeaseReleasedAt", "lastLeaseStartedAt", "lastBootedAt"]) {
-    if (typeof registryEntry[field] === "string" && registryEntry[field].trim() !== "") {
-      return registryEntry[field];
+    const value = registryEntry[field];
+    if (typeof value !== "string" || value.trim() === "") {
+      continue;
     }
+    const parsed = Date.parse(value);
+    if (!Number.isFinite(parsed) || parsed < newestMs) {
+      continue;
+    }
+    newest = value;
+    newestMs = parsed;
   }
-  return null;
+  return newest;
 }
 
 export function evaluateSlotReclaim({

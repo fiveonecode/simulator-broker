@@ -349,8 +349,8 @@ export function createSystemSimctlAdapter({
         maxBuffer: SIMCTL_INVENTORY_MAX_BUFFER_BYTES,
       }));
     },
-    measureDeviceDiskBytes(simulatorId) {
-      const listed = JSON.parse(runCommand(["list", "--json", "devices"], {
+    measureDeviceDiskBytes(simulatorId, devicesJson = null) {
+      const listed = devicesJson ?? JSON.parse(runCommand(["list", "--json", "devices"], {
         maxBuffer: SIMCTL_INVENTORY_MAX_BUFFER_BYTES,
       }));
       return measureDirectoryBytes(findDeviceDataPath(listed, simulatorId));
