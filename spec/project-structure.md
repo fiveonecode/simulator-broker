@@ -32,7 +32,7 @@ Related: `spec/README.md`, `spec/global-simulator-broker.md`, `references/README
 - `examples/` — executable sample repos and smoke fixtures for broker adoption patterns; not source of truth
 - `references/` — public-safe reference notes; copied product snapshots are not checked in
 - `app/` — XcodeGen spec, SwiftUI source, and XCTest coverage for the macOS operator app; supported generation atomically emits an ignored `Sources/Generated/BrokerRuntimeVersion.generated.swift` constant and `Generated/SimulatorBrokerApp-Info.plist` runtime compatibility plus Finder/About version keys from the root package version before XcodeGen runs
-- `broker-core/` — reusable broker logic; current file-backed slice, lease containment helpers, shared `simctl` adapter, and error-contract boundaries live here
+- `broker-core/` — reusable broker logic; current file-backed slice, lease containment helpers, shared `simctl` adapter, slot-reclaim policy, and error-contract boundaries live here
 - `client/` — CLI, local service, and compatibility layer; `client/bin/` contains `simbroker` and `brokerd`, `client/service/` contains the Unix-socket authority implementation, and `client/public-surface.mjs` implements the public text safety gate
 - `client/setup-preflight.mjs` — bounded read-only macOS/Xcode/path/disk setup
   prerequisites; it does not own broker mutation
@@ -62,6 +62,9 @@ The broker state root may contain runtime artifacts in addition to source-of-tru
 - `registry.json`, `pins/`, and `known-projects.json` — broker state
 - `idle-policy.json` — optional policy containing only `version` and
   `graceSeconds`; absent by default and written only through broker commands
+- registry `slotReclaim.lastReclaimResult` plus per-alias `leasesSinceErase`
+  for between-lease disk reclaim; the policy itself lives on optional
+  host-config `slotReclaim`
 - `evidence/` — default lease containment evidence root when a wrapper does not provide a run-local evidence path
 
 No state artifact belongs in a consumer repository. In particular,

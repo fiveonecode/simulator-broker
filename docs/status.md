@@ -67,6 +67,8 @@ This Alpha already includes:
   with version-agnostic iPhone UI requirements by default
 - `capacity check` and human-confirmed `capacity reconcile`
 - `idle` inspect, reconcile, and confirm-only cleanup
+- between-lease disk reclaim for build slots (8 leases, 24h, or 8 GiB; manual
+  opt-in; `slot.reclaimed` events; `host status` / `doctor` summary)
 - sample consumer artifacts under `examples/harness-adoption/`
 - the `broker-harness-adoption` skill under `.agents/skills/broker-harness-adoption/`
 

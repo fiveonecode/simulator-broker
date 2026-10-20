@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.17.0`
-> **Last Updated:** `2026-10-05`
+> **Version:** `0.18.0`
+> **Last Updated:** `2026-10-21`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -18,6 +18,7 @@ The broker preserves the following deterministic behavior:
 - machine-local shared lease state
 - stale lease recovery
 - reset policy per role
+- automatic between-lease disk reclaim for build slots, with manual opt-in
 - deterministic lease artifacts
 
 A first extracted implementation slice now exists:
@@ -115,6 +116,7 @@ Must own:
 - stale recovery
 - deterministic warm-reuse ordering
 - idle-policy validation, eligibility, reconciliation, and cleanup planning
+- slot-reclaim policy validation, eligibility, and between-lease erase
 - reset coordination
 - `simctl` adapter boundary
 - purpose and capability resolution
@@ -472,6 +474,7 @@ Stable `reasons` values are:
 - `boot-on-acquire-failed`
 - `reset-on-acquire-failed`
 - `idle-shutdown-failed`
+- `slot-reclaim-failed`
 - `repair-interrupted`
 - `repair-failed`
 - `unhealthy-alias` for any other stored drift string
@@ -560,6 +563,64 @@ Events and snapshots summarize configuration state, grace duration, eligible
 count, last cleanup result, and next scheduled cleanup. Idle and cleanup
 summaries must not return local paths, aliases, simulator IDs, operator IDs, or
 raw runtime errors.
+
+## 7a. Slot disk reclaim contract
+
+Build-like slots keep `resetPolicy: none` so incremental test hosts can reuse
+installed apps. That data also grows: OS symbol caches, unified logs, and
+leftover test-host tmp directories. The broker therefore reclaims disk
+automatically between leases. This is not a replacement for
+`erase-on-acquire`, and it never runs while a slot is leased, pinned,
+mid-acquire, or being erased under the reset lock.
+
+Policy lives in optional host-config `slotReclaim`. Absence means the defaults
+below. The field is machine-local configuration, not a repo file.
+
+```json
+{
+  "enabled": true,
+  "build": {
+    "enabled": true,
+    "maxLeasesSinceErase": 8,
+    "maxAgeSeconds": 86400,
+    "maxDiskBytes": 8589934592
+  },
+  "manual": {
+    "enabled": false,
+    "maxLeasesSinceErase": 8,
+    "maxAgeSeconds": 86400,
+    "maxDiskBytes": 8589934592
+  }
+}
+```
+
+`maxDiskBytes` default is 8 GiB. Class membership is capability-based:
+`build-fast` with `resetPolicy: none` is `build`; `manual-persistent` is
+`manual` even when it also lists `build-fast`. `erase-on-acquire` aliases are
+never reclaim candidates. Manual reclaim stays off because those slots hold
+human-installed apps and accounts; operators opt in with
+`slotReclaim.manual.enabled: true`. Set `slotReclaim.enabled: false` or
+`slotReclaim.build.enabled: false` to disable.
+
+Any one threshold is enough: on-disk size at or above `maxDiskBytes`,
+`leasesSinceErase` at or above `maxLeasesSinceErase`, or last erase (or last
+use when never erased) older than `maxAgeSeconds`. Unused never-booted slots
+are not age-triggered.
+
+Reclaim takes the broker mutation lock, re-reads leases, and erases only a
+free candidate. It runs after a successful release of that alias, at the start
+of acquire before the new lease file is written, and during the existing
+`brokerd` idle-reconcile loop even when idle policy is unconfigured. A held,
+pinned, or mid-acquire slot is skipped. Erase uses the dedicated reset lock,
+then records `lastErasedAt`, resets `leasesSinceErase` to `0`, and shuts the
+device down. Failure marks the alias `repair-needed` with
+`slot-reclaim-failed` and does not retry that alias until repair.
+
+Successful reclaim emits `slot.reclaimed` with alias, class, reason
+(`disk` | `leases` | `age`), and source (`lease-release` | `lease-acquire` |
+`idle-reconcile`). `host status` and `doctor` include the resolved policy
+summary and last reclaim result. The macOS app snapshot may carry extra
+per-simulator counters; the app UI is unchanged.
 
 ## 8. Capacity check and confirmed reconcile contract
 
@@ -759,6 +820,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.18.0 | 2026-10-21 | Added between-lease disk reclaim for build slots, with host-config policy defaults, manual opt-in, and `slot.reclaimed` events. |
 | 0.17.0 | 2026-10-05 | Added purpose-scoped repair for agents and CI, pointed sole repair-needed capacity at that command, and stopped treating an in-progress boot or shutdown as a new repair-needed failure. |
 | 0.16.8 | 2026-09-01 | Required `project init` to carry caller-resolved repository identity across direct and resident-service dispatch, including repeat-init recovery and the intentionally redacted capacity response. |
 | 0.16.7 | 2026-08-31 | App restart-required status requires canonical exit code `3`, queued refreshes retain lifecycle ownership, and missing-host probe failures clear stale live-service authority while remaining onboarding. |

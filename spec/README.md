@@ -86,6 +86,8 @@ This repo exists to develop a reusable local simulator broker:
 - optional machine-local idle policy, scheduled reconciliation, confirmed cleanup,
   app controls, and the `verify:public-surface` gate are implemented without a
   shipped duration preference
+- build slots are reclaimed between leases by default (8 leases, 24h, or 8 GiB),
+  with host-config overrides and manual reclaim off unless opted in
 - guided `simbroker setup` now previews prerequisites, newest-compatible runtime,
   and the six-device starter pool before confirmed atomic apply, service startup,
   snapshot refresh, and health verification; the app consumes the same contract

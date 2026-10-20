@@ -83,6 +83,28 @@ confirms the exact plan ID.
 Automatic shutdown is off until a human sets a duration in the app or CLI.
 Idle cleanup is also confirm-only.
 
+## Slot disk reclaim
+
+UI aliases erase on every acquire. Build aliases keep their data on purpose, so
+test hosts can reuse installed apps. That leftover data (symbol caches, unified
+logs, test-host tmp) can grow without bound.
+
+The broker therefore erases a **free** build slot between leases when any of
+these is true:
+
+- the device data directory is at least 8 GiB
+- eight leases have completed since the last erase
+- it has been 24 hours since the last erase, or since last use if it was never
+  erased
+
+The policy lives in host-config `slotReclaim`. Build reclaim is on by default
+and can be disabled with `"build": { "enabled": false }` or a top-level
+`"enabled": false`. Manual aliases keep human-installed apps and accounts, so
+their reclaim stays **off** unless you set `"manual": { "enabled": true }`.
+The broker never erases a slot that is leased, pinned, or mid-acquire. A
+successful wipe writes a `slot.reclaimed` event and shows up on
+`simbroker host status` and `simbroker doctor`.
+
 ## What stays machine-local
 
 Host config, live leases, pins, event logs, and `app-snapshot.json` stay under

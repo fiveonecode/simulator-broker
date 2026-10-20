@@ -64,6 +64,7 @@ const REPAIR_NEEDED_REASON_CODES = new Set([
   "capacity-repair-required",
   "purpose-repair-failed",
   "unhealthy-alias",
+  "slot-reclaim-failed",
 ]);
 
 const OVERRIDE_REQUIRED_REASON_CODES = new Set([

@@ -36,6 +36,7 @@ import {
   validateProjectBroker,
   writeAppSnapshotArtifactUnderMutationLock,
 } from "../broker-core/index.mjs";
+import { formatSlotReclaimPolicyLine } from "../broker-core/slot-reclaim.mjs";
 
 export function parseArgs(argv) {
   const positionals = [];
@@ -546,6 +547,7 @@ function formatDoctorText(payload) {
       "- Host config: ok",
       "- Registry: ok",
       "- Alias health: ok",
+      `- Slot reclaim: ${payload.slotReclaim?.summary ?? formatSlotReclaimPolicyLine()}`,
       "",
       "No issues found.",
       "Next: run `simbroker host status` or `simbroker project init` in a repo.",
