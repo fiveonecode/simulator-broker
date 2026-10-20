@@ -2835,6 +2835,10 @@ function performSlotReclaim(paths, state, options, timestamp, {
       if (!registryEntry) {
         continue;
       }
+      // Failed reclaim stays repair-needed until repair clears this marker.
+      if (registryEntry.driftReason === "slot-reclaim-failed") {
+        continue;
+      }
       const className = classifyReclaimSlot(hostAlias);
       const held = isSlotHeldForReclaim({
         acquiring: acquiringAlias === alias,
@@ -5981,7 +5985,7 @@ export function reconcileIdleBroker(paths, options = {}) {
           },
         }));
         slotReclaim = performSlotReclaim(paths, state, options, timestamp, {
-          source: options.source ?? "idle-reconcile",
+          source: "idle-reconcile",
         });
       } catch {
         // Unconfigured idle reconcile used to return without reading host
@@ -6007,7 +6011,7 @@ export function reconcileIdleBroker(paths, options = {}) {
       },
     }));
     const slotReclaim = performSlotReclaim(paths, state, options, timestamp, {
-      source: options.source ?? "idle-reconcile",
+      source: "idle-reconcile",
     });
     const candidates = idleEligibleCandidates(state, policy, timestamp);
     return {
