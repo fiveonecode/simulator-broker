@@ -2,7 +2,7 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.18.1`
+> **Version:** `0.18.2`
 > **Last Updated:** `2026-10-21`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
@@ -185,7 +185,7 @@ Current implementation slice:
 - service stop closes active event streams before shutdown completes
 - malformed JSON from a running service is reported as service unavailability by clients instead of escaping as an uncaught parser failure
 - service startup must not publish a listenable socket or service metadata until the initial broker-owned app snapshot refresh has completed or explicitly reported a missing-host setup state; the CLI start launcher must wait within the bounded startup snapshot budget for one shared process-table sample, startup-lock owner PID lifetime sampling, and all inventory commands, validate startup-lock owner PID lifetime before accepting an old lock as live, and terminate the spawned daemon on startup timeout
-- service-backed timeout budgets must reserve one shared process-table sample per broker state load; stale-lease containment process samples discovered from lease files before command dispatch for every broker state load that can retry containment; serialized read lock waits for `host status`, `doctor`, and `lease explain`; final app snapshot lock waits for every command that publishes the shared app snapshot artifact; capacity check inventory reads; lease acquire reset `simctl` shutdown/erase work plus boot readiness wait; explicit simulator boot readiness wait; and host bootstrap runtime lookup, baseline inventory, starter-alias provisioning, replacement-retirement, and final snapshot refresh work before the transport timeout is advertised
+- service-backed timeout budgets must reserve one shared process-table sample per broker state load; stale-lease containment process samples discovered from lease files before command dispatch for every broker state load that can retry containment; serialized read lock waits for `host status`, `doctor`, and `lease explain`; final app snapshot lock waits for every command that publishes the shared app snapshot artifact; capacity check inventory reads; the longer of lease-acquire reset `simctl` shutdown/erase plus boot readiness and one build-slot reclaim (`simctl list`, `du`, shutdown, and erase) plus that same boot readiness; lease-release reclaim list, `du`, shutdown, erase, and reset-lock wait; idle-reconcile and service-startup reclaim for every enabled candidate, including each reset-lock wait; explicit simulator boot readiness wait; and host bootstrap runtime lookup, baseline inventory, starter-alias provisioning, replacement-retirement, and final snapshot refresh work before the transport timeout is advertised
 - broker-mediated lifecycle-control requests for `boot`, `shutdown`, `erase`, and `repair`
 - command transport consumed by the macOS app for broker-backed operator actions
 - service-backed commands observing the same real `simctl`-synchronized alias health and repair state as direct CLI mode
@@ -622,6 +622,22 @@ device down. Failure marks the alias `repair-needed` with
 `slot-reclaim-failed` and does not retry that alias until repair. Registry
 synchronization preserves that reason.
 
+Service-backed acquire, release, idle reconcile, and service startup reserve
+that reclaim work before advertising their timeouts. One pass reserves one
+shared `simctl list` plus, for each enabled candidate that pass can erase, one
+`du`, one shutdown, and one erase, each at the simctl command cap, and the
+reset-lock wait plus settle for each erase. Acquire and release reserve at most
+one alias. Acquire uses the longer of reset-on-acquire (shutdown, erase, boot,
+and `bootstatus`) and reclaim plus that same boot, because those shutdown and
+erase paths do not stack. Idle reconcile and startup reserve every enabled
+candidate. A missing host config reserves no reclaim time. The starter host
+has two enabled build slots, and the budget follows the host file once it
+exists. A disabled policy, or a host with no enabled class, reserves none of
+this time. The startup allowance is inside `serviceStartupTimeoutMs`, which the
+launcher uses before `brokerd` installs its `SIGTERM` handler. A failed `du`
+leaves disk size unknown, so only the lease-count and age rules can still
+trigger reclaim.
+
 Successful reclaim emits `slot.reclaimed` with alias, class, reason
 (`disk` | `leases` | `age`), and source (`lease-release` | `lease-acquire` |
 `idle-reconcile`). `host status` and `doctor` include the resolved policy
@@ -826,6 +842,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.18.2 | 2026-10-21 | Reserved `simctl list`, `du`, shutdown, erase, and reset-lock time for build-slot reclaim in the acquire, release, idle-reconcile, and service-startup budgets. |
 | 0.18.1 | 2026-10-21 | Preserved `slot-reclaim-failed` across registry sync, skipped reclaim for repair-latched aliases, aged never-erased slots from the newest use timestamp, and limited disk measurement to enabled candidates. |
 | 0.18.0 | 2026-10-21 | Added between-lease disk reclaim for build slots, with host-config policy defaults, manual opt-in, and `slot.reclaimed` events. |
 | 0.17.0 | 2026-10-05 | Added purpose-scoped repair for agents and CI, pointed sole repair-needed capacity at that command, and stopped treating an in-progress boot or shutdown as a new repair-needed failure. |

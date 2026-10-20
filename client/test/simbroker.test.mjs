@@ -4083,6 +4083,132 @@ test("service startup timeout budgets stale containment from lease files", () =>
   );
 });
 
+test("service timeouts reserve slot reclaim list, du, shutdown, and erase", () => {
+  const fixture = makeFixture();
+  const baseHost = readJson(fixture.hostConfigPath);
+  const oneCandidateHost = {
+    ...baseHost,
+    aliases: [
+      {
+        ...baseHost.aliases[0],
+        capabilities: ["build-fast"],
+        resetPolicy: "none",
+      },
+      baseHost.aliases[1],
+    ],
+  };
+  const twoCandidateHost = {
+    ...baseHost,
+    aliases: baseHost.aliases.map((alias) => ({
+      ...alias,
+      capabilities: ["build-fast"],
+      resetPolicy: "none",
+    })),
+  };
+  const manualHost = {
+    ...baseHost,
+    aliases: [
+      {
+        ...baseHost.aliases[0],
+        capabilities: ["manual-persistent"],
+        resetPolicy: "none",
+      },
+      baseHost.aliases[1],
+    ],
+  };
+  const disabledHost = {
+    ...oneCandidateHost,
+    slotReclaim: {
+      enabled: false,
+    },
+  };
+
+  function pathsFor(name, hostConfig) {
+    const hostConfigPath = path.join(fixture.root, `${name}.json`);
+    writeJson(hostConfigPath, hostConfig);
+    return resolveBrokerPaths({
+      hostConfigPath,
+      stateRoot: fixture.stateRoot,
+    });
+  }
+
+  const baselinePaths = pathsFor("reclaim-baseline", baseHost);
+  const onePaths = pathsFor("reclaim-one", oneCandidateHost);
+  const twoPaths = pathsFor("reclaim-two", twoCandidateHost);
+  const manualPaths = pathsFor("reclaim-manual", manualHost);
+  const disabledPaths = pathsFor("reclaim-disabled", disabledHost);
+  const acquire = { command: "acquire", group: "lease", options: {} };
+  const release = { command: "release", group: "lease", options: {} };
+  const reconcile = { command: "reconcile", group: "idle", options: {} };
+  const cleanup = { command: "cleanup", group: "idle", options: { apply: true } };
+  const oneReclaimBudgetMs = (4 * SIMCTL_COMMAND_TIMEOUT_MS) + 60_000 + 250;
+  const twoReclaimBudgetMs = (7 * SIMCTL_COMMAND_TIMEOUT_MS) + (2 * (60_000 + 250));
+
+  assert.equal(
+    serviceCommandExecutionTimeoutMs(acquire, { paths: onePaths })
+      - serviceCommandExecutionTimeoutMs(acquire, { paths: baselinePaths }),
+    2 * SIMCTL_COMMAND_TIMEOUT_MS,
+  );
+  assert.equal(
+    serviceCommandExecutionTimeoutMs(acquire, { paths: twoPaths }),
+    serviceCommandExecutionTimeoutMs(acquire, { paths: onePaths }),
+  );
+  assert.equal(
+    serviceCommandExecutionTimeoutMs(acquire, { paths: manualPaths }),
+    serviceCommandExecutionTimeoutMs(acquire, { paths: baselinePaths }),
+  );
+  assert.equal(
+    serviceCommandExecutionTimeoutMs(acquire, { paths: disabledPaths }),
+    serviceCommandExecutionTimeoutMs(acquire, { paths: baselinePaths }),
+  );
+  assert.equal(
+    serviceCommandExecutionTimeoutMs(acquire),
+    serviceCommandExecutionTimeoutMs(acquire, { paths: baselinePaths }),
+  );
+
+  assert.equal(
+    serviceCommandExecutionTimeoutMs(release, { paths: onePaths })
+      - serviceCommandExecutionTimeoutMs(release, { paths: baselinePaths }),
+    oneReclaimBudgetMs,
+  );
+  assert.equal(
+    serviceCommandExecutionTimeoutMs(release, { paths: twoPaths }),
+    serviceCommandExecutionTimeoutMs(release, { paths: onePaths }),
+  );
+  assert.equal(
+    serviceCommandExecutionTimeoutMs(release),
+    serviceCommandExecutionTimeoutMs(release, { paths: baselinePaths }),
+  );
+
+  assert.equal(
+    serviceCommandExecutionTimeoutMs(reconcile, { paths: onePaths })
+      - serviceCommandExecutionTimeoutMs(reconcile, { paths: baselinePaths }),
+    oneReclaimBudgetMs,
+  );
+  assert.equal(
+    serviceCommandExecutionTimeoutMs(reconcile, { paths: twoPaths })
+      - serviceCommandExecutionTimeoutMs(reconcile, { paths: baselinePaths }),
+    twoReclaimBudgetMs,
+  );
+  assert.equal(
+    serviceCommandExecutionTimeoutMs(cleanup, { paths: twoPaths }),
+    serviceCommandExecutionTimeoutMs(cleanup, { paths: baselinePaths }),
+  );
+
+  assert.equal(
+    serviceStartupTimeoutMs({ paths: onePaths }) - serviceStartupTimeoutMs({ paths: baselinePaths }),
+    oneReclaimBudgetMs,
+  );
+  assert.equal(
+    serviceStartupTimeoutMs({ paths: twoPaths }) - serviceStartupTimeoutMs({ paths: baselinePaths }),
+    twoReclaimBudgetMs,
+  );
+  assert.equal(
+    serviceStartupTimeoutMs({ paths: disabledPaths }),
+    serviceStartupTimeoutMs({ paths: baselinePaths }),
+  );
+});
+
 test("service start stops waiting when the spawned brokerd exits before readiness", async () => {
   const fixture = makeFixture();
   assert.equal(runCli(fixture, "host", "init").status, 0);
