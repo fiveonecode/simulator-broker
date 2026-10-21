@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.10] - 2026-10-21
+
+Alpha 10 keeps the Alpha 9 install and four-custom-asset contract. A free
+build slot is erased between leases by default so leftover simulator data
+does not grow without bound.
+
+### Added
+
+- Host config `slotReclaim` erases a free build slot after release, before
+  the next acquire, and on the idle-reconcile timer when its device data is
+  at least 8 GiB, eight leases have completed since the last erase, or 24
+  hours have passed. Build reclaim is on by default. Manual reclaim stays
+  off. A leased, pinned, mid-acquire, or repair-needed slot is not erased.
+  A failed reclaim stays repair-needed with `slot-reclaim-failed` until
+  repair. Success writes `slot.reclaimed`. `simbroker host status` and
+  `simbroker doctor` show the policy.
+
+### Fixed
+
+- A service worker stays referenced until it exits or reports a result.
+  Dropping that handle early let Node 20 cancel the rest of the brokerd
+  client tests.
+
 ## [0.1.0-alpha.9] - 2026-10-05
 
 Alpha 9 keeps the Alpha 8 install and four-custom-asset contract. Agents can
