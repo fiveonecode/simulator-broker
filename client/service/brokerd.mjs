@@ -841,6 +841,10 @@ export function runServiceWorker(workerPayload, {
         return;
       }
       settled = true;
+      // Keep the Worker referenced until it settles. unref() before exit,
+      // message, or error lets Node 20 fire beforeExit and cancel later
+      // tests in client/test/brokerd.test.mjs.
+      worker.unref();
       callback(value);
     };
     worker.once("message", (message) => {
@@ -865,7 +869,6 @@ export function runServiceWorker(workerPayload, {
         reasonCode: "internal-error",
       }));
     });
-    worker.unref();
   });
 }
 

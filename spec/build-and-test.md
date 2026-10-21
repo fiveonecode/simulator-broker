@@ -139,6 +139,10 @@ A first extracted implementation slice now exists:
   service starts cannot overlap. Keepalive owner and command processes in
   `simbroker` tests stay referenced until they exit; `unref()` during an
   `await` lets Node 20 fire `beforeExit` and cancel later queued tests.
+  `runServiceWorker` stays referenced until `exit`, `message`, or `error`,
+  then unrefs. Unref before one of those events lets Node 20 cancel
+  `client/test/brokerd.test.mjs` from "brokerd workers reject clean exits
+  that send no result" onward.
   `package_distribution.sh` payload-scan tests skip on GitHub CI and on
   non-Darwin. Copying the runtime and scanning the staged payload is too
   slow for the 120-second client-file timeout; those tests stay on local
