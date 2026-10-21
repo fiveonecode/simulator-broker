@@ -76,6 +76,11 @@ simbroker idle status
 simbroker idle enable --grace-seconds <60-86400> --actor-type human --actor-id <operator-id>
 ```
 
+Build slots keep data across leases and are erased automatically when they
+cross 8 GiB, 8 completed leases, or 24 hours since the last wipe. Manual
+slots are not wiped unless host-config `slotReclaim.manual.enabled` is true.
+`simbroker doctor` and `simbroker host status --json` show the policy.
+
 Other CLI install options:
 
 ```bash

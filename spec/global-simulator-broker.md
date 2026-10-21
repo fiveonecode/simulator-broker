@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.17.0`
-> **Last Updated:** `2026-10-05`
+> **Version:** `0.18.2`
+> **Last Updated:** `2026-10-21`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -18,6 +18,7 @@ The broker preserves the following deterministic behavior:
 - machine-local shared lease state
 - stale lease recovery
 - reset policy per role
+- automatic between-lease disk reclaim for build slots, with manual opt-in
 - deterministic lease artifacts
 
 A first extracted implementation slice now exists:
@@ -115,6 +116,7 @@ Must own:
 - stale recovery
 - deterministic warm-reuse ordering
 - idle-policy validation, eligibility, reconciliation, and cleanup planning
+- slot-reclaim policy validation, eligibility, and between-lease erase
 - reset coordination
 - `simctl` adapter boundary
 - purpose and capability resolution
@@ -142,8 +144,9 @@ Current implementation slice:
 - registry synchronization against `simctl` marks a missing device
   `repair-needed` with `simulator-missing`, an unavailable device with
   `simulator-unavailable`, and a family or runtime mismatch with
-  `simulator-config-mismatch`. Synchronization never clears `repair-needed`.
-  A leftover `repairing` entry becomes `repair-needed` with
+  `simulator-config-mismatch`. An existing `slot-reclaim-failed` reason is
+  preserved across that synchronization. Synchronization never clears
+  `repair-needed`. A leftover `repairing` entry becomes `repair-needed` with
   `repair-interrupted` on the next load. Only a successful repair returns
   the alias to `healthy`
 - reset-on-acquire coordination behind a dedicated reset lock with rollback on reset failure
@@ -182,7 +185,7 @@ Current implementation slice:
 - service stop closes active event streams before shutdown completes
 - malformed JSON from a running service is reported as service unavailability by clients instead of escaping as an uncaught parser failure
 - service startup must not publish a listenable socket or service metadata until the initial broker-owned app snapshot refresh has completed or explicitly reported a missing-host setup state; the CLI start launcher must wait within the bounded startup snapshot budget for one shared process-table sample, startup-lock owner PID lifetime sampling, and all inventory commands, validate startup-lock owner PID lifetime before accepting an old lock as live, and terminate the spawned daemon on startup timeout
-- service-backed timeout budgets must reserve one shared process-table sample per broker state load; stale-lease containment process samples discovered from lease files before command dispatch for every broker state load that can retry containment; serialized read lock waits for `host status`, `doctor`, and `lease explain`; final app snapshot lock waits for every command that publishes the shared app snapshot artifact; capacity check inventory reads; lease acquire reset `simctl` shutdown/erase work plus boot readiness wait; explicit simulator boot readiness wait; and host bootstrap runtime lookup, baseline inventory, starter-alias provisioning, replacement-retirement, and final snapshot refresh work before the transport timeout is advertised
+- service-backed timeout budgets must reserve one shared process-table sample per broker state load; stale-lease containment process samples discovered from lease files before command dispatch for every broker state load that can retry containment; serialized read lock waits for `host status`, `doctor`, and `lease explain`; final app snapshot lock waits for every command that publishes the shared app snapshot artifact; capacity check inventory reads; the longer of lease-acquire reset `simctl` shutdown/erase plus boot readiness and one build-slot reclaim (`simctl list`, `du`, shutdown, and erase) plus that same boot readiness; lease-release reclaim list, `du`, shutdown, erase, and reset-lock wait; idle-reconcile and service-startup reclaim for every enabled candidate, including each reset-lock wait; explicit simulator boot readiness wait; and host bootstrap runtime lookup, baseline inventory, starter-alias provisioning, replacement-retirement, and final snapshot refresh work before the transport timeout is advertised
 - broker-mediated lifecycle-control requests for `boot`, `shutdown`, `erase`, and `repair`
 - command transport consumed by the macOS app for broker-backed operator actions
 - service-backed commands observing the same real `simctl`-synchronized alias health and repair state as direct CLI mode
@@ -472,6 +475,7 @@ Stable `reasons` values are:
 - `boot-on-acquire-failed`
 - `reset-on-acquire-failed`
 - `idle-shutdown-failed`
+- `slot-reclaim-failed`
 - `repair-interrupted`
 - `repair-failed`
 - `unhealthy-alias` for any other stored drift string
@@ -560,6 +564,85 @@ Events and snapshots summarize configuration state, grace duration, eligible
 count, last cleanup result, and next scheduled cleanup. Idle and cleanup
 summaries must not return local paths, aliases, simulator IDs, operator IDs, or
 raw runtime errors.
+
+## 7a. Slot disk reclaim contract
+
+Build-like slots keep `resetPolicy: none` so incremental test hosts can reuse
+installed apps. That data also grows: OS symbol caches, unified logs, and
+leftover test-host tmp directories. The broker therefore reclaims disk
+automatically between leases. This is not a replacement for
+`erase-on-acquire`, and it never runs while a slot is leased, pinned,
+mid-acquire, or being erased under the reset lock.
+
+Policy lives in optional host-config `slotReclaim`. Absence means the defaults
+below. The field is machine-local configuration, not a repo file.
+
+```json
+{
+  "enabled": true,
+  "build": {
+    "enabled": true,
+    "maxLeasesSinceErase": 8,
+    "maxAgeSeconds": 86400,
+    "maxDiskBytes": 8589934592
+  },
+  "manual": {
+    "enabled": false,
+    "maxLeasesSinceErase": 8,
+    "maxAgeSeconds": 86400,
+    "maxDiskBytes": 8589934592
+  }
+}
+```
+
+`maxDiskBytes` default is 8 GiB. Class membership is capability-based:
+`build-fast` with `resetPolicy: none` is `build`; `manual-persistent` is
+`manual` even when it also lists `build-fast`. `erase-on-acquire` aliases are
+never reclaim candidates. Manual reclaim stays off because those slots hold
+human-installed apps and accounts; operators opt in with
+`slotReclaim.manual.enabled: true`. Set `slotReclaim.enabled: false` or
+`slotReclaim.build.enabled: false` to disable.
+
+Any one threshold is enough: on-disk size at or above `maxDiskBytes`,
+`leasesSinceErase` at or above `maxLeasesSinceErase`, or last erase (or last
+use when never erased) older than `maxAgeSeconds`. Last use is the newest
+parseable timestamp among `lastLeaseReleasedAt`, `lastLeaseStartedAt`, and
+`lastBootedAt`. Unused never-booted slots are not age-triggered.
+
+Reclaim takes the broker mutation lock, re-reads leases, and erases only a
+free candidate. It runs after a successful release of that alias, at the start
+of acquire before the new lease file is written, and during the existing
+`brokerd` idle-reconcile loop even when idle policy is unconfigured. A held,
+pinned, or mid-acquire slot is skipped. Aliases already `repair-needed` or
+`repairing` are skipped and are not marked `healthy` by reclaim. Disk size is
+measured only for unheld aliases whose class policy is enabled, using one
+shared device listing for that pass. Erase uses the dedicated reset lock,
+then records `lastErasedAt`, resets `leasesSinceErase` to `0`, and shuts the
+device down. Failure marks the alias `repair-needed` with
+`slot-reclaim-failed` and does not retry that alias until repair. Registry
+synchronization preserves that reason.
+
+Service-backed acquire, release, idle reconcile, and service startup reserve
+that reclaim work before advertising their timeouts. One pass reserves one
+shared `simctl list` plus, for each enabled candidate that pass can erase, one
+`du`, one shutdown, and one erase, each at the simctl command cap, and the
+reset-lock wait plus settle for each erase. Acquire and release reserve at most
+one alias. Acquire uses the longer of reset-on-acquire (shutdown, erase, boot,
+and `bootstatus`) and reclaim plus that same boot, because those shutdown and
+erase paths do not stack. Idle reconcile and startup reserve every enabled
+candidate. A missing host config reserves no reclaim time. The starter host
+has two enabled build slots, and the budget follows the host file once it
+exists. A disabled policy, or a host with no enabled class, reserves none of
+this time. The startup allowance is inside `serviceStartupTimeoutMs`, which the
+launcher uses before `brokerd` installs its `SIGTERM` handler. A failed `du`
+leaves disk size unknown, so only the lease-count and age rules can still
+trigger reclaim.
+
+Successful reclaim emits `slot.reclaimed` with alias, class, reason
+(`disk` | `leases` | `age`), and source (`lease-release` | `lease-acquire` |
+`idle-reconcile`). `host status` and `doctor` include the resolved policy
+summary and last reclaim result. The macOS app snapshot may carry extra
+per-simulator counters; the app UI is unchanged.
 
 ## 8. Capacity check and confirmed reconcile contract
 
@@ -759,6 +842,9 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.18.2 | 2026-10-21 | Reserved `simctl list`, `du`, shutdown, erase, and reset-lock time for build-slot reclaim in the acquire, release, idle-reconcile, and service-startup budgets. |
+| 0.18.1 | 2026-10-21 | Preserved `slot-reclaim-failed` across registry sync, skipped reclaim for repair-latched aliases, aged never-erased slots from the newest use timestamp, and limited disk measurement to enabled candidates. |
+| 0.18.0 | 2026-10-21 | Added between-lease disk reclaim for build slots, with host-config policy defaults, manual opt-in, and `slot.reclaimed` events. |
 | 0.17.0 | 2026-10-05 | Added purpose-scoped repair for agents and CI, pointed sole repair-needed capacity at that command, and stopped treating an in-progress boot or shutdown as a new repair-needed failure. |
 | 0.16.8 | 2026-09-01 | Required `project init` to carry caller-resolved repository identity across direct and resident-service dispatch, including repeat-init recovery and the intentionally redacted capacity response. |
 | 0.16.7 | 2026-08-31 | App restart-required status requires canonical exit code `3`, queued refreshes retain lifecycle ownership, and missing-host probe failures clear stale live-service authority while remaining onboarding. |

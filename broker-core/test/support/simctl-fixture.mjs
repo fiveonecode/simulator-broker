@@ -47,6 +47,7 @@ export function defaultSimctlFixtureState({ devices = [] } = {}) {
 
 export function createDeviceRecord({
   deviceTypeIdentifier,
+  diskBytes,
   isAvailable = true,
   name,
   runtimeIdentifier = "com.apple.CoreSimulator.SimRuntime.iOS-18-2",
@@ -56,6 +57,7 @@ export function createDeviceRecord({
 }) {
   return {
     deviceTypeIdentifier,
+    ...(diskBytes === undefined ? {} : { diskBytes }),
     isAvailable,
     name,
     runtimeIdentifier,

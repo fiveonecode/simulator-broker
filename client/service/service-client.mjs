@@ -11,6 +11,7 @@ import {
 } from "../../broker-core/containment.mjs";
 import { BrokerError } from "../../broker-core/index.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS } from "../../broker-core/simctl.mjs";
+import { classifyReclaimSlot, resolveSlotReclaimPolicy } from "../../broker-core/slot-reclaim.mjs";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 25_000;
 const DEFAULT_COMMAND_QUEUE_TIMEOUT_MS = 60_000;
@@ -24,7 +25,16 @@ const SERVICE_STARTUP_LAUNCHER_OVERHEAD_MS = 5_000;
 const SERVICE_STARTUP_LOCK_PROCESS_SAMPLER_INVOCATIONS = 2;
 const SERVICE_STARTUP_STATE_LOADS = 2;
 const SERVICE_STARTUP_LEASE_LOCK_WAITS = 2;
-const LEASE_ACQUIRE_SIMCTL_COMMANDS = 4;
+const SLOT_RECLAIM_SHARED_LIST_COMMANDS = 1;
+const SLOT_RECLAIM_COMMANDS_PER_ALIAS = 3;
+const LEASE_ACQUIRE_RESET_ERASE_SIMCTL_COMMANDS = 2;
+const LEASE_ACQUIRE_BOOT_SIMCTL_COMMANDS = 2;
+const LEASE_ACQUIRE_RESET_SIMCTL_COMMANDS = LEASE_ACQUIRE_RESET_ERASE_SIMCTL_COMMANDS
+  + LEASE_ACQUIRE_BOOT_SIMCTL_COMMANDS;
+// Reclaim shutdown/erase replaces reset-on-acquire shutdown/erase, then boot still runs.
+const LEASE_ACQUIRE_RECLAIM_SIMCTL_COMMANDS = SLOT_RECLAIM_SHARED_LIST_COMMANDS
+  + SLOT_RECLAIM_COMMANDS_PER_ALIAS
+  + LEASE_ACQUIRE_BOOT_SIMCTL_COMMANDS;
 const CAPACITY_APPLY_PLAN_EVALUATIONS = 2;
 const CAPACITY_APPLY_FINALIZATION_STATE_LOADS = 1;
 const CAPACITY_APPLY_FINAL_SNAPSHOT_STATE_LOADS = 1;
@@ -135,6 +145,51 @@ function hostBootstrapRetirementCountFromPaths(paths) {
 function hostAliasCountFromPaths(paths, fallback = HOST_BOOTSTRAP_ALIAS_COUNT) {
   const hostConfig = readJsonIfPresent(paths?.hostConfigPath);
   return Array.isArray(hostConfig?.aliases) ? hostConfig.aliases.length : fallback;
+}
+
+function enabledSlotReclaimCandidateCount(paths) {
+  const hostConfig = readJsonIfPresent(paths?.hostConfigPath);
+  if (!hostConfig) {
+    return 0;
+  }
+  const policy = resolveSlotReclaimPolicy(hostConfig.slotReclaim);
+  if (policy.enabled !== true) {
+    return 0;
+  }
+  const aliases = Array.isArray(hostConfig.aliases) ? hostConfig.aliases : [];
+  let count = 0;
+  for (const alias of aliases) {
+    const className = classifyReclaimSlot(alias);
+    if (className && policy[className]?.enabled === true) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function slotReclaimSimctlCommandCount(candidateCount) {
+  const count = nonNegativeInteger(candidateCount);
+  if (count === 0) {
+    return 0;
+  }
+  return SLOT_RECLAIM_SHARED_LIST_COMMANDS + (count * SLOT_RECLAIM_COMMANDS_PER_ALIAS);
+}
+
+function slotReclaimResetBudgetMs(request, eraseCount) {
+  const count = nonNegativeInteger(eraseCount);
+  if (count === 0) {
+    return 0;
+  }
+  return count * (
+    positiveDurationMs(request?.options?.resetLockTimeoutMilliseconds, DEFAULT_LOCK_TIMEOUT_MS)
+    + positiveDurationMs(request?.options?.resetSettleMilliseconds, DEFAULT_RESET_SETTLE_MS)
+  );
+}
+
+function slotReclaimBudgetMs(request, candidateCount) {
+  const count = nonNegativeInteger(candidateCount);
+  return slotReclaimResetBudgetMs(request, count)
+    + (slotReclaimSimctlCommandCount(count) * SIMCTL_COMMAND_TIMEOUT_MS);
 }
 
 function selectedCapacityPurposeCountFromPaths(paths, request) {
@@ -258,10 +313,21 @@ function serviceCommandUsesSerializedStateReadLock(request) {
   return false;
 }
 
-function leaseAcquireResetSimctlBudgetMs(request) {
-  return request?.group === "lease" && request?.command === "acquire"
-    ? LEASE_ACQUIRE_SIMCTL_COMMANDS * SIMCTL_COMMAND_TIMEOUT_MS
-    : 0;
+function leaseAcquireResetSimctlBudgetMs(request, options = {}) {
+  if (request?.group !== "lease" || request?.command !== "acquire") {
+    return 0;
+  }
+  const commandCount = enabledSlotReclaimCandidateCount(options.paths) > 0
+    ? LEASE_ACQUIRE_RECLAIM_SIMCTL_COMMANDS
+    : LEASE_ACQUIRE_RESET_SIMCTL_COMMANDS;
+  return commandCount * SIMCTL_COMMAND_TIMEOUT_MS;
+}
+
+function leaseReleaseSlotReclaimBudgetMs(request, options = {}) {
+  if (request?.group !== "lease" || request?.command !== "release") {
+    return 0;
+  }
+  return slotReclaimBudgetMs(request, Math.min(1, enabledSlotReclaimCandidateCount(options.paths)));
 }
 
 function serviceCommandUsesLeaseMutationLock(request) {
@@ -287,6 +353,13 @@ function idleShutdownSimctlBudgetMs(request, options = {}) {
     return 0;
   }
   return hostAliasCountFromPaths(options.paths) * SIMCTL_COMMAND_TIMEOUT_MS;
+}
+
+function idleReconcileSlotReclaimBudgetMs(request, options = {}) {
+  if (request?.group !== "idle" || request?.command !== "reconcile") {
+    return 0;
+  }
+  return slotReclaimBudgetMs(request, enabledSlotReclaimCandidateCount(options.paths));
 }
 
 function simulatorLifecycleSimctlBudgetMs(request, options = {}) {
@@ -417,7 +490,7 @@ export function serviceCommandExecutionTimeoutMs(request, options = {}) {
         + leaseLockTimeoutMs(request)
         + positiveDurationMs(request?.options?.resetLockTimeoutMilliseconds, DEFAULT_LOCK_TIMEOUT_MS)
         + positiveDurationMs(request?.options?.resetSettleMilliseconds, DEFAULT_RESET_SETTLE_MS)
-        + leaseAcquireResetSimctlBudgetMs(request)
+        + leaseAcquireResetSimctlBudgetMs(request, options)
         + snapshotLockBudgetMs
         + stateLoadBudgetForRequestMs,
     );
@@ -472,7 +545,15 @@ export function serviceCommandExecutionTimeoutMs(request, options = {}) {
       + leaseLockTimeoutMs(request)
       + snapshotLockBudgetMs
       + stateLoadBudgetForRequestMs
-      + idleShutdownSimctlBudgetMs(request, options);
+      + idleShutdownSimctlBudgetMs(request, options)
+      + idleReconcileSlotReclaimBudgetMs(request, options);
+  }
+  if (request?.group === "lease" && request?.command === "release") {
+    return DEFAULT_COMMAND_TIMEOUT_MS
+      + leaseLockTimeoutMs(request)
+      + snapshotLockBudgetMs
+      + stateLoadBudgetForRequestMs
+      + leaseReleaseSlotReclaimBudgetMs(request, options);
   }
   if (serviceCommandUsesLeaseMutationLock(request)) {
     return DEFAULT_COMMAND_TIMEOUT_MS
@@ -513,10 +594,12 @@ export function serviceStartupTimeoutMs(options = {}) {
     group: "idle",
     options: {},
   };
+  const reclaimCandidates = enabledSlotReclaimCandidateCount(options.paths);
   return stateLoadBudgetMs(SERVICE_STARTUP_STATE_LOADS)
     + staleContainmentBudgetMs(startupIdleReconcileRequest, options, 1)
     + (SERVICE_STARTUP_LEASE_LOCK_WAITS * DEFAULT_LOCK_TIMEOUT_MS)
     + (hostAliasCountFromPaths(options.paths) * SIMCTL_COMMAND_TIMEOUT_MS)
+    + slotReclaimBudgetMs(startupIdleReconcileRequest, reclaimCandidates)
     + (SERVICE_STARTUP_LOCK_PROCESS_SAMPLER_INVOCATIONS * PROCESS_SAMPLER_TIMEOUT_MS)
     + SERVICE_STARTUP_LAUNCHER_OVERHEAD_MS;
 }

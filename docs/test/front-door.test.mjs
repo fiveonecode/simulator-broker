@@ -329,6 +329,22 @@ test("released CLI archive guidance enters its versioned top-level directory", (
   }
 });
 
+test("newcomer docs explain default-on build slot reclaim and manual opt-in", () => {
+  const readme = readRepoFile("README.md");
+  const gettingStarted = readRepoFile("docs/getting-started.md");
+  const concepts = readRepoFile("docs/concepts.md");
+  const status = readRepoFile("docs/status.md");
+
+  for (const body of [readme, gettingStarted, concepts, status]) {
+    assert.match(body, /slotReclaim|slot disk reclaim|erased automatically|between-lease disk reclaim/i);
+    assert.match(body, /manual/i);
+  }
+  for (const body of [readme, gettingStarted, concepts]) {
+    assert.match(body, /slotReclaim/);
+    assert.match(body, /8 GiB/);
+  }
+});
+
 test("newcomer docs explain warm reuse and opt-in Automatic shutdown", () => {
   const readme = readRepoFile("README.md");
   const gettingStarted = readRepoFile("docs/getting-started.md");

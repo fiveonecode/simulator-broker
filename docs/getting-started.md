@@ -165,6 +165,13 @@ simbroker idle status
 simbroker idle enable --grace-seconds <60-86400> --actor-type human --actor-id <operator-id>
 ```
 
+Build slots are a separate disk problem. They keep data across leases, so they
+are erased automatically when they grow past 8 GiB, finish 8 leases since the
+last wipe, or sit unrestored for 24 hours. That policy is on by default for
+`build-fast` aliases and off for manual aliases. Override or disable it in
+`host-config.json` `slotReclaim`. Check `simbroker host status --json` or
+`simbroker doctor` for the resolved policy and last reclaim.
+
 Then register each repo you want the broker to know about:
 
 ```bash

@@ -163,6 +163,44 @@ function isAlreadyDeletedResult(result) {
   return /Invalid device/i.test(output) || /Unable to find a device/i.test(output);
 }
 
+function measureDirectoryBytes(dirPath) {
+  if (typeof dirPath !== "string" || dirPath.trim() === "") {
+    return null;
+  }
+  try {
+    if (fs.existsSync(dirPath) !== true) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  try {
+    const output = execFileSync("du", ["-sk", dirPath], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: SIMCTL_COMMAND_TIMEOUT_MS,
+    });
+    const kib = Number.parseInt(String(output ?? "").trim(), 10);
+    return Number.isFinite(kib) && kib >= 0 ? kib * 1024 : null;
+  } catch {
+    return null;
+  }
+}
+
+function findDeviceDataPath(devicesJson, simulatorId) {
+  const grouped = devicesJson?.devices ?? {};
+  for (const devices of Object.values(grouped)) {
+    if (!Array.isArray(devices)) {
+      continue;
+    }
+    const device = devices.find((candidate) => candidate?.udid === simulatorId);
+    if (device) {
+      return typeof device.dataPath === "string" ? device.dataPath : null;
+    }
+  }
+  return null;
+}
+
 function defaultCommandRunner(args, { allowFailure = false, maxBuffer = undefined, timeoutMs = SIMCTL_COMMAND_TIMEOUT_MS } = {}) {
   try {
     return execFileSync("xcrun", ["simctl", ...args], {
@@ -311,6 +349,12 @@ export function createSystemSimctlAdapter({
         maxBuffer: SIMCTL_INVENTORY_MAX_BUFFER_BYTES,
       }));
     },
+    measureDeviceDiskBytes(simulatorId, devicesJson = null) {
+      const listed = devicesJson ?? JSON.parse(runCommand(["list", "--json", "devices"], {
+        maxBuffer: SIMCTL_INVENTORY_MAX_BUFFER_BYTES,
+      }));
+      return measureDirectoryBytes(findDeviceDataPath(listed, simulatorId));
+    },
     renameDevice(simulatorId, name) {
       runCommand(["rename", simulatorId, name]);
     },
@@ -397,9 +441,14 @@ export function createFixtureSimctlAdapter({ createDelayMs = 0, statePath }) {
     eraseDevice(simulatorId) {
       mutateState((state) => {
         const device = findDeviceOrThrow(state, simulatorId);
+        device.diskBytes = 0;
         device.lastBootedAt = null;
         device.state = "Shutdown";
       });
+    },
+    measureDeviceDiskBytes(simulatorId) {
+      const device = findDeviceOrThrow(readFixtureState(resolvedStatePath), simulatorId);
+      return Number.isFinite(Number(device.diskBytes)) ? Number(device.diskBytes) : 0;
     },
     listDeviceTypes() {
       const state = readFixtureState(resolvedStatePath);

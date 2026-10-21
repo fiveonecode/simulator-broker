@@ -14,6 +14,16 @@ import {
 } from "./containment.mjs";
 import { resolveBrokerExitCode } from "./error-contract.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS, createDeviceIndex, resolveSimctlAdapter } from "./simctl.mjs";
+import {
+  DEFAULT_SLOT_RECLAIM_POLICY,
+  classifyReclaimSlot,
+  evaluateSlotReclaim,
+  formatSlotReclaimPolicyLine,
+  isSlotHeldForReclaim,
+  lastUsedAtForSlot,
+  resolveSlotReclaimPolicy,
+  summarizeSlotReclaimPolicy,
+} from "./slot-reclaim.mjs";
 
 export const DEFAULT_HOST_CONFIG_PATH = path.join(os.homedir(), "Library/Application Support/SimulatorBroker/host-config.json");
 export const DEFAULT_STATE_ROOT = path.join(os.homedir(), "Library/Application Support/SimulatorBroker/state");
@@ -50,6 +60,7 @@ const PUBLIC_DRIFT_REASONS = new Set([
   "simulator-config-mismatch",
   "simulator-missing",
   "simulator-unavailable",
+  "slot-reclaim-failed",
 ]);
 // Covers fresh-plan inventory, six create/rename pairs, post-commit state load,
 // and the largest late-failure attribution/delete rollback while the lock is held.
@@ -735,6 +746,26 @@ function requireOptionalString(value, name) {
   return requireString(value, name);
 }
 
+function requireBoolean(value, name) {
+  if (typeof value !== "boolean") {
+    throw new BrokerError(`${name} must be a boolean.`, {
+      field: name,
+      reasonCode: "invalid-config",
+    });
+  }
+  return value;
+}
+
+function requireConfigBoundedInteger(value, name, minimum, maximum) {
+  if (typeof value !== "number" || Number.isSafeInteger(value) !== true || value < minimum || value > maximum) {
+    throw new BrokerError(`${name} must be an integer from ${minimum} through ${maximum}.`, {
+      field: name,
+      reasonCode: "invalid-config",
+    });
+  }
+  return value;
+}
+
 function requireArray(value, name) {
   if (!Array.isArray(value)) {
     throw new BrokerError(`${name} must be an array.`, {
@@ -820,6 +851,67 @@ function validatePendingRetirements(rawRetirements) {
     .map((simulatorId, index) => requireString(simulatorId, `host-config.pendingRetirements[${index}]`)))];
 }
 
+function validateSlotReclaimClassPolicy(rawPolicy, field, defaults) {
+  if (rawPolicy === undefined || rawPolicy === null) {
+    return {
+      enabled: defaults.enabled,
+      maxAgeSeconds: defaults.maxAgeSeconds,
+      maxDiskBytes: defaults.maxDiskBytes,
+      maxLeasesSinceErase: defaults.maxLeasesSinceErase,
+    };
+  }
+  const policy = requireObject(rawPolicy, field);
+  const extraFields = Object.keys(policy).filter((key) =>
+    !["enabled", "maxAgeSeconds", "maxDiskBytes", "maxLeasesSinceErase"].includes(key));
+  if (extraFields.length > 0) {
+    throw new BrokerError(`${field} contains unsupported fields: ${extraFields.join(", ")}.`, {
+      field,
+      reasonCode: "invalid-config",
+    });
+  }
+  return {
+    enabled: policy.enabled === undefined ? defaults.enabled : requireBoolean(policy.enabled, `${field}.enabled`),
+    maxAgeSeconds: policy.maxAgeSeconds === undefined
+      ? defaults.maxAgeSeconds
+      : requireConfigBoundedInteger(policy.maxAgeSeconds, `${field}.maxAgeSeconds`, 60, 31_536_000),
+    maxDiskBytes: policy.maxDiskBytes === undefined
+      ? defaults.maxDiskBytes
+      : requireConfigBoundedInteger(policy.maxDiskBytes, `${field}.maxDiskBytes`, 1, Number.MAX_SAFE_INTEGER),
+    maxLeasesSinceErase: policy.maxLeasesSinceErase === undefined
+      ? defaults.maxLeasesSinceErase
+      : requireConfigBoundedInteger(policy.maxLeasesSinceErase, `${field}.maxLeasesSinceErase`, 1, 10_000),
+  };
+}
+
+function validateSlotReclaimConfig(rawPolicy) {
+  if (rawPolicy === undefined || rawPolicy === null) {
+    return null;
+  }
+  const policy = requireObject(rawPolicy, "host-config.slotReclaim");
+  const extraFields = Object.keys(policy).filter((key) => !["enabled", "build", "manual"].includes(key));
+  if (extraFields.length > 0) {
+    throw new BrokerError(`host-config.slotReclaim contains unsupported fields: ${extraFields.join(", ")}.`, {
+      field: "host-config.slotReclaim",
+      reasonCode: "invalid-config",
+    });
+  }
+  return {
+    build: validateSlotReclaimClassPolicy(
+      policy.build,
+      "host-config.slotReclaim.build",
+      DEFAULT_SLOT_RECLAIM_POLICY.build,
+    ),
+    enabled: policy.enabled === undefined
+      ? DEFAULT_SLOT_RECLAIM_POLICY.enabled
+      : requireBoolean(policy.enabled, "host-config.slotReclaim.enabled"),
+    manual: validateSlotReclaimClassPolicy(
+      policy.manual,
+      "host-config.slotReclaim.manual",
+      DEFAULT_SLOT_RECLAIM_POLICY.manual,
+    ),
+  };
+}
+
 function validatePurposeRequires(rawRequires, fieldPrefix) {
   if (rawRequires === undefined || rawRequires === null) {
     return null;
@@ -876,10 +968,12 @@ export function validateHostConfig(rawConfig) {
     }
     simulatorIds.add(alias.simulatorId);
   }
+  const slotReclaim = validateSlotReclaimConfig(config.slotReclaim);
   return {
     aliases,
     hostId: requireString(config.hostId, "host-config.hostId"),
     pendingRetirements: validatePendingRetirements(config.pendingRetirements),
+    ...(slotReclaim ? { slotReclaim } : {}),
     version: HOST_CONFIG_VERSION,
   };
 }
@@ -2450,19 +2544,26 @@ function syncRegistryWithSimctl(hostConfig, registry, options = {}) {
 
     if (!device || device.isAvailable === false) {
       registryEntry.health = "repair-needed";
-      registryEntry.driftReason = device ? "simulator-unavailable" : "simulator-missing";
+      registryEntry.driftReason = preserveSlotReclaimFailure(
+        registryEntry,
+        device ? "simulator-unavailable" : "simulator-missing",
+      );
       registryEntry.powerState = "shutdown";
       continue;
     }
 
     if (device.deviceFamily !== hostAlias.deviceFamily || !iosVersionSatisfies(device.runtimeVersion ?? "", hostAlias.iosVersion)) {
       registryEntry.health = "repair-needed";
-      registryEntry.driftReason = "simulator-config-mismatch";
+      registryEntry.driftReason = preserveSlotReclaimFailure(registryEntry, "simulator-config-mismatch");
       registryEntry.powerState = device.state === "Booted" ? "booted" : "shutdown";
       continue;
     }
 
     registryEntry.powerState = device.state === "Booted" ? "booted" : "shutdown";
+    if (registryEntry.driftReason === "slot-reclaim-failed") {
+      registryEntry.health = "repair-needed";
+      continue;
+    }
     if (registryEntry.health === "repairing") {
       registryEntry.health = "repair-needed";
       registryEntry.driftReason = registryEntry.driftReason ?? "repair-interrupted";
@@ -2592,6 +2693,7 @@ function normalizeRegistry(rawRegistry, hostConfig, timestamp) {
       lastErasedAt: typeof entry.lastErasedAt === "string" ? entry.lastErasedAt : null,
       lastLeaseReleasedAt: typeof entry.lastLeaseReleasedAt === "string" ? entry.lastLeaseReleasedAt : null,
       lastLeaseStartedAt: typeof entry.lastLeaseStartedAt === "string" ? entry.lastLeaseStartedAt : null,
+      leasesSinceErase: normalizeNonNegativeInteger(entry.leasesSinceErase) ?? 0,
       lastRepairedAt: typeof entry.lastRepairedAt === "string" ? entry.lastRepairedAt : null,
       lastShutdownAt: typeof entry.lastShutdownAt === "string" ? entry.lastShutdownAt : null,
       pinId: typeof entry.pinId === "string" ? entry.pinId : null,
@@ -2603,6 +2705,9 @@ function normalizeRegistry(rawRegistry, hostConfig, timestamp) {
     aliases,
     idle: {
       lastCleanupResult: normalizeIdleCleanupResult(rawRegistry.idle?.lastCleanupResult),
+    },
+    slotReclaim: {
+      lastReclaimResult: normalizeSlotReclaimResult(rawRegistry.slotReclaim?.lastReclaimResult),
     },
     updatedAt: timestamp,
     version: REGISTRY_VERSION,
@@ -2629,6 +2734,294 @@ function normalizeIdleCleanupResult(value) {
     shutdownCount,
     source,
     status,
+  };
+}
+
+function normalizeSlotReclaimResult(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const completedAt = typeof value.completedAt === "string" ? value.completedAt : null;
+  const source = typeof value.source === "string" ? value.source : null;
+  const status = typeof value.status === "string" ? value.status : null;
+  const eligibleCount = normalizeNonNegativeInteger(value.eligibleCount);
+  const reclaimedCount = normalizeNonNegativeInteger(value.reclaimedCount);
+  const skippedHeldCount = normalizeNonNegativeInteger(value.skippedHeldCount);
+  const failureCount = normalizeNonNegativeInteger(value.failureCount);
+  if (!completedAt || !source || !status
+    || eligibleCount === null || reclaimedCount === null
+    || skippedHeldCount === null || failureCount === null) {
+    return null;
+  }
+  return {
+    completedAt,
+    eligibleCount,
+    failureCount,
+    reclaimedCount,
+    skippedHeldCount,
+    source,
+    status,
+  };
+}
+
+function slotReclaimStatus(reclaimedCount, failureCount) {
+  if (failureCount > 0 && reclaimedCount > 0) {
+    return "partial";
+  }
+  if (failureCount > 0) {
+    return "failed";
+  }
+  if (reclaimedCount > 0) {
+    return "reclaimed";
+  }
+  return "no_changes";
+}
+
+function incrementLeasesSinceErase(registryEntry) {
+  if (!registryEntry) {
+    return;
+  }
+  registryEntry.leasesSinceErase = (normalizeNonNegativeInteger(registryEntry.leasesSinceErase) ?? 0) + 1;
+}
+
+function resetLeasesSinceErase(registryEntry) {
+  if (!registryEntry) {
+    return;
+  }
+  registryEntry.leasesSinceErase = 0;
+}
+
+function markAliasLeaseReleased(registryEntry, timestamp) {
+  if (!registryEntry) {
+    return;
+  }
+  registryEntry.activeLeaseId = null;
+  registryEntry.lastLeaseReleasedAt = timestamp;
+  incrementLeasesSinceErase(registryEntry);
+  registryEntry.updatedAt = timestamp;
+}
+
+function preserveSlotReclaimFailure(registryEntry, replacement) {
+  return registryEntry?.driftReason === "slot-reclaim-failed" ? "slot-reclaim-failed" : replacement;
+}
+
+function slotReclaimBlockedByRepair(registryEntry) {
+  return registryEntry.health === "repair-needed"
+    || registryEntry.health === "repairing"
+    || registryEntry.driftReason === "slot-reclaim-failed";
+}
+
+function readReclaimDeviceListing(simctl) {
+  if (typeof simctl?.listDevices !== "function") {
+    return undefined;
+  }
+  try {
+    const listed = simctl.listDevices();
+    if (!listed || typeof listed !== "object" || Array.isArray(listed)) {
+      return { devices: {} };
+    }
+    return listed;
+  } catch {
+    return { devices: {} };
+  }
+}
+
+function measureAliasDiskBytes(simctl, simulatorId, devicesJson) {
+  if (typeof simctl?.measureDeviceDiskBytes !== "function") {
+    return null;
+  }
+  try {
+    const measured = devicesJson === undefined
+      ? simctl.measureDeviceDiskBytes(simulatorId)
+      : simctl.measureDeviceDiskBytes(simulatorId, devicesJson);
+    return Number.isFinite(measured) && measured >= 0 ? measured : null;
+  } catch {
+    return null;
+  }
+}
+
+function slotReclaimBusyError(error) {
+  return error instanceof BrokerError
+    && ["alias-busy", "reset-lock-timeout"].includes(error.payload?.reasonCode);
+}
+
+function performSlotReclaim(paths, state, options, timestamp, {
+  aliases = null,
+  acquiringAlias = null,
+  persistNoChanges = false,
+  source,
+} = {}) {
+  const policy = resolveSlotReclaimPolicy(state.hostConfig.slotReclaim);
+  const targetAliases = aliases ?? state.hostConfig.aliases.map((hostAlias) => hostAlias.alias);
+  const simctl = resolveSimctlAdapter(options);
+  let eligibleCount = 0;
+  let reclaimedCount = 0;
+  let skippedHeldCount = 0;
+  let failureCount = 0;
+
+  if (policy.enabled === true) {
+    let sharedDevicesJson;
+    let sharedDevicesLoaded = false;
+    const sharedDeviceListing = () => {
+      if (!sharedDevicesLoaded) {
+        sharedDevicesLoaded = true;
+        sharedDevicesJson = readReclaimDeviceListing(simctl);
+      }
+      return sharedDevicesJson;
+    };
+    for (const alias of targetAliases) {
+      const hostAlias = state.hostConfig.aliases.find((candidate) => candidate.alias === alias);
+      if (!hostAlias) {
+        continue;
+      }
+      const registryEntry = state.registry.aliases[alias];
+      if (!registryEntry) {
+        continue;
+      }
+      const held = isSlotHeldForReclaim({
+        acquiring: acquiringAlias === alias,
+        activeLease: state.leasesByAlias.get(alias) ?? null,
+        activePin: state.pinsByAlias.get(alias) ?? null,
+        registryEntry,
+      });
+      if (held) {
+        skippedHeldCount += 1;
+        continue;
+      }
+      // Failed reclaim and other repair latches stay until repair, not erase.
+      if (slotReclaimBlockedByRepair(registryEntry)) {
+        continue;
+      }
+      const className = classifyReclaimSlot(hostAlias);
+      const classEnabled = Boolean(className && policy[className]?.enabled === true);
+      const diskBytes = classEnabled
+        ? measureAliasDiskBytes(simctl, hostAlias.simulatorId, sharedDeviceListing())
+        : null;
+      const leasesSinceErase = registryEntry.leasesSinceErase ?? 0;
+      const decision = evaluateSlotReclaim({
+        className,
+        diskBytes,
+        held,
+        lastErasedAt: registryEntry.lastErasedAt,
+        lastUsedAt: lastUsedAtForSlot(registryEntry),
+        leasesSinceErase,
+        nowMs: Date.parse(timestamp),
+        policy,
+      });
+      if (decision.reclaim !== true) {
+        continue;
+      }
+      eligibleCount += 1;
+      if (isSlotHeldForReclaim({
+        acquiring: acquiringAlias === alias,
+        activeLease: state.leasesByAlias.get(alias) ?? null,
+        activePin: state.pinsByAlias.get(alias) ?? null,
+        registryEntry,
+      })) {
+        skippedHeldCount += 1;
+        eligibleCount -= 1;
+        continue;
+      }
+      try {
+        withResetLock(paths, () => {
+          if (isSlotHeldForReclaim({
+            acquiring: acquiringAlias === alias,
+            activeLease: state.leasesByAlias.get(alias) ?? null,
+            activePin: state.pinsByAlias.get(alias) ?? null,
+            registryEntry,
+          })) {
+            const busy = new BrokerError(`Alias ${alias} is held and cannot be reclaimed.`, {
+              alias,
+              reasonCode: "alias-busy",
+            });
+            throw busy;
+          }
+          simctl.shutdownDevice(hostAlias.simulatorId);
+          simctl.eraseDevice(hostAlias.simulatorId);
+          sleepSync(options.resetSettleMilliseconds ?? DEFAULT_RESET_SETTLE_MS);
+        }, {
+          now: timestamp,
+          processExists: options.processExists,
+          processSampler: options.processSampler,
+          timeoutMs: options.resetLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+        });
+        if (!slotReclaimBlockedByRepair(registryEntry)) {
+          registryEntry.health = "healthy";
+          registryEntry.driftReason = null;
+        }
+        registryEntry.lastErasedAt = timestamp;
+        registryEntry.lastShutdownAt = timestamp;
+        registryEntry.powerState = "shutdown";
+        resetLeasesSinceErase(registryEntry);
+        registryEntry.updatedAt = timestamp;
+        reclaimedCount += 1;
+        appendEventRecord(paths, "slot.reclaimed", {
+          alias,
+          actorType: options.actorType ?? "system",
+          jobId: options.jobId ?? null,
+          leaseId: null,
+          payload: {
+            className: decision.className,
+            diskBytes,
+            leasesSinceErase,
+            reason: decision.reason,
+            source,
+          },
+          projectId: null,
+          purposeId: null,
+        }, timestamp);
+      } catch (error) {
+        if (slotReclaimBusyError(error)) {
+          skippedHeldCount += 1;
+          eligibleCount -= 1;
+          continue;
+        }
+        failureCount += 1;
+        registryEntry.health = "repair-needed";
+        registryEntry.driftReason = "slot-reclaim-failed";
+        registryEntry.updatedAt = timestamp;
+        appendEventRecord(paths, "slot.reclaim-failed", {
+          alias,
+          actorType: options.actorType ?? "system",
+          jobId: options.jobId ?? null,
+          leaseId: null,
+          payload: {
+            className: decision.className,
+            reason: decision.reason,
+            source,
+          },
+          projectId: null,
+          purposeId: null,
+        }, timestamp);
+      }
+    }
+  }
+
+  const lastReclaimResult = {
+    completedAt: timestamp,
+    eligibleCount,
+    failureCount,
+    reclaimedCount,
+    skippedHeldCount,
+    source,
+    status: slotReclaimStatus(reclaimedCount, failureCount),
+  };
+  if (reclaimedCount > 0 || failureCount > 0 || persistNoChanges === true) {
+    state.registry.slotReclaim = {
+      lastReclaimResult,
+    };
+    state.registry.updatedAt = timestamp;
+    writeRegistry(paths, state.registry);
+  }
+  return lastReclaimResult;
+}
+
+function buildSlotReclaimSummary(state) {
+  const policy = summarizeSlotReclaimPolicy(state.hostConfig.slotReclaim);
+  return {
+    ...policy,
+    lastReclaimResult: state.registry.slotReclaim?.lastReclaimResult ?? null,
+    summary: formatSlotReclaimPolicyLine(policy),
   };
 }
 
@@ -3479,9 +3872,7 @@ function validateForceOverride(action, options, requester, alias, activeLease) {
 function revokeLeaseForOverride(paths, state, lease, { action, actorId, actorType, overrideReason, timestamp }) {
   assertLeaseArtifactPathAllowed(paths, lease.artifactPath);
   const registryEntry = state.registry.aliases[lease.alias];
-  registryEntry.activeLeaseId = null;
-  registryEntry.lastLeaseReleasedAt = timestamp;
-  registryEntry.updatedAt = timestamp;
+  markAliasLeaseReleased(registryEntry, timestamp);
   state.registry.updatedAt = timestamp;
   state.leasesByAlias.delete(lease.alias);
   writeRegistry(paths, state.registry);
@@ -4432,9 +4823,7 @@ function removeLeaseAfterContainment(paths, state, lease, timestamp) {
   assertLeaseArtifactPathAllowed(paths, lease.artifactPath);
   const registryEntry = state.registry.aliases[lease.alias];
   if (registryEntry) {
-    registryEntry.activeLeaseId = null;
-    registryEntry.lastLeaseReleasedAt = timestamp;
-    registryEntry.updatedAt = timestamp;
+    markAliasLeaseReleased(registryEntry, timestamp);
     state.registry.updatedAt = timestamp;
     writeRegistry(paths, state.registry);
   }
@@ -4596,9 +4985,7 @@ function loadBrokerState(paths, { processExists = defaultProcessExists, registry
     }
     const registryEntry = registry.aliases[lease.alias];
     if (registryEntry) {
-      registryEntry.activeLeaseId = null;
-      registryEntry.lastLeaseReleasedAt = timestamp;
-      registryEntry.updatedAt = timestamp;
+      markAliasLeaseReleased(registryEntry, timestamp);
     }
     removeLeaseRecordFiles(paths, lease);
     appendEventRecord(paths, "lease.reclaimed", {
@@ -4812,6 +5199,7 @@ function aliasSnapshot(hostAlias, registryEntry, activeLease, activePin) {
     lastErasedAt: registryEntry.lastErasedAt,
     lastLeaseReleasedAt: registryEntry.lastLeaseReleasedAt,
     lastLeaseStartedAt: registryEntry.lastLeaseStartedAt,
+    leasesSinceErase: registryEntry.leasesSinceErase ?? 0,
     lastRepairedAt: registryEntry.lastRepairedAt,
     lastShutdownAt: registryEntry.lastShutdownAt,
     pin: summarizePinOwner(activePin),
@@ -4923,8 +5311,11 @@ export function initBroker(paths, options = {}) {
         const pendingRetirementIds = previousHostConfig === null
           ? []
           : pendingRetirementIdsForHostReplacement(previousHostConfig, provisioned.hostConfig);
+        const nextHostConfig = previousHostConfig?.slotReclaim
+          ? { ...provisioned.hostConfig, slotReclaim: previousHostConfig.slotReclaim }
+          : provisioned.hostConfig;
         try {
-          writeHostConfig(paths, hostConfigWithPendingRetirements(provisioned.hostConfig, pendingRetirementIds));
+          writeHostConfig(paths, hostConfigWithPendingRetirements(nextHostConfig, pendingRetirementIds));
           hostConfigCreated = true;
         } catch (error) {
           const simctl = resolveSimctlAdapter(options);
@@ -4933,8 +5324,8 @@ export function initBroker(paths, options = {}) {
         }
         if (previousHostConfig !== null) {
           const simctl = resolveSimctlAdapter(options);
-          const retirement = retirePendingHostSimulators(simctl, pendingRetirementIds, provisioned.hostConfig);
-          writeHostConfig(paths, hostConfigWithPendingRetirements(provisioned.hostConfig, retirement.pendingRetirements));
+          const retirement = retirePendingHostSimulators(simctl, pendingRetirementIds, nextHostConfig);
+          writeHostConfig(paths, hostConfigWithPendingRetirements(nextHostConfig, retirement.pendingRetirements));
           if (retirement.failedRetirements.length > 0) {
             throw retirement.failedRetirements[0].error;
           }
@@ -4987,6 +5378,7 @@ export function doctorBroker(paths, options = {}) {
   let reportTimestamp = lockTimestamp;
   const issues = [];
   let hostConfig = null;
+  let slotReclaim = null;
   try {
     hostConfig = readHostConfigOrThrow(paths);
   } catch (error) {
@@ -5037,12 +5429,14 @@ export function doctorBroker(paths, options = {}) {
         });
       }
     }
+    slotReclaim = buildSlotReclaimSummary(state);
   }
 
   return {
     hostConfigPath: paths.hostConfigPath,
     issues,
     ok: issues.length === 0,
+    slotReclaim,
     stateRoot: paths.stateRoot,
     timestamp: reportTimestamp,
   };
@@ -5148,6 +5542,7 @@ export function hostStatusBroker(paths, options = {}) {
     return {
       hostId: state.hostConfig.hostId,
       ok: true,
+      slotReclaim: buildSlotReclaimSummary(state),
       stateRoot: paths.stateRoot,
       summary: {
         leasedAliases: simulators.filter((simulator) => simulator.activeLeaseId !== null).length,
@@ -5630,6 +6025,22 @@ export function reconcileIdleBroker(paths, options = {}) {
     const timestamp = nowIso(options.now);
     const policy = readIdlePolicy(paths);
     if (!policy) {
+      let slotReclaim = null;
+      try {
+        const state = loadPublicSafeIdleState(() => loadBrokerState(paths, {
+          ...stateLoadOptions(options, timestamp),
+          registryPersistenceDetails: {
+            command: "idle.reconcile",
+          },
+        }));
+        slotReclaim = performSlotReclaim(paths, state, options, timestamp, {
+          source: "idle-reconcile",
+        });
+      } catch {
+        // Unconfigured idle reconcile used to return without reading host
+        // state. Slot reclaim is best-effort here and must not fail startup
+        // when the host is missing or not yet readable.
+      }
       return {
         command: "idle.reconcile",
         configured: false,
@@ -5638,6 +6049,7 @@ export function reconcileIdleBroker(paths, options = {}) {
         ok: true,
         schemaVersion: IDLE_SCHEMA_VERSION,
         shutdownCount: 0,
+        ...(slotReclaim ? { slotReclaim } : {}),
         status: "not_configured",
       };
     }
@@ -5647,10 +6059,14 @@ export function reconcileIdleBroker(paths, options = {}) {
         command: "idle.reconcile",
       },
     }));
+    const slotReclaim = performSlotReclaim(paths, state, options, timestamp, {
+      source: "idle-reconcile",
+    });
     const candidates = idleEligibleCandidates(state, policy, timestamp);
     return {
       configured: true,
       graceSeconds: policy.graceSeconds,
+      slotReclaim,
       ...performIdleShutdowns(paths, state, candidates, options, timestamp, {
         command: "idle.reconcile",
         eventType: "idle.reconciled",
@@ -7163,9 +7579,10 @@ function maybeResetLeaseOnAcquire(paths, state, leaseRecord, options = {}) {
   const registryEntry = state.registry.aliases[leaseRecord.alias];
   registryEntry.health = "healthy";
   registryEntry.driftReason = null;
-  registryEntry.lastErasedAt = leaseRecord.startedAt;
-  registryEntry.lastShutdownAt = leaseRecord.startedAt;
-  registryEntry.powerState = "shutdown";
+    registryEntry.lastErasedAt = leaseRecord.startedAt;
+    registryEntry.lastShutdownAt = leaseRecord.startedAt;
+    resetLeasesSinceErase(registryEntry);
+    registryEntry.powerState = "shutdown";
   registryEntry.updatedAt = leaseRecord.startedAt;
   state.registry.updatedAt = leaseRecord.startedAt;
   writeRegistry(paths, state.registry);
@@ -7287,6 +7704,17 @@ export function acquireLeaseBroker(paths, options = {}) {
       updatedAt: selection.timestamp,
     });
     assertLeaseArtifactPathUnused(selection.state.leases, leaseRecord.artifactPath, leaseRecord.leaseId);
+    const acquireReclaim = performSlotReclaim(paths, selection.state, options, selection.timestamp, {
+      aliases: [leaseRecord.alias],
+      source: "lease-acquire",
+    });
+    if (acquireReclaim.failureCount > 0) {
+      throw new BrokerError(`Failed to reclaim alias ${leaseRecord.alias} before handing out the lease.`, {
+        alias: leaseRecord.alias,
+        reasonCode: "slot-reclaim-failed",
+        simulatorId: leaseRecord.simulatorId,
+      });
+    }
     writeLeaseRecord(paths, leaseRecord, { replaceArtifact: false });
     const registryEntry = selection.state.registry.aliases[leaseRecord.alias];
     const previousRegistryEntry = {
@@ -7542,9 +7970,7 @@ export function releaseLeaseBroker(paths, options = {}) {
     try {
       removeLeaseArtifactFile(paths, lease);
       if (registryEntry) {
-        registryEntry.activeLeaseId = null;
-        registryEntry.lastLeaseReleasedAt = timestamp;
-        registryEntry.updatedAt = timestamp;
+        markAliasLeaseReleased(registryEntry, timestamp);
         state.registry.updatedAt = timestamp;
         writeRegistry(paths, state.registry);
       }
@@ -7573,6 +7999,13 @@ export function releaseLeaseBroker(paths, options = {}) {
       projectId: lease.projectId,
       purposeId: lease.purposeId,
     }, timestamp);
+    if (registryEntry) {
+      state.leasesByAlias.delete(lease.alias);
+      performSlotReclaim(paths, state, options, timestamp, {
+        aliases: [lease.alias],
+        source: "lease-release",
+      });
+    }
     return {
       leaseId: lease.leaseId,
       ok: true,
@@ -7864,6 +8297,7 @@ function runLifecycleActionBroker(paths, action, options = {}) {
     registryEntry.powerState = "shutdown";
     registryEntry.lastErasedAt = timestamp;
     registryEntry.lastShutdownAt = timestamp;
+    resetLeasesSinceErase(registryEntry);
     if (registryEntry.health === "state-drift") {
       registryEntry.health = "healthy";
       registryEntry.driftReason = null;

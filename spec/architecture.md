@@ -22,6 +22,7 @@ Owns:
 - deterministic pin/warm/shutdown selection ordering
 - stale lease recovery
 - idle-policy state, eligibility, reconciliation, and count-only cleanup plans
+- slot-reclaim policy, eligibility, and between-lease erase for persistent slots
 - reset-lock and mutation-lock semantics
 - simulator inventory and `simctl` adapter boundaries
 - policy parsing and validation
@@ -48,6 +49,8 @@ Current implementation slice:
 - reset-lock coordination for `erase-on-acquire`
 - boot-on-acquire and most-recent-release warm reuse
 - state-root-only idle policy and safe idle shutdown under the broker mutation lock
+- host-config slot-reclaim policy with default-on build erase between leases
+  and opt-in manual reclaim, serialized with the mutation and reset locks
 - capacity check and confirmed reconcile using the same repo/host policy,
   `simctl` adapter boundary, mutation lock, local transaction journal, rollback,
   and recovery model as the rest of broker authority
@@ -75,7 +78,8 @@ Current implementation slice:
 - canonical `app-snapshot.json` artifact written into broker state for the macOS app
 - command endpoint consumed directly by the macOS app for broker-backed operator actions
 - immediate startup idle reconciliation, a non-overlapping 30-second scheduler,
-  and snapshot refresh after each reconciliation
+  snapshot refresh after each reconciliation, and between-lease slot reclaim
+  on that same timer even when idle policy is unconfigured
 
 Does not own:
 
