@@ -29,7 +29,7 @@ Use this skill when a repo needs to adopt Simulator Broker as part of its human 
 
 - Add or update `.simulator-broker/project.json`.
 - Add one shared broker-aware lease helper plus thin flow-specific wrappers when the repo has multiple simulator workflow classes.
-- Update agent instructions so agents acquire by purpose, repair a purpose once when `recommendedAction` is `repair_matching_simulators`, and avoid direct `simctl` mutation on broker-managed aliases.
+- Update agent instructions so agents acquire by purpose, repair a purpose once when `recommendedAction` is `repair_matching_simulators`, delete that purpose once when the repair exits `4` with `runtime-not-found` or `device-type-not-found`, and avoid direct `simctl` mutation on broker-managed aliases.
 - Update CI or automation wiring when the repo uses simulators in unattended runs.
 
 ### 4. Preserve the broker model
@@ -43,8 +43,8 @@ Use this skill when a repo needs to adopt Simulator Broker as part of its human 
   - `simbroker host status`
   - `simbroker lease show`
   - `simbroker events watch`
-  - `simbroker doctor` after one failed purpose repair
-- Keep wrapper scripts acquire-only. Purpose repair can replace a device, so it stays an explicit command.
+  - `simbroker doctor` after one repair or delete exit `4` that is not a missing runtime or device type
+- Keep wrapper scripts acquire-only. Purpose repair can replace a device, and purpose delete removes one, so both stay explicit commands.
 
 ### 5. Repair a purpose before waiting
 
@@ -59,14 +59,29 @@ simbroker simulators repair \
   --json
 ```
 
-- A `repair_needed` status with `install_runtime`, `run_broker_doctor`, or `inspect_unknown` follows that action.
+- A `repair_needed` status with `install_runtime`, `run_broker_doctor`, or `inspect_unknown` follows that action. Do not repair or delete for those actions.
 - Exit `0` (`repaired` or `nothing_to_repair`): retry the blocked check or acquire once.
 - Exit `5`: a live holder or another project's pin remains. Stop and ask a human. Never pass `--force-override`.
-- Exit `4`: repair failed. Run `simbroker doctor` locally, read `driftReason`, and stop. Do not repair that denial again.
+- Exit `4` whose `reasons` include `runtime-not-found` or `device-type-not-found`: run purpose delete once.
+- Any other repair exit `4`: run `simbroker doctor` locally, read `causeCode` and `driftReason`, and stop. Do not repair that denial again.
+
+```bash
+simbroker simulators delete \
+  --repo-root "$PWD" \
+  --purpose <purpose> \
+  --actor-type agent \
+  --actor-id <id> \
+  --json
+```
+
+- Delete exit `0` (`deleted` or `nothing_to_delete`): retry `capacity check` once and acquire only when the purpose is `available`.
+- Delete exit `5`: stop and ask a human. Never pass `--force-override`.
+- Any other delete exit `4`: run `simbroker doctor` locally, read `causeCode` and `driftReason`, and stop. Do not repair or delete that denial again.
 - Do not call `xcrun simctl` boot, shutdown, erase, delete, or repair on a broker-managed simulator.
 - Do not paste doctor output, aliases, simulator IDs, or host paths into public logs.
+- Idle cleanup and slot reclaim do not delete simulators. Wrapper scripts stay acquire-only.
 
-Public `reasons` are `simulator-missing`, `simulator-unavailable`, `simulator-config-mismatch`, `boot-on-acquire-failed`, `reset-on-acquire-failed`, `idle-shutdown-failed`, `repair-interrupted`, `repair-failed`, and `unhealthy-alias`. The command JSON is counts and those codes only. CI uses `--actor-type ci` with a stable actor id. The same-purpose procedure is in the sample `AGENTS.md`.
+Public repair `reasons` include `simulator-missing`, `simulator-unavailable`, `simulator-config-mismatch`, `boot-on-acquire-failed`, `reset-on-acquire-failed`, `idle-shutdown-failed`, `repair-interrupted`, `repair-failed`, `runtime-not-found`, `device-type-not-found`, and `unhealthy-alias`. Purpose delete adds `delete-failed` when a delete throws. The command JSON is counts and those codes only. CI uses `--actor-type ci` with a stable actor id. The same procedure is in `spec/harness-integration.md` and the sample `AGENTS.md`.
 
 ### 6. Reuse the sample repo when helpful
 

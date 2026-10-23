@@ -73,6 +73,11 @@ struct BrokerDashboardCommands: Commands {
       }
       .disabled(allowsSimulatorScopedCommands == false || commandAvailability.canRepairSimulator == false)
 
+      Button("Delete Simulator") {
+        store?.requestLifecycleAction(.delete)
+      }
+      .disabled(allowsSimulatorScopedCommands == false || commandAvailability.canDeleteSimulator == false)
+
       Divider()
 
       Button("Release Lease") {

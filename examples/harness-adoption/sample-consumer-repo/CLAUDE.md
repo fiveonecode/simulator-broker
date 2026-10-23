@@ -11,10 +11,14 @@ Use Simulator Broker for broker-managed simulator work in this repo.
 
   `simbroker simulators repair --repo-root "$PWD" --purpose <purpose> --actor-type agent --actor-id <id> --json`
 
-- A `repair_needed` status with `install_runtime`, `run_broker_doctor`, or `inspect_unknown` follows that recommended action. Do not run purpose repair for those actions.
+- A `repair_needed` status with `install_runtime`, `run_broker_doctor`, or `inspect_unknown` follows that recommended action. Do not run purpose repair for those actions. Do not run purpose delete for those actions.
 
 - Exit `0` retries acquire once. Exit `5` stops for a human. Never pass `--force-override`.
-- Exit `4` runs `simbroker doctor` locally, reads `driftReason`, and stops. Do not paste doctor output, aliases, simulator IDs, or host paths into public logs.
+- Exit `4` whose `reasons` include `runtime-not-found` or `device-type-not-found` runs purpose delete once:
+
+  `simbroker simulators delete --repo-root "$PWD" --purpose <purpose> --actor-type agent --actor-id <id> --json`
+
+  Delete exit `0` retries `capacity check` once and acquires only when `purposes[].status` is `available`. Delete exit `5` stops for a human. Any other repair or delete exit `4` runs `simbroker doctor` locally, reads `causeCode` and `driftReason`, and stops. Do not paste doctor output, aliases, simulator IDs, or host paths into public logs.
 - Do not hardcode host alias names into repo logic.
 - Do not call `xcrun simctl` boot, shutdown, erase, delete, or repair on broker-managed simulators.
-- Do not put repair inside the wrapper scripts. Those scripts only acquire and release.
+- Do not put repair or delete inside the wrapper scripts. Those scripts only acquire and release.

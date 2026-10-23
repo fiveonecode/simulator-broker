@@ -3603,6 +3603,129 @@ test("doctor human formatter includes the drift reason", () => {
   assert.match(text, /Alias ui-1: repair-needed\. Reason: boot-on-acquire-failed\./);
 });
 
+test("doctor human formatter names alias delete for a missing runtime", () => {
+  const text = format({
+    hostConfigPath: "/tmp/host-config.json",
+    issues: [{
+      alias: "build-3",
+      causeCode: "runtime-not-found",
+      driftReason: "No available iOS runtime matched 26.4.",
+      health: "repair-needed",
+      reasonCode: "alias-unhealthy",
+      remediationCommands: [
+        "simbroker host status",
+        "simbroker simulators repair --alias 'build-3'",
+        "simbroker simulators delete --alias 'build-3'",
+      ],
+    }],
+    ok: false,
+    stateRoot: "/tmp/state",
+  });
+
+  assert.match(text, /simbroker simulators delete --alias 'build-3'/);
+});
+
+test("purpose delete accepts agent and ci actors and rejects mixed selectors", () => {
+  const fixture = makeFixture();
+  const paths = { projectFilePath: fixture.projectFilePath };
+
+  for (const actorType of ["agent", "ci"]) {
+    const { flags } = parseArgs([
+      "--repo-root", fixture.repoRoot,
+      "--purpose", "agent-ui-session",
+      "--actor-type", actorType,
+      "--actor-id", `${actorType}-1`,
+    ]);
+    const request = createCommandRequest(paths, "simulators", "delete", flags);
+    assert.equal(request.command, "delete");
+    assert.equal(request.options.purposeId, "agent-ui-session");
+    assert.equal(request.options.actorType, actorType);
+    assert.equal(request.options.alias, undefined);
+  }
+
+  assert.throws(() => {
+    const { flags } = parseArgs([
+      "--alias", "ui-1",
+      "--purpose", "agent-ui-session",
+      "--actor-type", "agent",
+      "--actor-id", "agent-1",
+    ]);
+    createCommandRequest(paths, "simulators", "delete", flags);
+  }, (error) => error.payload?.reasonCode === "invalid-flag" && error.exitCode === 2);
+
+  assert.throws(() => {
+    const { flags } = parseArgs([
+      "--alias", "ui-1",
+      "--force-override",
+    ]);
+    createCommandRequest(paths, "simulators", "delete", flags);
+  }, (error) => error.payload?.reasonCode === "invalid-flag" && error.exitCode === 2);
+
+  assert.throws(() => {
+    const { flags } = parseArgs([
+      "--purpose", "agent-ui-session",
+      "--actor-type", "robot",
+      "--actor-id", "agent-1",
+    ]);
+    createCommandRequest(paths, "simulators", "delete", flags);
+  }, (error) => error.payload?.reasonCode === "invalid-flag" && error.exitCode === 2);
+
+  const { flags } = parseArgs(["--alias", "ui-1", "--actor-type", "human", "--actor-id", "simulator-broker-app"]);
+  const aliasRequest = createCommandRequest(paths, "simulators", "delete", flags);
+  assert.equal(aliasRequest.options.alias, "ui-1");
+  assert.equal(aliasRequest.options.forceOverride, undefined);
+});
+
+test("direct CLI delete removes one alias or one stuck purpose and refreshes the snapshot", () => {
+  const fixture = makeFixture();
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  const registryPath = path.join(fixture.stateRoot, "registry.json");
+  const registry = readJson(registryPath);
+  registry.aliases["ui-1"].health = "repair-needed";
+  registry.aliases["ui-1"].driftCauseCode = "runtime-not-found";
+  registry.aliases["ui-1"].driftReason = "No available iOS runtime matched 26.4.";
+  writeJson(registryPath, registry);
+
+  const purposeDelete = runCli(
+    fixture,
+    "simulators",
+    "delete",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--actor-type",
+    "agent",
+    "--actor-id",
+    "agent-1",
+    "--json",
+  );
+  assert.equal(purposeDelete.status, 0, purposeDelete.stderr);
+  assert.equal(purposeDelete.json.command, "simulators.delete");
+  assert.equal(purposeDelete.json.status, "deleted");
+  assert.equal(purposeDelete.json.deleted, 1);
+  assert.equal(JSON.stringify(purposeDelete.json).includes("ui-1"), false);
+  assert.equal(JSON.stringify(purposeDelete.json).includes(fixture.root), false);
+  const snapshotAfterPurpose = readJson(path.join(fixture.stateRoot, "app-snapshot.json"));
+  assert.equal(snapshotAfterPurpose.simulators.some((simulator) => simulator.alias === "ui-1"), false);
+
+  const aliasDelete = runCli(fixture, "simulators", "delete", "--alias", "ipad-1", "--json");
+  assert.equal(aliasDelete.status, 0, aliasDelete.stdout || aliasDelete.stderr);
+  assert.equal(aliasDelete.json.alias, "ipad-1");
+  assert.equal(aliasDelete.json.unchanged, false);
+  assert.equal(Object.hasOwn(aliasDelete.json, "simulatorId"), false);
+  const snapshotAfterAlias = readJson(path.join(fixture.stateRoot, "app-snapshot.json"));
+  assert.equal(snapshotAfterAlias.simulators.some((simulator) => simulator.alias === "ipad-1"), false);
+  assert.equal(readJson(fixture.hostConfigPath).aliases.length, 0);
+
+  const help = runCli(fixture, "simulators", "--help", "--json");
+  assert.equal(help.json.commands.includes("simulators delete --alias <alias>"), true);
+  assert.equal(
+    help.json.commands.includes("simulators delete --repo-root <repo> --purpose <purpose> --actor-type <agent|ci|human> --actor-id <id>"),
+    true,
+  );
+});
+
 test("destructive commands reject unknown flags before constructing options", () => {
   const fixture = makeFixture();
   const paths = {
@@ -3997,6 +4120,22 @@ test("service mutation timeouts cover broker lock waits", () => {
   }, {
     pendingRetirementCount: 3,
   }), 2_865_000);
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "delete",
+    group: "simulators",
+    options: {},
+  }), 2_385_000);
+  const deletePaths = resolveBrokerPaths({
+    hostConfigPath: fixture.hostConfigPath,
+    stateRoot: fixture.stateRoot,
+  });
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "delete",
+    group: "simulators",
+    options: {},
+  }, {
+    paths: deletePaths,
+  }), 885_000 + 60_000 + (2 * 2 * SIMCTL_COMMAND_TIMEOUT_MS));
 });
 
 test("service command transfer timeout reserves queue budget before dispatch", () => {

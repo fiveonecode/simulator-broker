@@ -11,6 +11,8 @@ import {
   clearPinBroker,
   cleanupIdleBroker,
   createPinBroker,
+  deletePurposeSimulatorsBroker,
+  deleteSimulatorBroker,
   disableIdlePolicyBroker,
   doctorBroker,
   enableIdlePolicyBroker,
@@ -629,6 +631,54 @@ function purposeRepairOptions(paths, flags) {
   };
 }
 
+function simulatorDeleteOptions(paths, flags) {
+  rejectUnknownFlags(flags, new Set([
+    "actor-id",
+    "actor-type",
+    "alias",
+    "force-override",
+    "purpose",
+    ...commonRequestFlags(),
+  ]));
+  if (flags.has("alias") && flags.has("purpose")) {
+    throw new BrokerError("simulators delete accepts either --alias or --purpose, not both.", {
+      reasonCode: "invalid-flag",
+    });
+  }
+  if (flags.has("force-override")) {
+    throw new BrokerError("simulators delete does not accept --force-override.", {
+      reasonCode: "invalid-flag",
+    });
+  }
+  if (flags.has("purpose")) {
+    const actorType = requireFlag(flags, "actor-type");
+    if (!["agent", "ci", "human"].includes(actorType)) {
+      throw new BrokerError("Purpose delete --actor-type must be agent, ci, or human.", {
+        actorType,
+        reasonCode: "invalid-flag",
+      });
+    }
+    return {
+      actorId: requireFlag(flags, "actor-id"),
+      actorType,
+      projectFilePath: paths.projectFilePath,
+      purposeId: requireFlag(flags, "purpose"),
+    };
+  }
+  const actorType = flagValue(flags, "actor-type");
+  if (actorType && !["agent", "ci", "human"].includes(actorType)) {
+    throw new BrokerError("simulators delete --actor-type must be agent, ci, or human.", {
+      actorType,
+      reasonCode: "invalid-flag",
+    });
+  }
+  return {
+    actorId: flagValue(flags, "actor-id"),
+    actorType,
+    alias: requireFlag(flags, "alias"),
+  };
+}
+
 function lifecycleOptions(flags) {
   rejectUnknownFlags(flags, new Set([
     "actor-id",
@@ -851,6 +901,8 @@ function helpPayload(group) {
         "simulators erase --alias <alias>",
         "simulators repair --alias <alias>",
         "simulators repair --repo-root <repo> --purpose <purpose> --actor-type <agent|ci|human> --actor-id <id>",
+        "simulators delete --alias <alias>",
+        "simulators delete --repo-root <repo> --purpose <purpose> --actor-type <agent|ci|human> --actor-id <id>",
       ],
       group: "simulators",
       usage: "simbroker simulators <command>",
@@ -1070,6 +1122,13 @@ export function createCommandRequest(paths, group, command, flags) {
         group: "simulators",
         command: "repair",
         options: flags.has("purpose") ? purposeRepairOptions(paths, flags) : lifecycleOptions(flags),
+        type: "command",
+      };
+    case "simulators:delete":
+      return {
+        group: "simulators",
+        command: "delete",
+        options: simulatorDeleteOptions(paths, flags),
         type: "command",
       };
     case "lease:acquire":
@@ -1442,6 +1501,11 @@ export function executeBrokerCommand(paths, request) {
       payload = options.purposeId
         ? repairPurposeSimulatorsBroker(paths, options)
         : repairSimulatorBroker(paths, options);
+      break;
+    case "simulators:delete":
+      payload = options.purposeId
+        ? deletePurposeSimulatorsBroker(paths, options)
+        : deleteSimulatorBroker(paths, options);
       break;
     case "lease:acquire":
       payload = acquireLeaseBroker(paths, options);

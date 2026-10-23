@@ -39,6 +39,10 @@ Current command families:
 - `simulators erase`
 - `simulators repair` (`--alias` for an operator, or `--purpose` with
   `--actor-type` and `--actor-id` for one agent or CI repair attempt)
+- `simulators delete` (`--alias` for one unleased, unpinned simulator, or
+  `--repo-root`, `--purpose`, `--actor-type`, and `--actor-id` for one agent
+  or CI delete of unowned `runtime-not-found` and `device-type-not-found`
+  matches)
 
 Onboarding helpers now included:
 

@@ -106,6 +106,18 @@ waiting for repair. A failed reclaim stays repair-needed until repair. A
 successful wipe writes a `slot.reclaimed` event and shows up on
 `simbroker host status` and `simbroker doctor`.
 
+## Deleting a simulator
+
+The app Delete action and `simbroker simulators delete --alias <alias>` remove
+one unleased, unpinned alias and its simulator data. They do not uninstall
+the iOS runtime. Deleting a missing alias is a no-op.
+
+Agents and CI use the purpose form once after purpose repair exits `4` with
+`runtime-not-found` or `device-type-not-found`. That form deletes only
+unleased, unpinned repair-needed matches with one of those causes. A lease
+or pin stops the command for a human. Idle cleanup and slot reclaim do not
+delete simulators.
+
 ## What stays machine-local
 
 Host config, live leases, pins, event logs, and `app-snapshot.json` stay under

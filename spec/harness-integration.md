@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/implementation-plan.md`, `spec/global-simulator-broker.md`, `spec/agents.md`, `spec/build-and-test.md`
 
 > **Document ID:** `GSB-HARNESS-001`
-> **Version:** `0.5.0`
-> **Last Updated:** `2026-10-05`
+> **Version:** `0.6.0`
+> **Last Updated:** `2026-10-23`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 
@@ -193,11 +193,23 @@ simbroker simulators repair \
 - a `repair_needed` status with `install_runtime`, `run_broker_doctor`, or `inspect_unknown` follows that action
 
 - exit `5` means a live holder or another project's pin still owns the match. Stop and ask a human. Never pass `--force-override`
-- exit `4` means the repair failed. Run `simbroker doctor` locally, read `driftReason`, and stop. Do not run purpose repair a second time for that denial
+- exit `4` whose `reasons` include `runtime-not-found` or `device-type-not-found` runs purpose delete once:
+
+```bash
+simbroker simulators delete \
+  --repo-root "$PWD" \
+  --purpose <purpose> \
+  --actor-type agent \
+  --actor-id <id> \
+  --json
+```
+
+- delete exit `0` retries `capacity check` once and acquires only when the purpose is `available`. Delete exit `5` stops for a human. Never pass `--force-override`
+- any other repair exit `4`, or a delete exit `4`, runs `simbroker doctor` once, reads `causeCode` and `driftReason` locally, and stops. Do not run purpose repair or purpose delete a second time for that denial
 - never call `xcrun simctl` boot, shutdown, erase, delete, or repair on a broker-managed simulator
 - never paste doctor output, aliases, simulator IDs, or host paths into public logs
-- never attempt human-only override flows such as forced repair override
-- keep wrapper scripts acquire-only. Purpose repair can replace a device, so it stays an explicit command
+- never attempt human-only override flows such as forced repair override or deleting a leased or pinned simulator
+- keep wrapper scripts acquire-only. Purpose repair can replace a device, and purpose delete removes one, so both stay explicit commands. Idle cleanup and slot reclaim do not delete simulators
 - when the repo ships a macOS app, route desktop build, launch, and focused test work through `xcode-build` and keep a repo-owned `script/build_and_run.sh` plus `.codex/environments/environment.toml` Run action in sync
 - when the repo ships a macOS app, use `swiftui-pro`, `swift-concurrency-pro`, `apple-doc-research`, and `xcode-build` as the desktop-specific review and implementation guide rails
 
@@ -207,6 +219,7 @@ Any CI or scheduled automation that uses simulators must:
 
 - acquire by purpose before simulator work starts
 - use the same one-attempt purpose repair as an agent, with `--actor-type ci` and a stable actor id, when `recommendedAction` is `repair_matching_simulators`
+- use the same one-attempt purpose delete when that repair exits `4` and `reasons` include `runtime-not-found` or `device-type-not-found`
 - pass stable `--actor-type ci`
 - pass stable `--job-id` and `--job-kind` when available
 - release in a cleanup step that still runs after failure
@@ -220,9 +233,14 @@ This is the canonical harness flow for local scripts, agent sessions, and CI.
    when the workflow needs an explicit preflight capacity report.
 3. If `recommendedAction` is `repair_matching_simulators`, run purpose repair
    once for that purpose. Exit `0` retries the check or acquire once. Exit `5`
-   stops for a human. Exit `4` stops after one local doctor read. Do not pass
+   stops for a human. Exit `4` whose `reasons` include `runtime-not-found` or
+   `device-type-not-found` runs purpose delete once. Delete exit `0` retries
+   the check once and acquires only when the purpose is `available`. Delete
+   exit `5` stops for a human. Any other repair or delete exit `4` stops after
+   one local doctor read of `causeCode` and `driftReason`. Do not pass
    `--force-override`. A `repair_needed` status with `install_runtime`,
-   `run_broker_doctor`, or `inspect_unknown` follows that action.
+   `run_broker_doctor`, or `inspect_unknown` follows that action and does not
+   repair or delete.
 4. If check reports missing structural capacity, a human operator may run
    `simbroker capacity reconcile` to preview a deterministic additive plan and
    then apply that exact plan with `--apply --confirm <plan-id> --actor-type
@@ -239,15 +257,18 @@ This is the canonical harness flow for local scripts, agent sessions, and CI.
 10. Contain on forced abort, timeout, or ceiling breach.
 11. Release the lease on success.
 
-Wrapper scripts stay acquire-only. The repair command is a separate step
-because a repair can replace the simulator. Do not fold it into
-`run-agent-ui-session.sh` or the shared lease helper.
+Wrapper scripts stay acquire-only. Repair and delete are separate steps
+because a repair can replace the simulator and a delete removes it. Do not
+fold either command into `run-agent-ui-session.sh` or the shared lease helper.
+Idle cleanup and slot reclaim do not delete simulators.
 
 Stable public drift reasons an agent may see on the repair result are
 `simulator-missing`, `simulator-unavailable`, `simulator-config-mismatch`,
 `boot-on-acquire-failed`, `reset-on-acquire-failed`, `idle-shutdown-failed`,
-`repair-interrupted`, `repair-failed`, and `unhealthy-alias`. The full command
-contract is in `spec/global-simulator-broker.md`.
+`repair-interrupted`, `repair-failed`, `runtime-not-found`,
+`device-type-not-found`, and `unhealthy-alias`. Purpose delete adds
+`delete-failed` when a delete throws. The full command contract is in
+`spec/global-simulator-broker.md`.
 
 Agents and CI may consume capacity check and preview JSON as evidence, but they
 must not run human-confirmed apply unattended. Apply is an operator action that
@@ -327,8 +348,9 @@ Required diagnostic commands:
 - `simbroker capacity reconcile --repo-root <repo> [--purpose <purpose>] --json`
 - `simbroker lease explain --repo-root <repo> --purpose <purpose>`
 - `simbroker host status`
-- `simbroker doctor` for a local `driftReason` after one failed purpose repair
+- `simbroker doctor` for a local `causeCode` and `driftReason` after one failed purpose repair or purpose delete that is not a missing runtime or device type
 - `simbroker simulators repair --repo-root <repo> --purpose <purpose> --actor-type <agent|ci|human> --actor-id <id>`
+- `simbroker simulators delete --repo-root <repo> --purpose <purpose> --actor-type <agent|ci|human> --actor-id <id>` after repair exit `4` with `runtime-not-found` or `device-type-not-found`
 - `simbroker lease show --lease-file <lease-file>`
 - `simbroker lease contain --lease-file <lease-file> --reason manual-cleanup`
 - `simbroker events watch`
@@ -337,6 +359,7 @@ Harness behavior rules:
 
 - use `lease explain` when acquire fails and the failure needs a structured explanation
 - use purpose repair once when `recommendedAction` is `repair_matching_simulators`, then retry acquire once on exit `0`
+- use purpose delete once when that repair exits `4` with `runtime-not-found` or `device-type-not-found`, then retry the capacity check once on delete exit `0`
 - use `host status` or `events watch` for operator-visible debugging
 - keep doctor output on the local machine. Do not copy aliases, simulator IDs, or host paths into public logs
 - treat the lease artifact as the canonical per-run handle for release and inspection
@@ -451,6 +474,7 @@ The harness-awareness phase is complete only when:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.6.0 | 2026-10-23 | Taught agents and CI to delete a purpose once when repair exits `4` with `runtime-not-found` or `device-type-not-found`, and kept wrappers acquire-only. |
 | 0.5.0 | 2026-10-05 | Taught agents to repair a purpose once when capacity recommends `repair_matching_simulators`, then retry acquire, and to stop for a human when a live holder remains. |
 | 0.4.1 | 2026-08-10 | Clarified that successful acquisition returns a broker-booted simulator. |
 | 0.4.0 | 2026-07-20 | Added capacity check and operator-confirmed reconcile guidance for simulator-dependent harness preflights. |

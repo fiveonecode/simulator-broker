@@ -1379,11 +1379,11 @@ export async function startBrokerService(paths, options = {}) {
         if (payload?.snapshotRefresh?.ok === false && shouldSurfaceServiceSnapshotRefreshError(body, payload.snapshotRefresh)) {
           throw serviceSnapshotRefreshError(payload.snapshotRefresh);
         }
-        const purposeRepair = body.group === "simulators"
-          && body.command === "repair"
+        const purposeMutation = body.group === "simulators"
+          && (body.command === "repair" || body.command === "delete")
           && typeof body.options?.purposeId === "string"
           && body.options.purposeId.trim() !== "";
-        const serviceMetadata = body.group === "capacity" || body.group === "idle" || purposeRepair
+        const serviceMetadata = body.group === "capacity" || body.group === "idle" || purposeMutation
           ? {}
           : { servedBy: metadata };
         sendJson(response, 200, {

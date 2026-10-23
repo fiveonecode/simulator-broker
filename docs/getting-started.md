@@ -51,7 +51,7 @@ does not require XcodeGen. The app still needs the CLI installed separately.
 ## Install the CLI with npm
 
 ```bash
-npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.10/simbroker-0.1.0-alpha.10.tgz
+npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.11/simbroker-0.1.0-alpha.11.tgz
 command -v simbroker
 simbroker --help
 ```
@@ -76,8 +76,8 @@ To install from a tagged Alpha without cloning, download
 then run:
 
 ```bash
-tar -xzf simulator-broker-0.1.0-alpha.10-cli.tar.gz
-./simulator-broker-0.1.0-alpha.10-cli/bin/simbroker --help
+tar -xzf simulator-broker-0.1.0-alpha.11-cli.tar.gz
+./simulator-broker-0.1.0-alpha.11-cli/bin/simbroker --help
 ```
 
 The archive is the Node CLI only and contains that versioned top-level
@@ -214,8 +214,24 @@ simbroker simulators repair \
 Exit `0` means repaired or nothing needed repair. Run `capacity check` again
 and acquire only when `purposes[].status` is `available`. Do not pass
 `--force-override`. Exit `5` means a live holder still owns a matching
-simulator: stop and ask a human. Exit `4` means repair failed: run
-`simbroker doctor`, read `driftReason`, and stop after that one attempt.
+simulator: stop and ask a human. Exit `4` whose `reasons` include
+`runtime-not-found` or `device-type-not-found` means the installed runtime or
+device type cannot repair that purpose. Delete those stuck matches once:
+
+```bash
+simbroker simulators delete \
+  --repo-root "$PWD" \
+  --purpose agent-ui-session \
+  --actor-type agent \
+  --actor-id hello-world \
+  --json
+```
+
+Delete exit `0` means deleted or nothing to delete. Run `capacity check`
+again and acquire only when `purposes[].status` is `available`. Delete exit
+`5` stops for a human. Any other repair or delete exit `4` means the attempt
+failed: run `simbroker doctor`, read `causeCode` and `driftReason`, and stop
+after that one attempt.
 A `repair_needed` status with `install_runtime`, `run_broker_doctor`, or
 `inspect_unknown` follows that recommended action instead of purpose repair.
 Do not call `xcrun simctl` on broker-managed simulators.

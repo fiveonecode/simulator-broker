@@ -5,6 +5,7 @@ enum BrokerLifecycleAction: String, CaseIterable, Identifiable, Sendable {
   case shutdown
   case erase
   case repair
+  case delete
 
   var id: String { rawValue }
 
@@ -20,6 +21,8 @@ enum BrokerLifecycleAction: String, CaseIterable, Identifiable, Sendable {
       return "Erase simulator"
     case .repair:
       return "Repair simulator"
+    case .delete:
+      return "Delete simulator"
     }
   }
 
@@ -33,11 +36,13 @@ enum BrokerLifecycleAction: String, CaseIterable, Identifiable, Sendable {
       return "Simulator erased."
     case .repair:
       return "Simulator repaired."
+    case .delete:
+      return "Simulator deleted."
     }
   }
 
   var requiresDestructiveConfirmation: Bool {
-    self == .erase || self == .repair
+    self == .erase || self == .repair || self == .delete
   }
 }
 
@@ -186,7 +191,7 @@ struct BrokerCommandRequest: Sendable {
     if group == "capacity", command == "reconcile" {
       return Self.defaultCommandTimeoutSeconds + capacityReconcileSimctlBudgetSeconds(paths: paths)
     }
-    if group == "simulators", command == "repair" {
+    if group == "simulators", command == "repair" || command == "delete" {
       return Self.defaultCommandTimeoutSeconds
         + capacityLockTimeoutSeconds
         + leaseLockTimeoutSeconds
@@ -439,7 +444,7 @@ struct BrokerCommandRequest: Sendable {
       return ["clear", "create"].contains(command)
     }
     if group == "simulators" {
-      return ["boot", "erase", "repair", "shutdown"].contains(command)
+      return ["boot", "delete", "erase", "repair", "shutdown"].contains(command)
     }
     if group == "idle" {
       return true
@@ -470,6 +475,16 @@ struct BrokerCommandRequest: Sendable {
     return true
   }
 
+  private func hostAliasCount(paths: BrokerRuntimePaths?) -> Int {
+    guard let paths,
+          let data = try? Data(contentsOf: paths.hostConfigURL),
+          let hostConfig = try? JSONDecoder().decode(BrokerHostConfigTimeoutSummary.self, from: data),
+          let aliases = hostConfig.aliases else {
+      return Self.hostBootstrapAliasCount
+    }
+    return aliases.count
+  }
+
   private func pendingRetirementCount(paths: BrokerRuntimePaths?) -> Int {
     guard let paths,
           let data = try? Data(contentsOf: paths.hostConfigURL),
@@ -491,6 +506,8 @@ struct BrokerCommandRequest: Sendable {
       commandCount = 1
     case "repair":
       commandCount = 10 + (pendingRetirementCount(paths: paths) * 2)
+    case "delete":
+      commandCount = hostAliasCount(paths: paths) * 2
     default:
       commandCount = 0
     }

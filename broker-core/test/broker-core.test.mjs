@@ -17,6 +17,8 @@ import {
   cleanupIdleBroker,
   containLeaseBroker,
   createPinBroker,
+  deletePurposeSimulatorsBroker,
+  deleteSimulatorBroker,
   disableIdlePolicyBroker,
   doctorBroker,
   enableIdlePolicyBroker,
@@ -13067,8 +13069,10 @@ test("doctor reports the drift reason and an alias repair command", () => {
   const report = doctorBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
   const issue = report.issues.find((candidate) => candidate.alias === "ui-1");
   assert.equal(issue.driftReason, "boot-on-acquire-failed");
+  assert.equal(issue.causeCode, null);
   assert.equal(issue.reasonCode, "alias-unhealthy");
   assert.equal(issue.remediationCommands.some((command) => command.includes("simulators repair --alias")), true);
+  assert.equal(issue.remediationCommands.some((command) => command.includes("simulators delete --alias")), false);
 });
 
 test("repair creates a replacement before deleting a drifted simulator", () => {
@@ -13298,4 +13302,608 @@ test("erase cannot force-override another live lease holder", () => {
 
   assert.equal(eraseCalled, false);
   assert.equal(fs.existsSync(path.join(paths.stateRoot, "leases", `${lease.leaseId}.json`)), true);
+});
+
+function addBuildFastAlias(paths, { alias, displayName, iosVersion = "18.2", state = "Shutdown", udid }) {
+  const hostConfig = readJson(paths.hostConfigPath);
+  hostConfig.aliases.push({
+    alias,
+    capabilities: ["build-fast"],
+    deviceFamily: "iPhone",
+    displayName,
+    iosVersion,
+    resetPolicy: "none",
+    simulatorId: udid,
+  });
+  writeJson(paths.hostConfigPath, hostConfig);
+  const fixtureState = readJson(paths.simctl.statePath);
+  fixtureState.devices.push(createDeviceRecord({
+    deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+    name: displayName,
+    state,
+    udid,
+  }));
+  writeJson(paths.simctl.statePath, fixtureState);
+}
+
+function writeAgentBuildPurpose(projectFilePath) {
+  const project = readJson(projectFilePath);
+  project.purposes.push({
+    capability: "build-fast",
+    defaultActorType: "agent",
+    displayName: "Agent Build Test",
+    id: "agent-build-test",
+  });
+  writeJson(projectFilePath, project);
+}
+
+function patchAliasRegistry(registryPath, alias, patch) {
+  const registry = readJson(registryPath);
+  Object.assign(registry.aliases[alias], patch);
+  writeJson(registryPath, registry);
+}
+
+function recordingDeleteAdapter(baseAdapter) {
+  const operations = [];
+  return {
+    adapter: {
+      ...baseAdapter,
+      deleteDevice(simulatorId) {
+        operations.push({ action: "delete", simulatorId });
+        return baseAdapter.deleteDevice(simulatorId);
+      },
+      shutdownDevice(simulatorId) {
+        operations.push({ action: "shutdown", simulatorId });
+        return baseAdapter.shutdownDevice(simulatorId);
+      },
+    },
+    operations,
+  };
+}
+
+test("alias delete removes a booted repair-needed simulator and refreshes the snapshot", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  addBuildFastAlias(paths, {
+    alias: "build-3",
+    displayName: "Build 3",
+    state: "Booted",
+    udid: "SIM-BUILD-3",
+  });
+  const resolvedPaths = brokerPaths(paths);
+  const recorded = recordingDeleteAdapter(paths.simctl.adapter);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  patchAliasRegistry(resolvedPaths.registryPath, "build-3", {
+    driftCauseCode: "runtime-not-found",
+    driftReason: "No available iOS runtime matched 26.4.",
+    health: "repair-needed",
+    powerState: "booted",
+  });
+
+  const deleted = deleteSimulatorBroker(resolvedPaths, {
+    actorId: "simulator-broker-app",
+    actorType: "human",
+    alias: "build-3",
+    processExists: () => true,
+    simctlAdapter: recorded.adapter,
+  });
+  writeAppSnapshotArtifactUnderMutationLock(resolvedPaths, runtimeOptions(paths, {
+    processExists: () => true,
+    simctlAdapter: recorded.adapter,
+  }));
+
+  assert.equal(deleted.ok, true);
+  assert.equal(deleted.command, "simulators.delete");
+  assert.equal(deleted.alias, "build-3");
+  assert.equal(deleted.unchanged, false);
+  assert.equal(Object.hasOwn(deleted, "simulatorId"), false);
+  assert.equal(JSON.stringify(deleted).includes(paths.stateRoot), false);
+  assert.deepEqual(
+    recorded.operations.filter((operation) => operation.simulatorId === "SIM-BUILD-3"),
+    [
+      { action: "shutdown", simulatorId: "SIM-BUILD-3" },
+      { action: "delete", simulatorId: "SIM-BUILD-3" },
+    ],
+  );
+  const hostConfig = readJson(paths.hostConfigPath);
+  assert.equal(hostConfig.aliases.some((alias) => alias.alias === "build-3"), false);
+  assert.equal(hostConfig.aliases.some((alias) => alias.alias === "ui-1"), true);
+  assert.equal(Object.hasOwn(hostConfig, "pendingRetirements"), false);
+  assert.equal(readJson(resolvedPaths.registryPath).aliases["build-3"], undefined);
+  assert.equal(readJson(paths.simctl.statePath).devices.some((device) => device.udid === "SIM-BUILD-3"), false);
+  const deletedEvent = readEventsBroker(resolvedPaths).events.find((event) => event.type === "simulator.deleted");
+  assert.equal(deletedEvent.alias, "build-3");
+  assert.equal(deletedEvent.simulatorId, "SIM-BUILD-3");
+  const snapshot = readJson(resolvedPaths.appSnapshotPath);
+  assert.equal(snapshot.simulators.some((simulator) => simulator.alias === "build-3"), false);
+
+  const callsBeforeRepeat = recorded.operations.length;
+  const repeated = deleteSimulatorBroker(resolvedPaths, {
+    actorType: "human",
+    alias: "build-3",
+    processExists: () => true,
+    simctlAdapter: recorded.adapter,
+  });
+  assert.equal(repeated.unchanged, true);
+  assert.equal(repeated.ok, true);
+  assert.equal(recorded.operations.length, callsBeforeRepeat);
+  assert.equal(
+    readEventsBroker(resolvedPaths).events.filter((event) => event.type === "simulator.deleted").length,
+    1,
+  );
+});
+
+test("alias delete removes records when the device is already gone", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  const recorded = recordingDeleteAdapter(paths.simctl.adapter);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const fixtureState = readJson(paths.simctl.statePath);
+  fixtureState.devices = fixtureState.devices.filter((device) => device.udid !== "SIM-UI-1");
+  writeJson(paths.simctl.statePath, fixtureState);
+  patchAliasRegistry(resolvedPaths.registryPath, "ui-1", {
+    driftCauseCode: "runtime-not-found",
+    health: "repair-needed",
+  });
+
+  const deleted = deleteSimulatorBroker(resolvedPaths, {
+    alias: "ui-1",
+    processExists: () => true,
+    simctlAdapter: recorded.adapter,
+  });
+
+  assert.equal(deleted.unchanged, false);
+  assert.equal(recorded.operations.length, 0);
+  assert.equal(readJson(paths.hostConfigPath).aliases.some((alias) => alias.alias === "ui-1"), false);
+  assert.equal(readJson(resolvedPaths.registryPath).aliases["ui-1"], undefined);
+});
+
+test("alias delete keeps the alias when simctl delete fails", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  patchAliasRegistry(resolvedPaths.registryPath, "ui-1", {
+    health: "healthy",
+  });
+  const adapter = {
+    ...paths.simctl.adapter,
+    deleteDevice() {
+      throw new Error("device busy");
+    },
+  };
+
+  assert.throws(() => {
+    deleteSimulatorBroker(resolvedPaths, {
+      alias: "ui-1",
+      processExists: () => true,
+      simctlAdapter: adapter,
+    });
+  }, (error) => {
+    assert.equal(error.payload.reasonCode, "simulator-action-failed");
+    assert.equal(error.payload.cause, "device busy");
+    return true;
+  });
+
+  const hostConfig = readJson(paths.hostConfigPath);
+  assert.equal(hostConfig.aliases.some((alias) => alias.alias === "ui-1"), true);
+  assert.equal(Object.hasOwn(hostConfig, "pendingRetirements"), false);
+  const registryEntry = readJson(resolvedPaths.registryPath).aliases["ui-1"];
+  assert.equal(registryEntry.health, "repair-needed");
+  assert.equal(registryEntry.driftReason, "device busy");
+  assert.equal(registryEntry.driftCauseCode, "simulator-action-failed");
+  assert.equal(
+    readEventsBroker(resolvedPaths).events.some((event) => event.type === "simulator.delete.failed" && event.alias === "ui-1"),
+    true,
+  );
+});
+
+test("alias delete refuses a lease or pin and accepts healthy, drifted, and recovered repairing aliases", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-owner",
+    actorType: "agent",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  patchAliasRegistry(resolvedPaths.registryPath, lease.alias, {
+    driftCauseCode: "runtime-not-found",
+    health: "repair-needed",
+  });
+
+  assert.throws(() => {
+    deleteSimulatorBroker(resolvedPaths, {
+      alias: lease.alias,
+      processExists: (pid) => pid === process.pid,
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => error.payload?.reasonCode === "lease-conflict" && error.exitCode === 3);
+  assert.equal(readJson(paths.hostConfigPath).aliases.some((alias) => alias.alias === lease.alias), true);
+
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: lease.leaseId,
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  createPinBroker(resolvedPaths, {
+    actorId: "human-1",
+    actorType: "human",
+    alias: "ui-2",
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.throws(() => {
+    deleteSimulatorBroker(resolvedPaths, {
+      alias: "ui-2",
+      processExists: () => true,
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => error.payload?.reasonCode === "pin-conflict" && error.exitCode === 3);
+
+  patchAliasRegistry(resolvedPaths.registryPath, "manual-1", {
+    health: "state-drift",
+  });
+  const drifted = deleteSimulatorBroker(resolvedPaths, {
+    alias: "manual-1",
+    processExists: () => true,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(drifted.unchanged, false);
+  assert.equal(readJson(paths.hostConfigPath).aliases.some((alias) => alias.alias === "manual-1"), false);
+
+  patchAliasRegistry(resolvedPaths.registryPath, "ipad-1", {
+    health: "repairing",
+  });
+  const recovered = deleteSimulatorBroker(resolvedPaths, {
+    alias: "ipad-1",
+    processExists: () => true,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(recovered.unchanged, false);
+  assert.equal(readJson(paths.hostConfigPath).aliases.some((alias) => alias.alias === "ipad-1"), false);
+  assert.equal(readJson(paths.hostConfigPath).aliases.length > 0, true);
+});
+
+test("alias delete rejects force override and a purpose selector", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+
+  assert.throws(() => {
+    deleteSimulatorBroker(resolvedPaths, {
+      alias: "ui-1",
+      forceOverride: true,
+    });
+  }, (error) => error.payload?.reasonCode === "invalid-flag" && error.exitCode === 2);
+  assert.throws(() => {
+    deleteSimulatorBroker(resolvedPaths, {
+      alias: "ui-1",
+      purposeId: "agent-ui-session",
+    });
+  }, (error) => error.payload?.reasonCode === "invalid-flag" && error.exitCode === 2);
+});
+
+test("purpose delete removes only unowned missing-runtime matches", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  writeAgentBuildPurpose(paths.projectFilePath);
+  for (const alias of [
+    { alias: "build-3", udid: "SIM-BUILD-3", state: "Booted" },
+    { alias: "build-idle", udid: "SIM-BUILD-IDLE" },
+    { alias: "build-held", udid: "SIM-BUILD-HELD" },
+    { alias: "build-ok", udid: "SIM-BUILD-OK" },
+    { alias: "build-type", udid: "SIM-BUILD-TYPE" },
+  ]) {
+    addBuildFastAlias(paths, {
+      alias: alias.alias,
+      displayName: alias.alias,
+      state: alias.state ?? "Shutdown",
+      udid: alias.udid,
+    });
+  }
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-owner",
+    actorType: "agent",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-build-test",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  assert.equal(lease.alias, "build-3");
+  releaseLeaseBroker(resolvedPaths, {
+    leaseId: lease.leaseId,
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const heldLease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-holder",
+    actorType: "agent",
+    alias: "build-held",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-build-test",
+    simctlAdapter: paths.simctl.adapter,
+  }).lease;
+  patchAliasRegistry(resolvedPaths.registryPath, "build-3", {
+    driftCauseCode: "runtime-not-found",
+    driftReason: "No available iOS runtime matched 26.4.",
+    health: "repair-needed",
+  });
+  patchAliasRegistry(resolvedPaths.registryPath, "build-type", {
+    driftCauseCode: "device-type-not-found",
+    driftReason: "No available iPhone simulator type matched runtime 18.2.",
+    health: "repair-needed",
+  });
+  patchAliasRegistry(resolvedPaths.registryPath, "build-idle", {
+    driftReason: "idle-shutdown-failed",
+    health: "repair-needed",
+  });
+  patchAliasRegistry(resolvedPaths.registryPath, "build-held", {
+    driftCauseCode: "runtime-not-found",
+    health: "repair-needed",
+  });
+
+  const deleted = deletePurposeSimulatorsBroker(resolvedPaths, {
+    actorId: "agent-1",
+    actorType: "agent",
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-build-test",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const serialized = JSON.stringify(deleted);
+  assert.equal(deleted.status, "deleted");
+  assert.equal(deleted.deleted, 2);
+  assert.equal(deleted.failed, 0);
+  assert.equal(deleted.held, 1);
+  assert.equal(deleted.schemaVersion, 1);
+  assert.deepEqual(deleted.reasons, ["device-type-not-found", "runtime-not-found"]);
+  assert.equal(serialized.includes("build-3"), false);
+  assert.equal(serialized.includes("SIM-BUILD-3"), false);
+  assert.equal(serialized.includes("agent-1"), false);
+  assert.equal(serialized.includes(paths.stateRoot), false);
+  const remaining = readJson(paths.hostConfigPath).aliases.map((alias) => alias.alias);
+  assert.equal(remaining.includes("build-3"), false);
+  assert.equal(remaining.includes("build-type"), false);
+  assert.equal(remaining.includes("build-idle"), true);
+  assert.equal(remaining.includes("build-ok"), true);
+  assert.equal(remaining.includes("build-held"), true);
+  assert.equal(fs.existsSync(path.join(resolvedPaths.leasesDir, `${heldLease.leaseId}.json`)), true);
+});
+
+test("purpose delete reports a missing device and continues after one failure", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  writeAgentBuildPurpose(paths.projectFilePath);
+  addBuildFastAlias(paths, {
+    alias: "build-gone",
+    displayName: "Build Gone",
+    udid: "SIM-BUILD-GONE",
+  });
+  addBuildFastAlias(paths, {
+    alias: "build-fail",
+    displayName: "Build Fail",
+    udid: "SIM-BUILD-FAIL",
+  });
+  addBuildFastAlias(paths, {
+    alias: "build-next",
+    displayName: "Build Next",
+    udid: "SIM-BUILD-NEXT",
+  });
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const fixtureState = readJson(paths.simctl.statePath);
+  fixtureState.devices = fixtureState.devices.filter((device) => device.udid !== "SIM-BUILD-GONE");
+  writeJson(paths.simctl.statePath, fixtureState);
+  for (const alias of ["build-gone", "build-fail", "build-next"]) {
+    patchAliasRegistry(resolvedPaths.registryPath, alias, {
+      driftCauseCode: "runtime-not-found",
+      health: "repair-needed",
+    });
+  }
+  const adapter = {
+    ...paths.simctl.adapter,
+    deleteDevice(simulatorId) {
+      if (simulatorId === "SIM-BUILD-FAIL") {
+        throw new Error("delete refused");
+      }
+      return paths.simctl.adapter.deleteDevice(simulatorId);
+    },
+  };
+
+  assert.throws(() => {
+    deletePurposeSimulatorsBroker(resolvedPaths, {
+      actorId: "ci-1",
+      actorType: "ci",
+      processExists: () => true,
+      purposeId: "agent-build-test",
+      simctlAdapter: adapter,
+    });
+  }, (error) => {
+    const serialized = JSON.stringify(error.payload);
+    assert.equal(error.payload.reasonCode, "purpose-delete-failed");
+    assert.equal(error.exitCode, 4);
+    assert.equal(error.payload.deleted, 2);
+    assert.equal(error.payload.failed, 1);
+    assert.equal(error.payload.held, 0);
+    assert.equal(error.payload.status, "failed");
+    assert.deepEqual(error.payload.reasons, ["delete-failed", "runtime-not-found", "simulator-missing"]);
+    assert.equal(serialized.includes("build-fail"), false);
+    assert.equal(serialized.includes("SIM-BUILD-FAIL"), false);
+    assert.equal(serialized.includes("delete refused"), false);
+    return true;
+  });
+  const aliases = readJson(paths.hostConfigPath).aliases.map((alias) => alias.alias);
+  assert.equal(aliases.includes("build-gone"), false);
+  assert.equal(aliases.includes("build-next"), false);
+  assert.equal(aliases.includes("build-fail"), true);
+  assert.equal(Object.hasOwn(readJson(paths.hostConfigPath), "pendingRetirements"), false);
+  assert.equal(readJson(resolvedPaths.registryPath).aliases["build-fail"].driftCauseCode, "simulator-action-failed");
+});
+
+test("purpose delete stops for a human when every eligible match is held", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  writeAgentBuildPurpose(paths.projectFilePath);
+  addBuildFastAlias(paths, {
+    alias: "build-held",
+    displayName: "Build Held",
+    udid: "SIM-BUILD-HELD",
+  });
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  acquireLeaseBroker(resolvedPaths, {
+    actorId: "agent-holder",
+    actorType: "agent",
+    alias: "build-held",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-build-test",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  patchAliasRegistry(resolvedPaths.registryPath, "build-held", {
+    driftCauseCode: "runtime-not-found",
+    health: "repair-needed",
+  });
+
+  assert.throws(() => {
+    deletePurposeSimulatorsBroker(resolvedPaths, {
+      actorId: "agent-2",
+      actorType: "agent",
+      processExists: (pid) => pid === process.pid,
+      purposeId: "agent-build-test",
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => {
+    assert.equal(error.payload.reasonCode, "human-override-required");
+    assert.equal(error.exitCode, 5);
+    assert.equal(error.payload.status, "held");
+    assert.equal(error.payload.deleted, 0);
+    assert.equal(error.payload.held, 1);
+    assert.equal(JSON.stringify(error.payload).includes("build-held"), false);
+    return true;
+  });
+  assert.equal(readJson(paths.hostConfigPath).aliases.some((alias) => alias.alias === "build-held"), true);
+});
+
+test("purpose delete reports nothing to delete and rejects override selectors", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  writeAgentBuildPurpose(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  const result = deletePurposeSimulatorsBroker(resolvedPaths, {
+    actorId: "agent-1",
+    actorType: "agent",
+    processExists: () => true,
+    purposeId: "agent-build-test",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(result.status, "nothing_to_delete");
+  assert.equal(result.deleted, 0);
+  assert.equal(result.failed, 0);
+  assert.equal(result.held, 0);
+  assert.deepEqual(result.reasons, []);
+
+  assert.throws(() => {
+    deletePurposeSimulatorsBroker(resolvedPaths, {
+      actorId: "agent-1",
+      actorType: "agent",
+      forceOverride: true,
+      purposeId: "agent-build-test",
+    });
+  }, (error) => error.payload?.reasonCode === "invalid-flag" && error.exitCode === 2);
+  assert.throws(() => {
+    deletePurposeSimulatorsBroker(resolvedPaths, {
+      actorId: "agent-1",
+      actorType: "robot",
+      purposeId: "agent-build-test",
+    });
+  }, (error) => error.payload?.reasonCode === "invalid-flag" && error.exitCode === 2);
+  assert.throws(() => {
+    deletePurposeSimulatorsBroker(resolvedPaths, {
+      actorId: "agent-1",
+      actorType: "agent",
+      alias: "ui-1",
+      purposeId: "agent-build-test",
+    });
+  }, (error) => error.payload?.reasonCode === "invalid-flag" && error.exitCode === 2);
+});
+
+test("purpose repair publishes runtime-not-found beside repair-failed", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  writeAgentBuildPurpose(paths.projectFilePath);
+  addBuildFastAlias(paths, {
+    alias: "build-missing-runtime",
+    displayName: "Build Missing Runtime",
+    iosVersion: "26.4",
+    udid: "SIM-BUILD-MISSING",
+  });
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  assert.throws(() => {
+    repairPurposeSimulatorsBroker(resolvedPaths, {
+      actorId: "agent-1",
+      actorType: "agent",
+      processExists: () => true,
+      purposeId: "agent-build-test",
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => {
+    assert.equal(error.payload.reasonCode, "purpose-repair-failed");
+    assert.equal(error.exitCode, 4);
+    assert.equal(error.payload.reasons.includes("runtime-not-found"), true);
+    assert.equal(error.payload.reasons.includes("repair-failed"), true);
+    assert.equal(JSON.stringify(error.payload).includes("build-missing-runtime"), false);
+    return true;
+  });
+  const registryEntry = readJson(resolvedPaths.registryPath).aliases["build-missing-runtime"];
+  assert.equal(registryEntry.health, "repair-needed");
+  assert.equal(registryEntry.driftCauseCode, "runtime-not-found");
+});
+
+test("doctor names alias delete only for a missing runtime or device type", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  patchAliasRegistry(resolvedPaths.registryPath, "ui-1", {
+    driftCauseCode: "runtime-not-found",
+    driftReason: "No available iOS runtime matched 26.4.",
+    health: "repair-needed",
+  });
+  patchAliasRegistry(resolvedPaths.registryPath, "ui-2", {
+    driftReason: "boot-on-acquire-failed",
+    health: "repair-needed",
+  });
+
+  const report = doctorBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const runtimeIssue = report.issues.find((candidate) => candidate.alias === "ui-1");
+  const otherIssue = report.issues.find((candidate) => candidate.alias === "ui-2");
+  assert.equal(runtimeIssue.causeCode, "runtime-not-found");
+  assert.equal(runtimeIssue.remediationCommands.some((command) => command.includes("simulators delete --alias")), true);
+  assert.equal(otherIssue.causeCode, null);
+  assert.equal(otherIssue.remediationCommands.some((command) => command.includes("simulators delete --alias")), false);
 });

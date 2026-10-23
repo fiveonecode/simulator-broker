@@ -338,7 +338,7 @@ function serviceCommandUsesLeaseMutationLock(request) {
     return ["clear", "create"].includes(request?.command);
   }
   if (request?.group === "simulators") {
-    return ["boot", "erase", "repair", "shutdown"].includes(request?.command);
+    return ["boot", "delete", "erase", "repair", "shutdown"].includes(request?.command);
   }
   if (request?.group === "idle") {
     return true;
@@ -365,6 +365,9 @@ function idleReconcileSlotReclaimBudgetMs(request, options = {}) {
 function simulatorLifecycleSimctlBudgetMs(request, options = {}) {
   if (request?.group !== "simulators") {
     return 0;
+  }
+  if (request?.command === "delete") {
+    return hostAliasCountFromPaths(options.paths) * 2 * SIMCTL_COMMAND_TIMEOUT_MS;
   }
   const pendingRetirementCount = request?.command === "repair"
     ? positiveDurationMs(
@@ -525,7 +528,7 @@ export function serviceCommandExecutionTimeoutMs(request, options = {}) {
   if (request?.group === "capacity" && request?.command === "reconcile") {
     return DEFAULT_COMMAND_TIMEOUT_MS + capacityReconcileSimctlBudgetMs(request, options);
   }
-  if (request?.group === "simulators" && request?.command === "repair") {
+  if (request?.group === "simulators" && (request?.command === "repair" || request?.command === "delete")) {
     return DEFAULT_COMMAND_TIMEOUT_MS
       + capacityLockTimeoutMs(request)
       + leaseLockTimeoutMs(request)

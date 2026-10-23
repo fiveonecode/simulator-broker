@@ -8,7 +8,7 @@ This Alpha already includes:
 - a `simctl` adapter for provisioning, lifecycle control, and drift observation
 - the `simbroker` CLI under `client/bin/simbroker.mjs`
 - a local `brokerd` service under `client/bin/brokerd.mjs` and `client/service/`
-- broker-mediated `boot`, `shutdown`, `erase`, and `repair`
+- broker-mediated `boot`, `shutdown`, `erase`, `repair`, and `delete`
 - stable exit codes for invalid requests, unavailable capacity, repair-needed
   aliases, override-required flows, and internal failures
 - guided `simbroker setup` preview/confirmation that selects the newest
@@ -34,9 +34,13 @@ This Alpha already includes:
   On `recommendedAction` `repair_matching_simulators`, run
   `simulators repair --repo-root <repo> --purpose <purpose> --actor-type agent --actor-id <id>`
   once. A `repair_needed` status with `install_runtime`, `run_broker_doctor`, or
-  `inspect_unknown` follows that recommended action instead of purpose repair.
-  Exit `0` retries the check. Exit `5` waits for a human. Exit `4`
-  stops after one local `doctor` read of `driftReason`
+  `inspect_unknown` follows that recommended action instead of purpose repair
+  or purpose delete.
+  Exit `0` retries the check. Exit `5` waits for a human. Exit `4` whose
+  reasons include `runtime-not-found` or `device-type-not-found` runs
+  `simulators delete` once for that purpose. Delete exit `0` retries the
+  check. Delete exit `5` waits for a human. Any other exit `4` stops after
+  one local `doctor` read of `causeCode` and `driftReason`
 - CLI-only install through `bash scripts/install_local.sh --cli-only`, plus
   the contributor app+CLI path `npm run install:local`
 - tagged Alpha GitHub Releases with exactly four custom assets: the CLI
