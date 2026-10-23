@@ -1341,8 +1341,11 @@ final class BrokerDashboardStore {
       self.inspectedSimulatorAlias = nil
     } else if filteredSimulators.isEmpty {
       inspectedSimulatorAlias = nil
-    } else if filteredSimulators.contains(where: { $0.alias == inspectedSimulatorAlias }) == false {
-      inspectedSimulatorAlias = filteredSimulators.first?.alias
+    } else if let inspectedSimulatorAlias,
+      selectedAliasIsInSnapshot,
+      filteredSimulators.contains(where: { $0.alias == inspectedSimulatorAlias }) == false
+    {
+      self.inspectedSimulatorAlias = filteredSimulators.first?.alias
     }
 
     if readModel.snapshot.projects.isEmpty {

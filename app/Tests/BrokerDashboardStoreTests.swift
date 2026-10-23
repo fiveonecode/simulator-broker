@@ -2277,6 +2277,9 @@ final class BrokerDashboardStoreTests: XCTestCase {
     store.inspectedSimulatorAlias = "ui-2"
     store.clearSimulatorFilters()
     XCTAssertNil(store.inspectedSimulatorAlias)
+    // A later poll must not treat the cleared alias as a filtered-out row.
+    store.clearSimulatorFilters()
+    XCTAssertNil(store.inspectedSimulatorAlias)
   }
 
   func testSimulatorScopedCommandsRequireSimulatorsPaneAndSelection() {
