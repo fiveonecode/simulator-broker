@@ -84,7 +84,7 @@ slots are not wiped unless host-config `slotReclaim.manual.enabled` is true.
 Other CLI install options:
 
 ```bash
-npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.10/simbroker-0.1.0-alpha.10.tgz
+npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.11/simbroker-0.1.0-alpha.11.tgz
 simbroker --help
 ```
 
@@ -107,8 +107,8 @@ are also attached to those releases. The archive contains a versioned top-level
 directory:
 
 ```bash
-tar -xzf simulator-broker-0.1.0-alpha.10-cli.tar.gz
-./simulator-broker-0.1.0-alpha.10-cli/bin/simbroker --help
+tar -xzf simulator-broker-0.1.0-alpha.11-cli.tar.gz
+./simulator-broker-0.1.0-alpha.11-cli/bin/simbroker --help
 ```
 
 `simbroker` help and `simbroker doctor` print human-readable text by default.
