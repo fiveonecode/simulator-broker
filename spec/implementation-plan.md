@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/global-simulator-broker.md`, `spec/architecture.md`, `spec/harness-integration.md`, `spec/build-and-test.md`, `spec/project-structure.md`
 
 > **Document ID:** `GSB-PLAN-001`
-> **Version:** `0.9.0`
-> **Last Updated:** `2026-08-10`
+> **Version:** `0.10.0`
+> **Last Updated:** `2026-10-23`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -41,7 +41,7 @@ Implemented now:
   pins, events, deterministic warm reuse, and stale recovery
 - `simbroker` CLI with repo-root discovery, JSON payloads, deterministic lease-file emission, event inspection, and pin management
 - `brokerd` local authority with same-user Unix-socket transport, service lifecycle commands, and CLI auto-routing when the service is running
-- broker-mediated lifecycle controls for `boot`, `shutdown`, `erase`, and `repair`, including human override validation and audit events
+- broker-mediated lifecycle controls for `boot`, `shutdown`, `erase`, `repair`, and `delete`, including human override validation and audit events. Delete has no force override
 - real and fixture-backed `simctl` adapter boundary for host bootstrap, lifecycle execution, reset-on-acquire, and repair rebinding
 - registry health and power-state synchronization against `simctl` during broker startup, status refresh, and lifecycle paths
 - direct and service-backed broker failures grouped into stable exit-code classes with matching service HTTP status classes
@@ -327,6 +327,7 @@ Required command families:
 - `simbroker simulators shutdown`
 - `simbroker simulators erase`
 - `simbroker simulators repair`
+- `simbroker simulators delete`
 - `simbroker events watch`
 - `simbroker pin create`
 - `simbroker pin clear`
@@ -376,7 +377,7 @@ Required app actions by the end-state:
 
 - create and clear pins
 - release active leases
-- boot, shutdown, erase, or repair simulators subject to confirmation and policy
+- boot, shutdown, erase, repair, or delete simulators subject to confirmation and policy. Delete confirms removal of the alias and its data and does not open an override sheet
 - configure or disable Automatic shutdown and run count-confirmed idle cleanup
 - filter by project, purpose, actor type, and health
 
@@ -386,14 +387,14 @@ The broker is the control plane for broker-managed aliases, not just the allocat
 
 Required rules:
 
-- app, CLI, agents, and repo harnesses must request boot, shutdown, erase, repair, pin, release, and lease actions through the broker authority
+- app, CLI, agents, and repo harnesses must request boot, shutdown, erase, repair, delete, pin, release, and lease actions through the broker authority
 - direct `simctl` mutation by clients is unsupported for broker-managed aliases and must be treated as external drift when detected
 - the current lease holder may request non-destructive actions on its own alias
 - destructive actions on an unleased alias may proceed under normal policy
 - destructive actions on an alias held by another live actor must be denied by default with structured conflict details
 - a human operator may force an override only by supplying an explicit override flag, a reason, and a target confirmation to the broker
 - a forced override must emit an audit event and revoke the conflicting lease before the destructive action begins
-- AI agents may request repair, but they must not force-override another live holder; the broker may allow, queue, deny, or return `human-override-required`
+- AI agents may request repair, and may request purpose delete once after repair exit `4` with `runtime-not-found` or `device-type-not-found`, but they must not force-override another live holder or delete a leased or pinned simulator; the broker may allow, deny, or return `human-override-required`
 - the broker must expose enough state for operators to understand what it is doing instead of acting as a black box
 
 Required human force-override confirmation fields:
@@ -625,7 +626,7 @@ Exit criteria:
 
 Current implementation slice:
 
-- `simbroker simulators boot|shutdown|erase|repair` in direct and service-backed CLI mode
+- `simbroker simulators boot|shutdown|erase|repair|delete` in direct and service-backed CLI mode. Delete has no `forceOverride`
 - current-holder validation for non-destructive actions on leased aliases
 - destructive-action denial for conflicting leases unless a human supplies `forceOverride`, `overrideReason`, `expectedAlias`, and `expectedLeaseId`
 - `lease.revoked`, `simulator.booted`, `simulator.shutdown`, `simulator.erased`, `simulator.repair.started`, and `simulator.repaired` events
@@ -828,7 +829,7 @@ Expected profile growth beyond `spec-only`:
 - repo project selection uses `requires` only in v1; there is no `prefers` field
 - v1 `requires` supports only `deviceFamily` and `iosVersion`
 - a human operator may force-override a conflicting live lease for urgent repair only with `forceOverride`, `overrideReason`, `expectedAlias`, and `expectedLeaseId`
-- AI agents may request repair but may not force-override another live holder
+- AI agents may request repair, and purpose delete for `runtime-not-found` or `device-type-not-found`, but may not force-override another live holder or delete a leased or pinned simulator
 - drift detection is moderate: validate on broker startup, lease boundaries, broker-mediated actions, and normal status refreshes rather than continuous heavy polling
 - only `repair-needed` and `repairing` block new leases; `state-drift` remains observable but non-blocking
 - lease selection has one order only: matching pin, compatible booted alias,

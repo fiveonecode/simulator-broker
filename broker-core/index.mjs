@@ -50,8 +50,26 @@ const LOCK_OWNER_PID_IDENTITY_TOLERANCE_MS = 15_000;
 const DEFAULT_RESET_SETTLE_MS = 250;
 const CAPACITY_SCHEMA_VERSION = 1;
 const PURPOSE_REPAIR_SCHEMA_VERSION = 1;
+const PURPOSE_DELETE_SCHEMA_VERSION = 1;
 const SETUP_SCHEMA_VERSION = 1;
 const PURPOSE_REPAIR_ACTOR_TYPES = new Set(["agent", "ci", "human"]);
+const KNOWN_DRIFT_CAUSE_CODES = new Set([
+  "boot-on-acquire-failed",
+  "device-type-not-found",
+  "idle-shutdown-failed",
+  "repair-interrupted",
+  "reset-on-acquire-failed",
+  "runtime-not-found",
+  "simulator-action-failed",
+  "simulator-config-mismatch",
+  "simulator-missing",
+  "simulator-unavailable",
+  "slot-reclaim-failed",
+]);
+const DELETE_TRIGGER_CAUSE_CODES = new Set([
+  "runtime-not-found",
+  "device-type-not-found",
+]);
 const PUBLIC_DRIFT_REASONS = new Set([
   "boot-on-acquire-failed",
   "idle-shutdown-failed",
@@ -2572,6 +2590,7 @@ function syncRegistryWithSimctl(hostConfig, registry, options = {}) {
     if (registryEntry.health === "healthy" || registryEntry.health === "state-drift") {
       registryEntry.health = "healthy";
       registryEntry.driftReason = null;
+      registryEntry.driftCauseCode = null;
     }
   }
 }
@@ -2687,6 +2706,7 @@ function normalizeRegistry(rawRegistry, hostConfig, timestamp) {
     aliases[hostAlias.alias] = {
       activeLeaseId: typeof entry.activeLeaseId === "string" ? entry.activeLeaseId : null,
       alias: hostAlias.alias,
+      driftCauseCode: knownDriftCauseCode(entry.driftCauseCode),
       driftReason: typeof entry.driftReason === "string" ? entry.driftReason : null,
       health: ALLOWED_HEALTH_STATES.has(entry.health) ? entry.health : "healthy",
       lastBootedAt: typeof entry.lastBootedAt === "string" ? entry.lastBootedAt : null,
@@ -5414,18 +5434,27 @@ export function doctorBroker(paths, options = {}) {
     for (const hostAlias of state.hostConfig.aliases) {
       const registryEntry = state.registry.aliases[hostAlias.alias];
       if (registryEntry.health !== "healthy" && registryEntry.health !== "state-drift") {
+        const causeCode = knownDriftCauseCode(registryEntry.driftCauseCode);
+        const remediationCommands = [
+          setupCliCommandWithSelectedPaths("simbroker host status", paths),
+          setupCliCommandWithSelectedPaths(
+            `simbroker simulators repair --alias ${shellQuoteArgument(hostAlias.alias)}`,
+            paths,
+          ),
+        ];
+        if (DELETE_TRIGGER_CAUSE_CODES.has(causeCode)) {
+          remediationCommands.push(setupCliCommandWithSelectedPaths(
+            `simbroker simulators delete --alias ${shellQuoteArgument(hostAlias.alias)}`,
+            paths,
+          ));
+        }
         issues.push({
           alias: hostAlias.alias,
+          causeCode,
           driftReason: registryEntry.driftReason,
           health: registryEntry.health,
           reasonCode: "alias-unhealthy",
-          remediationCommands: [
-            setupCliCommandWithSelectedPaths("simbroker host status", paths),
-            setupCliCommandWithSelectedPaths(
-              `simbroker simulators repair --alias ${shellQuoteArgument(hostAlias.alias)}`,
-              paths,
-            ),
-          ],
+          remediationCommands,
         });
       }
     }
@@ -8261,6 +8290,7 @@ function runLifecycleActionBroker(paths, action, options = {}) {
     registryEntry.powerState = targetPowerState;
     registryEntry.health = "healthy";
     registryEntry.driftReason = null;
+    registryEntry.driftCauseCode = null;
     if (action === "boot") {
       registryEntry.lastBootedAt = timestamp;
     } else {
@@ -8301,6 +8331,7 @@ function runLifecycleActionBroker(paths, action, options = {}) {
     if (registryEntry.health === "state-drift") {
       registryEntry.health = "healthy";
       registryEntry.driftReason = null;
+      registryEntry.driftCauseCode = null;
     }
     registryEntry.updatedAt = timestamp;
     state.registry.updatedAt = timestamp;
@@ -8353,6 +8384,7 @@ function runLifecycleActionBroker(paths, action, options = {}) {
     } catch (error) {
       registryEntry.health = "repair-needed";
       registryEntry.driftReason = error.payload?.cause ?? error.message;
+      registryEntry.driftCauseCode = knownDriftCauseCode(error.payload?.reasonCode);
       registryEntry.updatedAt = timestamp;
       state.registry.updatedAt = timestamp;
       writeRegistry(paths, state.registry);
@@ -8373,6 +8405,7 @@ function runLifecycleActionBroker(paths, action, options = {}) {
 
     registryEntry.health = "healthy";
     registryEntry.driftReason = null;
+    registryEntry.driftCauseCode = null;
     registryEntry.lastRepairedAt = timestamp;
     registryEntry.lastShutdownAt = timestamp;
     registryEntry.powerState = "shutdown";
@@ -8444,6 +8477,10 @@ export function repairSimulatorBroker(paths, options = {}) {
     processSampler: options.processSampler,
     timeoutMs: options.capacityLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
   });
+}
+
+function knownDriftCauseCode(reasonCode) {
+  return KNOWN_DRIFT_CAUSE_CODES.has(reasonCode) ? reasonCode : null;
 }
 
 function publicDriftReason(driftReason) {
@@ -8549,6 +8586,10 @@ export function repairPurposeSimulatorsBroker(paths, options = {}) {
         }
         counts.failed += 1;
         reasons.add("repair-failed");
+        const causeCode = knownDriftCauseCode(error?.payload?.reasonCode);
+        if (DELETE_TRIGGER_CAUSE_CODES.has(causeCode)) {
+          reasons.add(causeCode);
+        }
       }
     }
 
@@ -8561,6 +8602,309 @@ export function repairPurposeSimulatorsBroker(paths, options = {}) {
     }
     if (counts.repaired === 0 && counts.held > 0) {
       throw new BrokerError("A human operator must repair the held simulator.", {
+        ...summary,
+        reasonCode: "human-override-required",
+      });
+    }
+    return {
+      ok: true,
+      ...summary,
+    };
+  }, {
+    now: lockTimestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  }), {
+    now: lockTimestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.capacityLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  });
+}
+
+function assertNoDeleteOverride(options, label) {
+  if (options.forceOverride === true) {
+    throw new BrokerError(`${label} does not accept force override.`, {
+      reasonCode: "invalid-flag",
+    });
+  }
+}
+
+function resolveDeleteActor(options, { requireActor = false } = {}) {
+  const actorType = requireActor
+    ? requireString(options.actorType, "actorType")
+    : (options.actorType ?? "human");
+  if (!PURPOSE_REPAIR_ACTOR_TYPES.has(actorType)) {
+    throw new BrokerError("Simulator delete actorType must be agent, ci, or human.", {
+      actorType,
+      reasonCode: "invalid-flag",
+    });
+  }
+  const actorId = requireActor
+    ? requireString(options.actorId, "actorId")
+    : (typeof options.actorId === "string" && options.actorId.trim() !== ""
+      ? options.actorId.trim()
+      : makeLifecycleActorId(actorType));
+  return { actorId, actorType };
+}
+
+function publicAliasDeleteResult(detail) {
+  return {
+    alias: detail.alias,
+    command: "simulators.delete",
+    ok: true,
+    performedAt: detail.performedAt,
+    unchanged: detail.unchanged === true,
+  };
+}
+
+function persistDeleteFailure(paths, state, registryEntry, hostAlias, actor, failure, timestamp) {
+  registryEntry.health = "repair-needed";
+  registryEntry.driftReason = failure.payload?.cause ?? failure.message;
+  registryEntry.driftCauseCode = knownDriftCauseCode(failure.payload?.reasonCode);
+  registryEntry.updatedAt = timestamp;
+  state.registry.updatedAt = timestamp;
+  writeRegistry(paths, state.registry);
+  appendEventRecord(paths, "simulator.delete.failed", {
+    alias: hostAlias.alias,
+    actorType: actor.actorType,
+    payload: {
+      action: "delete",
+      actorId: actor.actorId,
+      cause: registryEntry.driftReason,
+      driftCauseCode: registryEntry.driftCauseCode,
+      health: registryEntry.health,
+      simulatorId: hostAlias.simulatorId,
+    },
+    simulatorId: hostAlias.simulatorId,
+  }, timestamp);
+}
+
+function removeDeletedAliasRecords(paths, state, hostAlias, actor, timestamp, deviceAlreadyAbsent) {
+  const simulatorId = hostAlias.simulatorId;
+  const alias = hostAlias.alias;
+  state.hostConfig.aliases = state.hostConfig.aliases.filter((candidate) => candidate.alias !== alias);
+  writeHostConfig(paths, hostConfigWithPendingRetirements(
+    state.hostConfig,
+    state.hostConfig.pendingRetirements ?? [],
+  ));
+  delete state.registry.aliases[alias];
+  state.leasesByAlias.delete(alias);
+  state.pinsByAlias.delete(alias);
+  state.registry.updatedAt = timestamp;
+  writeRegistry(paths, state.registry);
+  appendEventRecord(paths, "simulator.deleted", {
+    alias,
+    actorType: actor.actorType,
+    payload: {
+      action: "delete",
+      actorId: actor.actorId,
+      deviceAlreadyAbsent,
+      simulatorId,
+    },
+    simulatorId,
+  }, timestamp);
+}
+
+function deleteAliasUnderHeldLocks(paths, state, options, timestamp) {
+  const actor = {
+    actorId: options.actorId,
+    actorType: options.actorType,
+  };
+  const hostAlias = state.hostConfig.aliases.find((candidate) => candidate.alias === options.alias) ?? null;
+  if (!hostAlias) {
+    return {
+      alias: options.alias,
+      deviceAlreadyAbsent: false,
+      performedAt: timestamp,
+      unchanged: true,
+    };
+  }
+  const registryEntry = state.registry.aliases[hostAlias.alias];
+  if (registryEntry?.health === "repairing") {
+    throw new BrokerError(`Alias ${hostAlias.alias} is already repairing.`, {
+      alias: hostAlias.alias,
+      health: registryEntry.health,
+      reasonCode: "alias-busy",
+    });
+  }
+  const activeLease = state.leasesByAlias.get(hostAlias.alias) ?? null;
+  if (activeLease) {
+    throw new BrokerError(`Alias ${hostAlias.alias} is leased and cannot be deleted.`, {
+      alias: hostAlias.alias,
+      currentHolder: summarizeLeaseHolder(activeLease),
+      leaseId: activeLease.leaseId,
+      reasonCode: "lease-conflict",
+    });
+  }
+  const activePin = state.pinsByAlias.get(hostAlias.alias) ?? null;
+  if (activePin) {
+    throw new BrokerError(`Alias ${hostAlias.alias} is pinned and cannot be deleted.`, {
+      alias: hostAlias.alias,
+      pinId: activePin.pinId,
+      projectId: activePin.projectId,
+      purposeId: activePin.purposeId,
+      reasonCode: "pin-conflict",
+    });
+  }
+
+  const simctl = resolveSimctlAdapter(options);
+  const devicePresent = readSimulatorDeviceIndex(simctl).has(hostAlias.simulatorId);
+  if (devicePresent) {
+    try {
+      deleteAliasSimulator(simctl, hostAlias.simulatorId);
+    } catch (error) {
+      const failure = error instanceof BrokerError
+        ? error
+        : new BrokerError(`Simulator delete failed for alias ${hostAlias.alias}.`, {
+          action: "delete",
+          alias: hostAlias.alias,
+          cause: error?.message ?? String(error),
+          reasonCode: "simulator-action-failed",
+        });
+      persistDeleteFailure(paths, state, registryEntry, hostAlias, actor, failure, timestamp);
+      throw failure;
+    }
+  }
+
+  removeDeletedAliasRecords(paths, state, hostAlias, actor, timestamp, !devicePresent);
+  return {
+    alias: hostAlias.alias,
+    deviceAlreadyAbsent: !devicePresent,
+    performedAt: timestamp,
+    unchanged: false,
+  };
+}
+
+export function deleteSimulatorBroker(paths, options = {}) {
+  assertNoDeleteOverride(options, "Simulator delete");
+  if (typeof options.purposeId === "string" && options.purposeId.trim() !== "") {
+    throw new BrokerError("Simulator delete accepts either an alias or a purpose, not both.", {
+      reasonCode: "invalid-flag",
+    });
+  }
+  const actor = resolveDeleteActor(options);
+  const alias = requireString(options.alias, "alias");
+  const lockTimestamp = nowIso(options.now);
+  const detail = withCapacityLock(paths, () => withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
+    const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+    return deleteAliasUnderHeldLocks(paths, state, {
+      ...options,
+      actorId: actor.actorId,
+      actorType: actor.actorType,
+      alias,
+    }, timestamp);
+  }, {
+    now: lockTimestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  }), {
+    now: lockTimestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.capacityLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  });
+  return publicAliasDeleteResult(detail);
+}
+
+function purposeDeleteSummary(purposeId, counts, reasons) {
+  const status = counts.failed > 0
+    ? "failed"
+    : (counts.deleted > 0 ? "deleted" : (counts.held > 0 ? "held" : "nothing_to_delete"));
+  return {
+    command: "simulators.delete",
+    deleted: counts.deleted,
+    failed: counts.failed,
+    held: counts.held,
+    purposeId,
+    reasons: [...reasons].sort(),
+    schemaVersion: PURPOSE_DELETE_SCHEMA_VERSION,
+    status,
+  };
+}
+
+function assertPurposeDeleteRequest(options) {
+  assertNoDeleteOverride(options, "Purpose delete");
+  if (typeof options.alias === "string" && options.alias.trim() !== "") {
+    throw new BrokerError("Purpose delete does not accept an alias.", {
+      reasonCode: "invalid-flag",
+    });
+  }
+  const actor = resolveDeleteActor(options, { requireActor: true });
+  return {
+    ...actor,
+    purposeId: requireString(options.purposeId, "purposeId"),
+  };
+}
+
+export function deletePurposeSimulatorsBroker(paths, options = {}) {
+  const request = assertPurposeDeleteRequest(options);
+  const lockTimestamp = nowIso(options.now);
+  return withCapacityLock(paths, () => withLeaseMutationLock(paths, () => {
+    const timestamp = nowIso(options.now);
+    const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+    const { projectConfig } = readProjectConfigOrThrow(paths, options.projectFilePath);
+    const purpose = getPurpose(projectConfig, request.purposeId);
+    const policy = capacityProvisioningPolicy(purpose);
+    const analysis = buildCandidateAnalysis({
+      explicitAlias: null,
+      hostConfig: state.hostConfig,
+      leasesByAlias: state.leasesByAlias,
+      pinsByAlias: state.pinsByAlias,
+      projectConfig,
+      purpose,
+      registry: state.registry,
+    });
+    const structural = analysis
+      .filter((candidate) => structuralCapacityMatches(candidate.hostAlias, purpose, policy.requirement))
+      .sort((left, right) => left.alias.localeCompare(right.alias));
+    const counts = { deleted: 0, failed: 0, held: 0 };
+    const reasons = new Set();
+
+    for (const candidate of structural) {
+      const registryEntry = state.registry.aliases[candidate.alias];
+      const causeCode = knownDriftCauseCode(registryEntry?.driftCauseCode);
+      if (registryEntry?.health !== "repair-needed" || !DELETE_TRIGGER_CAUSE_CODES.has(causeCode)) {
+        continue;
+      }
+      if (state.leasesByAlias.has(candidate.alias) || state.pinsByAlias.has(candidate.alias)) {
+        counts.held += 1;
+        reasons.add(causeCode);
+        continue;
+      }
+      try {
+        const detail = deleteAliasUnderHeldLocks(paths, state, {
+          ...options,
+          actorId: request.actorId,
+          actorType: request.actorType,
+          alias: candidate.alias,
+          forceOverride: false,
+          purposeId: undefined,
+        }, timestamp);
+        counts.deleted += 1;
+        reasons.add(causeCode);
+        if (detail.deviceAlreadyAbsent) {
+          reasons.add("simulator-missing");
+        }
+      } catch (error) {
+        counts.failed += 1;
+        reasons.add("delete-failed");
+        reasons.add(causeCode);
+      }
+    }
+
+    const summary = purposeDeleteSummary(request.purposeId, counts, reasons);
+    if (counts.failed > 0) {
+      throw new BrokerError("Purpose delete failed.", {
+        ...summary,
+        reasonCode: "purpose-delete-failed",
+      });
+    }
+    if (counts.deleted === 0 && counts.held > 0) {
+      throw new BrokerError("A human operator must delete the held simulator.", {
         ...summary,
         reasonCode: "human-override-required",
       });

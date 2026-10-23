@@ -2109,6 +2109,7 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertTrue(store.commandAvailability.canShutdownSimulator)
     XCTAssertTrue(store.commandAvailability.canEraseSimulator)
     XCTAssertTrue(store.commandAvailability.canRepairSimulator)
+    XCTAssertFalse(store.commandAvailability.canDeleteSimulator)
     XCTAssertTrue(store.commandAvailability.canReleaseLease)
     XCTAssertTrue(store.commandAvailability.canCreatePin)
     XCTAssertFalse(store.commandAvailability.canClearPin)
@@ -2118,6 +2119,7 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertFalse(store.commandAvailability.canShutdownSimulator)
     XCTAssertTrue(store.commandAvailability.canEraseSimulator)
     XCTAssertTrue(store.commandAvailability.canRepairSimulator)
+    XCTAssertFalse(store.commandAvailability.canDeleteSimulator)
     XCTAssertFalse(store.commandAvailability.canReleaseLease)
     XCTAssertFalse(store.commandAvailability.canCreatePin)
     XCTAssertTrue(store.commandAvailability.canClearPin)
@@ -2127,9 +2129,154 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertFalse(store.commandAvailability.canShutdownSimulator)
     XCTAssertFalse(store.commandAvailability.canEraseSimulator)
     XCTAssertTrue(store.commandAvailability.canRepairSimulator)
+    XCTAssertFalse(store.commandAvailability.canDeleteSimulator)
     XCTAssertTrue(store.commandAvailability.canReleaseLease)
     XCTAssertTrue(store.commandAvailability.canCreatePin)
     XCTAssertFalse(store.commandAvailability.canClearPin)
+  }
+
+  func testDeleteStaysEnabledForBootedRepairNeededSimulator() throws {
+    let snapshot = try loadMutableFixture(named: "busy-snapshot") { object in
+      var simulators = object["simulators"] as? [[String: Any]] ?? []
+      for index in simulators.indices where simulators[index]["alias"] as? String == "ui-2" {
+        simulators[index]["activeLeaseId"] = NSNull()
+        simulators[index]["activeLeaseSummary"] = NSNull()
+        simulators[index]["powerState"] = "booted"
+        simulators[index]["health"] = "repair-needed"
+      }
+      object["simulators"] = simulators
+      var leases = object["activeLeases"] as? [[String: Any]] ?? []
+      leases.removeAll { $0["alias"] as? String == "ui-2" }
+      object["activeLeases"] = leases
+    }
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: RecordingCommandClient(),
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+    store.inspectedSimulatorAlias = "ui-2"
+
+    XCTAssertTrue(store.commandAvailability.canDeleteSimulator)
+    XCTAssertFalse(store.commandAvailability.canBootSimulator)
+    XCTAssertFalse(store.commandAvailability.canEraseSimulator)
+    XCTAssertTrue(store.commandAvailability.canRepairSimulator)
+
+    store.loadedState = makeLoadedState(snapshot: try loadMutableFixture(named: "busy-snapshot") { object in
+      var simulators = object["simulators"] as? [[String: Any]] ?? []
+      for index in simulators.indices where simulators[index]["alias"] as? String == "ui-2" {
+        simulators[index]["activeLeaseId"] = NSNull()
+        simulators[index]["activeLeaseSummary"] = NSNull()
+        simulators[index]["health"] = "repairing"
+      }
+      object["simulators"] = simulators
+      var leases = object["activeLeases"] as? [[String: Any]] ?? []
+      leases.removeAll { $0["alias"] as? String == "ui-2" }
+      object["activeLeases"] = leases
+    })
+    XCTAssertFalse(store.commandAvailability.canDeleteSimulator)
+  }
+
+  func testDeleteRequestIsIgnoredWhenTheSimulatorIsHeldOrCommandsCannotBeSent() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let commandClient = RecordingCommandClient()
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: commandClient,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+    store.inspectedSimulatorAlias = "ui-1"
+    store.requestLifecycleAction(.delete)
+    XCTAssertNil(store.pendingLifecycleRequest)
+
+    store.inspectedSimulatorAlias = "manual-1"
+    store.requestLifecycleAction(.delete)
+    XCTAssertNil(store.pendingLifecycleRequest)
+
+    store.loadedState = makeLoadedState(snapshot: snapshot, service: nil)
+    store.inspectedSimulatorAlias = "ui-1"
+    store.requestLifecycleAction(.delete)
+    XCTAssertNil(store.pendingLifecycleRequest)
+    let requests = await commandClient.requests()
+    XCTAssertTrue(requests.isEmpty)
+  }
+
+  func testDeleteConfirmationSendsAliasDeleteWithoutOverride() async throws {
+    let snapshot = try loadMutableFixture(named: "busy-snapshot") { object in
+      var simulators = object["simulators"] as? [[String: Any]] ?? []
+      for index in simulators.indices where simulators[index]["alias"] as? String == "ui-2" {
+        simulators[index]["activeLeaseId"] = NSNull()
+        simulators[index]["activeLeaseSummary"] = NSNull()
+        simulators[index]["powerState"] = "booted"
+      }
+      object["simulators"] = simulators
+      var leases = object["activeLeases"] as? [[String: Any]] ?? []
+      leases.removeAll { $0["alias"] as? String == "ui-2" }
+      object["activeLeases"] = leases
+    }
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let commandClient = RecordingCommandClient()
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: commandClient,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+    store.inspectedSimulatorAlias = "ui-2"
+
+    store.requestLifecycleAction(.delete)
+    XCTAssertEqual(store.pendingLifecycleRequest?.action, .delete)
+    XCTAssertEqual(store.pendingLifecycleRequest?.alias, "ui-2")
+    XCTAssertNil(store.pendingOverrideRequest)
+    let stagedRequests = await commandClient.requests()
+    XCTAssertTrue(stagedRequests.isEmpty)
+
+    store.confirmPendingLifecycleAction()
+    try await waitUntil {
+      let requests = await commandClient.requests()
+      return requests.count == 1
+    }
+    let requests = await commandClient.requests()
+    XCTAssertEqual(requests[0].group, "simulators")
+    XCTAssertEqual(requests[0].command, "delete")
+    XCTAssertEqual(requests[0].options["alias"]?.stringValue, "ui-2")
+    XCTAssertEqual(requests[0].options["actorId"]?.stringValue, "simulator-broker-app")
+    XCTAssertEqual(requests[0].options["actorType"]?.stringValue, "human")
+    XCTAssertNil(requests[0].options["forceOverride"])
+    XCTAssertNil(store.pendingOverrideRequest)
+  }
+
+  func testVanishedSimulatorSelectionClearsWithoutReplacingAFilteredAlias() throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: RecordingCommandClient(),
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+    store.applySceneRestorationState(BrokerSceneRestorationState(
+      selectedPane: .simulators,
+      inspectedSimulatorAlias: "ui-2",
+      simulatorHealthFilter: .healthy
+    ))
+    XCTAssertEqual(store.inspectedSimulatorAlias, "ui-1")
+
+    let withoutUiTwo = try loadMutableFixture(named: "busy-snapshot") { object in
+      var simulators = object["simulators"] as? [[String: Any]] ?? []
+      simulators.removeAll { $0["alias"] as? String == "ui-2" }
+      object["simulators"] = simulators
+      var leases = object["activeLeases"] as? [[String: Any]] ?? []
+      leases.removeAll { $0["alias"] as? String == "ui-2" }
+      object["activeLeases"] = leases
+    }
+    store.loadedState = makeLoadedState(snapshot: withoutUiTwo)
+    store.inspectedSimulatorAlias = "ui-2"
+    store.clearSimulatorFilters()
+    XCTAssertNil(store.inspectedSimulatorAlias)
   }
 
   func testSimulatorScopedCommandsRequireSimulatorsPaneAndSelection() {
@@ -3123,7 +3270,7 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertEqual(restorationState.simulatorPurposeFilter, BrokerDashboardReadModel.allSelection)
   }
 
-  func testSceneRestorationFallsBackWhenStoredSelectionsAreStale() throws {
+  func testSceneRestorationClearsAMissingSimulatorAndFallsBackForProjectAndEvent() throws {
     let snapshot = try loadFixture(named: "busy-snapshot")
     let loadedState = makeLoadedState(snapshot: snapshot)
     let store = BrokerDashboardStore(
@@ -3147,12 +3294,8 @@ final class BrokerDashboardStoreTests: XCTestCase {
       )
     )
 
-    let expectedSimulatorAlias = try XCTUnwrap(
-      store.readModel?.filteredSimulators(using: store.simulatorFilters).first?.alias
-    )
-
     XCTAssertEqual(store.selectedPane, .simulators)
-    XCTAssertEqual(store.inspectedSimulatorAlias, expectedSimulatorAlias)
+    XCTAssertNil(store.inspectedSimulatorAlias)
     XCTAssertEqual(store.inspectedProjectId, "sample-project")
     XCTAssertEqual(store.inspectedEventId, "event-2")
   }
@@ -3731,6 +3874,20 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertTrue(store.canSendCommands)
     XCTAssertFalse(store.serviceStatusUnverified)
     XCTAssertNil(store.lastActionMessage)
+  }
+
+  private func loadMutableFixture(
+    named name: String,
+    mutate: (inout [String: Any]) -> Void
+  ) throws -> BrokerAppSnapshot {
+    let fixturesRoot = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .appending(path: "Fixtures")
+    let data = try Data(contentsOf: fixturesRoot.appending(path: "\(name).json"))
+    var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    mutate(&object)
+    let encoded = try JSONSerialization.data(withJSONObject: object)
+    return try JSONDecoder().decode(BrokerAppSnapshot.self, from: encoded)
   }
 
   private func loadFixture(named name: String) throws -> BrokerAppSnapshot {

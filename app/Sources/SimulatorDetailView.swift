@@ -24,6 +24,21 @@ struct SimulatorDetailView: View {
     return simulator.health == "healthy" || simulator.health == "state-drift"
   }
 
+  private var brokerActionExplanation: String {
+    let base = allowsLifecycleMutation
+      ? "Actions go through brokerd, are audited, and refresh this view automatically."
+      : "Repair is required before boot, shutdown, or erase will succeed for this alias."
+    if lease != nil || pin != nil {
+      return base + " Release the lease and clear the pin before deleting."
+    }
+    return base
+  }
+
+  private func repairBannerMessage(for simulator: BrokerSimulator) -> String {
+    let base = simulator.driftReason ?? "Broker repair must complete before this alias can safely take new work."
+    return base + " Delete is available when the simulator is not leased or pinned."
+  }
+
   var body: some View {
     if let simulator {
       ScrollView {
@@ -156,6 +171,13 @@ struct SimulatorDetailView: View {
             .buttonStyle(.bordered)
             .tint(.red)
             .disabled(store.commandAvailability.canEraseSimulator == false)
+
+            Button("Delete") {
+              store.requestLifecycleAction(.delete)
+            }
+            .buttonStyle(.bordered)
+            .tint(.red)
+            .disabled(store.commandAvailability.canDeleteSimulator == false)
           }
 
           HStack(spacing: 10) {
@@ -182,11 +204,7 @@ struct SimulatorDetailView: View {
             }
           }
 
-          Text(
-            allowsLifecycleMutation
-              ? "Actions go through brokerd, are audited, and refresh this view automatically."
-              : "Repair is required before boot, shutdown, or erase will succeed for this alias."
-          )
+          Text(brokerActionExplanation)
           .font(.subheadline)
           .foregroundStyle(.secondary)
           .lineLimit(nil)
@@ -320,7 +338,7 @@ struct SimulatorDetailView: View {
         color: .red,
         symbolName: "wrench.and.screwdriver.fill",
         title: "Repair required",
-        message: simulator.driftReason ?? "Broker repair must complete before this alias can safely take new work."
+        message: repairBannerMessage(for: simulator)
       )
     } else if simulator.health == "state-drift" {
       HighlightBanner(

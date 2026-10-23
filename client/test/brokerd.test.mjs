@@ -2866,6 +2866,49 @@ test("service-backed purpose repair omits host paths from success JSON", async (
   assert.equal(serialized.includes("agent-1"), false);
 });
 
+test("service-backed purpose delete omits host paths from success JSON", async (t) => {
+  const fixture = makeFixture();
+  t.after(async () => stopServiceIfRunning(fixture));
+
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  const registryPath = path.join(fixture.stateRoot, "registry.json");
+  const registry = readJson(registryPath);
+  registry.aliases["ui-1"].health = "repair-needed";
+  registry.aliases["ui-1"].driftCauseCode = "runtime-not-found";
+  registry.aliases["ui-1"].driftReason = "No available iOS runtime matched 26.4.";
+  writeJson(registryPath, registry);
+  assert.equal(runCli(fixture, "service", "start").status, 0);
+
+  const deleted = runCli(
+    fixture,
+    "simulators",
+    "delete",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ui-session",
+    "--actor-type",
+    "ci",
+    "--actor-id",
+    "ci-1",
+    "--json",
+  );
+
+  assert.equal(deleted.status, 0, deleted.stderr);
+  assert.equal(deleted.json.transport, "service");
+  assert.equal(deleted.json.command, "simulators.delete");
+  assert.equal(deleted.json.status, "deleted");
+  assert.equal(deleted.json.purposeId, "agent-ui-session");
+  assert.equal(Object.hasOwn(deleted.json, "servedBy"), false);
+  const serialized = JSON.stringify(deleted.json);
+  assert.equal(serialized.includes(fixture.root), false);
+  assert.equal(serialized.includes("ui-1"), false);
+  assert.equal(serialized.includes("SIM-UI-1"), false);
+  assert.equal(serialized.includes("ci-1"), false);
+  const snapshot = readJson(path.join(fixture.stateRoot, "app-snapshot.json"));
+  assert.equal(snapshot.simulators.some((simulator) => simulator.alias === "ui-1"), false);
+});
+
 test("service HTTP error responses expose stable status classes and exit codes", async (t) => {
   const fixture = makeFixture(1);
   t.after(async () => stopServiceIfRunning(fixture));

@@ -6,6 +6,7 @@ struct BrokerDashboardCommandAvailability: Equatable {
   let canShutdownSimulator: Bool
   let canEraseSimulator: Bool
   let canRepairSimulator: Bool
+  let canDeleteSimulator: Bool
   let canReleaseLease: Bool
   let canCreatePin: Bool
   let canClearPin: Bool
@@ -16,6 +17,7 @@ struct BrokerDashboardCommandAvailability: Equatable {
     canShutdownSimulator: false,
     canEraseSimulator: false,
     canRepairSimulator: false,
+    canDeleteSimulator: false,
     canReleaseLease: false,
     canCreatePin: false,
     canClearPin: false

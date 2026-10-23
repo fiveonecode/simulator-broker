@@ -40,7 +40,7 @@ This repo exists to develop a reusable local simulator broker:
 - CLI first slice implemented in `client/bin/simbroker.mjs`
 - local `brokerd` authority implemented in `client/bin/brokerd.mjs` and `client/service/`
 - CLI automatically routes through the local service when it is running
-- broker-mediated lifecycle controls for `simulators boot|shutdown|erase|repair` are implemented in direct and service-backed CLI flows
+- broker-mediated lifecycle controls for `simulators boot|shutdown|erase|repair|delete` are implemented in direct and service-backed CLI flows
 - the broker now provisions and repairs real simulator devices through a shared `simctl` adapter boundary in `broker-core/simctl.mjs`
 - broker state now synchronizes alias health and power state from `simctl` during bootstrap, status refresh, doctor, and lifecycle flows
 - direct and service-backed broker failures now expose stable exit codes and service HTTP status classes

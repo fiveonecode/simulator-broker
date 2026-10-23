@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.18.2`
-> **Last Updated:** `2026-10-21`
+> **Version:** `0.19.0`
+> **Last Updated:** `2026-10-23`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -186,7 +186,8 @@ Current implementation slice:
 - malformed JSON from a running service is reported as service unavailability by clients instead of escaping as an uncaught parser failure
 - service startup must not publish a listenable socket or service metadata until the initial broker-owned app snapshot refresh has completed or explicitly reported a missing-host setup state; the CLI start launcher must wait within the bounded startup snapshot budget for one shared process-table sample, startup-lock owner PID lifetime sampling, and all inventory commands, validate startup-lock owner PID lifetime before accepting an old lock as live, and terminate the spawned daemon on startup timeout
 - service-backed timeout budgets must reserve one shared process-table sample per broker state load; stale-lease containment process samples discovered from lease files before command dispatch for every broker state load that can retry containment; serialized read lock waits for `host status`, `doctor`, and `lease explain`; final app snapshot lock waits for every command that publishes the shared app snapshot artifact; capacity check inventory reads; the longer of lease-acquire reset `simctl` shutdown/erase plus boot readiness and one build-slot reclaim (`simctl list`, `du`, shutdown, and erase) plus that same boot readiness; lease-release reclaim list, `du`, shutdown, erase, and reset-lock wait; idle-reconcile and service-startup reclaim for every enabled candidate, including each reset-lock wait; explicit simulator boot readiness wait; and host bootstrap runtime lookup, baseline inventory, starter-alias provisioning, replacement-retirement, and final snapshot refresh work before the transport timeout is advertised
-- broker-mediated lifecycle-control requests for `boot`, `shutdown`, `erase`, and `repair`
+- broker-mediated lifecycle-control requests for `boot`, `shutdown`, `erase`, `repair`, and `delete`
+- `simulators delete` execution time includes the capacity lock, the lease lock, snapshot publication, one state load, and two `simctl` commands (shutdown, then delete) per host alias. A missing or non-array `aliases` list uses the six-alias starter fallback. An empty list uses zero. Repair keeps its own static ten-command budget plus pending retirements and is not redefined by the delete count
 - command transport consumed by the macOS app for broker-backed operator actions
 - service-backed commands observing the same real `simctl`-synchronized alias health and repair state as direct CLI mode
 - immediate idle reconciliation before the startup snapshot, non-overlapping
@@ -258,15 +259,20 @@ Current implementation slice:
 - `capacity check` and `capacity reconcile` for public-safe capacity diagnosis,
   deterministic reconcile preview, and human-confirmed additive capacity apply
 - `doctor`. Human text stays the default. `--json` issues for an unhealthy
-  alias include `alias`, `driftReason`, `health`, `reasonCode:
-  alias-unhealthy`, and path-qualified `remediationCommands` for
+  alias include `alias`, `causeCode` or `null`, `driftReason`, `health`,
+  `reasonCode: alias-unhealthy`, and path-qualified `remediationCommands` for
   `simbroker host status` and `simbroker simulators repair --alias <alias>`.
-  Human text appends `Reason: <driftReason>` when that string is non-empty
+  When `causeCode` is `runtime-not-found` or `device-type-not-found`, the
+  same list also includes `simbroker simulators delete --alias <alias>`.
+  Human text prints those remediation commands and appends
+  `Reason: <driftReason>` when that string is non-empty. Doctor output stays
+  on the machine that ran it
 - `service start`, `service status`, and `service stop`
 - automatic service routing when `brokerd` is available
-- `simulators boot`, `simulators shutdown`, `simulators erase`, and
-  `simulators repair`. Alias repair remains the operator and app command.
-  Purpose repair is the agent and CI command and is specified below
+- `simulators boot`, `simulators shutdown`, `simulators erase`,
+  `simulators repair`, and `simulators delete`. Alias repair and alias delete
+  are the operator and app commands. Purpose repair and purpose delete are
+  the agent and CI commands and are specified below
 - `idle status`, human-attributed `idle enable` and `idle disable`, immediate
   `idle reconcile`, and count-only `idle cleanup` preview plus confirmed apply
 - policy-enabled normal lease acquisition lazily starts `brokerd` when needed;
@@ -310,7 +316,7 @@ Current implementation slice:
 - Simulators screen with filters and lease or pin detail
 - Projects screen with per-project purpose counts and active aliases
 - Events screen with recent broker activity and event attribution
-- broker-backed actions for pin create and clear, lease release, and lifecycle requests with human override confirmation
+- broker-backed actions for pin create and clear, lease release, and lifecycle requests with human override confirmation. Delete is a confirmed alias command with no override sheet. It stays enabled for an unleased, unpinned alias that is not `repairing`, including a booted `repair-needed` alias, and it does not use the healthy or state-drift gate that disables Boot and Erase
 - Overview **Automatic shutdown** status and broker-backed Apply, Disable, and
   count-confirmed cleanup actions; unconfigured policy leaves duration blank
 - first-run setup classification for missing CLI, missing host config, stopped
@@ -353,7 +359,7 @@ For broker-managed aliases, the broker must be the middle layer for all state-ch
 - reserve and release
 - pin and clear pin
 - boot and shutdown
-- erase and repair
+- erase, repair, and delete
 
 The app, CLI, AI agents, and repo harnesses must call broker-owned commands or APIs for those actions instead of mutating managed aliases directly with `simctl`.
 
@@ -387,10 +393,10 @@ Failure-contract defaults for v1:
 - exit code `2` means invalid request, including malformed flags, unknown
   commands, invalid config, or missing broker files
 - exit code `3` means unavailable capacity or transient broker-side unavailability, including exhaustion, conflicts, missing runtimes, service unavailability, expired service command queue budgets, or bounded process-sampler timeouts
-- exit code `4` means repair is required or a repair attempt failed. This
-  includes an alias that needs repair, `purpose-repair-failed`, and
-  `capacity-repair-required`. HTTP status is `423`
-- exit code `5` means human override or override confirmation is required before the action may continue. Purpose repair uses `human-override-required` when every unhealthy match is held and nothing was repaired. HTTP status is `412`
+- exit code `4` means repair is required or a repair or delete attempt failed.
+  This includes an alias that needs repair, `purpose-repair-failed`,
+  `purpose-delete-failed`, and `capacity-repair-required`. HTTP status is `423`
+- exit code `5` means human override or override confirmation is required before the action may continue. Purpose repair uses `human-override-required` when every unhealthy match is held and nothing was repaired. Purpose delete uses the same reason when every eligible match is held and nothing was deleted. HTTP status is `412`
 - setup confirmation-required and stale-plan errors use `5`; setup prerequisite
   and non-alias health failures use `3`; alias health uses `4`; cooperative
   SIGINT/SIGTERM interruption uses `130`/`143`
@@ -478,7 +484,13 @@ Stable `reasons` values are:
 - `slot-reclaim-failed`
 - `repair-interrupted`
 - `repair-failed`
+- `runtime-not-found` or `device-type-not-found` beside `repair-failed` when that is the alias failure reason
 - `unhealthy-alias` for any other stored drift string
+
+`simulator-config-mismatch` may also appear from the stored public drift
+reason when sync rewrites an alias, including an iOS `26.4` alias compared
+with an installed `18.2` runtime, before repair throws. Status and exit stay
+the same.
 
 Exit `0` when status is `repaired` or `nothing_to_repair`, including a repaired
 result that also counted held matches. Exit `4` with `purpose-repair-failed`
@@ -488,8 +500,10 @@ held. The thrown error payload carries the same public summary.
 
 An agent runs this command at most once for a denial, then retries the blocked
 `capacity check` or `lease acquire` once. Exit `5` stops for a human. Exit `4`
-stops after one local `simbroker doctor` read of `driftReason`. Doctor output,
-aliases, simulator IDs, and host paths stay out of public logs.
+whose `reasons` include `runtime-not-found` or `device-type-not-found`
+continues to purpose delete, specified below. Any other exit `4` stops after
+one local `simbroker doctor` read of `causeCode` and `driftReason`. Doctor
+output, aliases, simulator IDs, and host paths stay out of public logs.
 
 | ID | Requirement | Verifier |
 | --- | --- | --- |
@@ -509,6 +523,209 @@ Implementation map:
 - `broker-core/error-contract.mjs` owns `purpose-repair-failed`
 - `client/command-dispatch.mjs` owns the purpose flag split, help line, and doctor reason text
 - the macOS app Repair button stays alias repair
+- `examples/harness-adoption/sample-consumer-repo/scripts/` stays acquire-only
+
+### Simulator delete
+
+Humans, the app, agents, and CI delete a broker-managed simulator only through
+`simbroker simulators delete`. The app is a broker client and never calls
+`simctl`. There is no `--force-override` on either form. Idle cleanup, slot
+reclaim, and setup rollback do not delete a simulator. This command does not
+uninstall an iOS runtime, retarget an alias to another iOS version, or add
+`--ios-version` to repair.
+
+#### Alias delete
+
+The app button and an explicit one-alias command use:
+
+```bash
+simbroker simulators delete --alias <alias> [--actor-type agent|ci|human] [--actor-id <id>]
+```
+
+Omitted `--actor-type` means `human`. A non-empty actor type outside
+`agent`, `ci`, or `human` is `invalid-flag` (exit `2`). `--alias` together
+with `--purpose`, and `--force-override` on either form, are `invalid-flag`
+(exit `2`) before any mutation. Unknown flags are rejected before mutation.
+
+The command can delete a `healthy`, `state-drift`, or `repair-needed` alias,
+including a booted repair-needed alias, when it is unleased and unpinned. Any
+pin holds, including a pin for the same project and purpose. A loaded entry
+that is still `repairing` throws `alias-busy` (exit `3`, HTTP `409`). A lease
+is `lease-conflict` (exit `3`). A pin is `pin-conflict` (exit `3`).
+
+`loadBrokerState` always syncs the registry and converts a persisted
+`repairing` row to `repair-needed` before the command sees it. That recovered
+row is eligible for delete. The `alias-busy` guard remains for an entry that
+is still `repairing` after that load. Crash recovery must not be changed to
+block delete.
+
+A missing alias returns success with `unchanged: true`. Inventory sync may
+still list devices. Shutdown and delete are not called again, and no event
+is written. A device that is already absent skips `simctl` and still removes
+the host-config and registry records.
+
+Shutdown and delete go through the existing `deleteAliasSimulator` helper.
+If that call throws, the alias stays, health becomes `repair-needed`,
+`driftReason` stores the error message or cause, and `driftCauseCode` is
+stored only when `reasonCode` is in the known allowlist below. The command
+appends `simulator.delete.failed`, does not write `pendingRetirements`, and
+rethrows. A non-`BrokerError` is wrapped as `simulator-action-failed`.
+
+After the device is gone, the alias is removed from host config and the
+registry. Both writes use the pending-retirement helper so an empty
+`pendingRetirements` array is omitted. The command appends
+`simulator.deleted`. The CLI refreshes `app-snapshot.json` after the command
+returns, outside the lease lock. An empty alias list is valid. The six-alias
+check stays on the starter plan only.
+
+Alias success JSON contains `ok`, `command: "simulators.delete"`, `alias`,
+`unchanged`, and `performedAt`. It omits `simulatorId` and host paths. The
+event log may keep the alias and simulator ID.
+
+#### Purpose delete
+
+Agents and CI use:
+
+```bash
+simbroker simulators delete \
+  --repo-root <repo> \
+  --purpose <purpose> \
+  --actor-type <agent|ci|human> \
+  --actor-id <id> \
+  --json
+```
+
+`--actor-type` and `--actor-id` are required. The command takes the capacity
+lock and then the lease lock once. Those locks are not reentrant, so purpose
+delete must call the shared inner alias function and must not call the public
+alias entrypoint or refresh the snapshot inside the lease lock.
+
+It visits structural matches in alias order. It deletes a match only when
+health is `repair-needed`, `driftCauseCode` is `runtime-not-found` or
+`device-type-not-found`, and the alias has no active lease and no pin.
+`healthy`, `state-drift`, other repair causes, leased matches, and pinned
+matches stay. A lease or pin on an otherwise eligible match counts as held.
+`repairing` is ignored and is not held. One failure does not skip later
+matches.
+
+Success JSON is schema version `1` and is public-safe. It contains `ok`,
+`command: "simulators.delete"`, `purposeId`, integer counts `deleted`,
+`failed`, and `held`, `status`, sorted `reasons`, and `schemaVersion`. It
+must not contain aliases, simulator IDs, paths, actor IDs, or raw `simctl`
+text. Service-backed success omits `servedBy`.
+
+`status` is `deleted` when at least one match was deleted and none failed,
+even if some matches were held. It is `nothing_to_delete` when every count
+is zero, `held` when nothing was deleted and `held` is greater than zero,
+and `failed` when any delete failed.
+
+Exit `0` when status is `deleted` or `nothing_to_delete`. Exit `4` with
+`purpose-delete-failed` when any delete failed. Exit `5` with
+`human-override-required` when nothing was deleted and at least one match is
+held. Both thrown payloads carry the same public summary fields.
+
+Public `reasons` are `runtime-not-found`, `device-type-not-found`,
+`delete-failed`, and `simulator-missing` only when the device was already
+gone and the records were removed. The eligibility cause is also present on
+success, held, and failure.
+
+#### Cause codes
+
+Registry rows persist `driftCauseCode` beside `driftReason`.
+`normalizeRegistry` rebuilds entries and must copy the field. Older rows
+have `null`. A token is stored only when it is in this allowlist:
+
+- `boot-on-acquire-failed`
+- `device-type-not-found`
+- `idle-shutdown-failed`
+- `repair-interrupted`
+- `reset-on-acquire-failed`
+- `runtime-not-found`
+- `simulator-action-failed`
+- `simulator-config-mismatch`
+- `simulator-missing`
+- `simulator-unavailable`
+- `slot-reclaim-failed`
+
+Purpose delete triggers only on `runtime-not-found` and
+`device-type-not-found`. Repair failure sets `driftCauseCode` from
+`error.payload.reasonCode` when that token is known. Repair success, and a
+sync that returns a row to `healthy`, clear it. A sync that rewrites
+`driftReason` on a still-unhealthy row does not clear it. A missing device
+sets `driftReason` to `simulator-missing` and keeps `driftCauseCode`.
+
+An older row with `null` is skipped by purpose delete until a later repair
+records a cause. The app alias button can still delete that unleased,
+unpinned row.
+
+#### Agent and CI procedure
+
+When `capacity check` reports `recommendedAction`
+`repair_matching_simulators`, run purpose repair once. Exit `0` retries the
+check or acquire once. Exit `5` stops for a human and never passes
+`--force-override`. Exit `4` whose `reasons` include `runtime-not-found` or
+`device-type-not-found` runs purpose delete once. Delete exit `0` retries
+capacity check once and acquires only when the purpose is `available`.
+Delete exit `5` stops for a human. Any other repair exit `4` or delete exit
+`4` runs `simbroker doctor` once, reads `causeCode` and `driftReason`
+locally, and stops. `repair_needed` with `install_runtime`,
+`run_broker_doctor`, or `inspect_unknown` follows that action and does not
+repair or delete. Never call `xcrun simctl` boot, shutdown, erase, delete,
+or repair on a broker-managed simulator. Wrapper scripts stay acquire-only.
+
+#### App
+
+Delete appears in the simulator detail Broker actions and in the Broker
+menu. It is enabled when commands can be sent, no mutation is in flight, the
+alias has no lease and no pin, and health is not `repairing`. `repair-needed`
+stays enabled, including when the simulator is booted. Confirmation says the
+action removes the alias from the pool and deletes the simulator and its
+data, and that it does not uninstall the iOS runtime. Confirm sends alias
+delete with `actorType` `human` and actor id `simulator-broker-app`. It does
+not send `forceOverride` and does not open the override sheet. Leased or
+pinned detail text says to release the lease and clear the pin before
+deleting. The repair banner still explains repair and adds that Delete is
+available when the simulator is not leased or pinned. After a successful
+refresh, or when restoring a stored selection, an alias that is gone from
+the snapshot is cleared to no selection instead of jumping to another alias.
+An alias that is only filtered out keeps the existing first-filtered
+selection.
+
+#### Residual risk
+
+Purpose delete shrinks capacity, so the next check may be `unavailable`.
+Reconcile stays human-confirmed. A `simctl` shutdown refusal leaves the
+alias for a later retry. A host-config write that fails after the device is
+already gone is recovered by the next delete through the missing-device
+path.
+
+| ID | Requirement | Verifier |
+| --- | --- | --- |
+| SB-SIM-DELETE-001 | Alias delete removes an unleased, unpinned `healthy`, `state-drift`, `repair-needed`, or recovered `repairing` alias, including a booted repair-needed alias. A missing alias is `unchanged: true` with no second shutdown or delete and no event. Success JSON omits simulator ID and host paths. Snapshot refresh runs after the command returns, outside the lease lock. Host writes omit an empty `pendingRetirements` array. | `broker-core/test/broker-core.test.mjs` `alias delete removes a booted repair-needed simulator and refreshes the snapshot`, `alias delete refuses a lease or pin and accepts healthy, drifted, and recovered repairing aliases`; `client/test/simbroker.test.mjs` `direct CLI delete removes one alias or one stuck purpose and refreshes the snapshot` |
+| SB-SIM-DELETE-002 | A device that is already absent skips `simctl` and still removes host-config and registry records. Purpose reasons include `simulator-missing` for that success. | `broker-core/test/broker-core.test.mjs` `alias delete removes records when the device is already gone`, `purpose delete reports a missing device and continues after one failure` |
+| SB-SIM-DELETE-003 | A shutdown or delete throw leaves the alias, sets `repair-needed`, stores `driftReason` and a known `driftCauseCode`, appends `simulator.delete.failed`, writes no `pendingRetirements`, and rethrows. A non-broker error is `simulator-action-failed`. The command uses `deleteAliasSimulator`. | `broker-core/test/broker-core.test.mjs` `alias delete keeps the alias when simctl delete fails` |
+| SB-SIM-DELETE-004 | A lease is `lease-conflict`, a pin is `pin-conflict`, and a still-`repairing` loaded entry is `alias-busy`. Each is exit `3` and HTTP `409`. Any pin holds. Persisted `repairing` is recovered and then deleted. | `broker-core/test/broker-core.test.mjs` `alias delete refuses a lease or pin and accepts healthy, drifted, and recovered repairing aliases`; `broker-core/test/error-contract.test.mjs` exit `3` and HTTP `409` for `lease-conflict`, `pin-conflict`, and `alias-busy` |
+| SB-SIM-DELETE-005 | Purpose delete removes only unleased, unpinned `repair-needed` matches whose cause is `runtime-not-found` or `device-type-not-found`, in alias order, under one lock pair. Other health values, other causes, leases, and pins stay. `repairing` is ignored. One failure does not skip later matches. The public alias entrypoint is not called. | `broker-core/test/broker-core.test.mjs` `purpose delete removes only unowned missing-runtime matches`, `purpose delete reports a missing device and continues after one failure` |
+| SB-SIM-DELETE-006 | Purpose JSON is schema version `1` with counts, status, and sorted reasons only. `deleted` and `nothing_to_delete` exit `0`. Any failure throws `purpose-delete-failed`. Held-only throws `human-override-required` with the same summary. | `broker-core/test/broker-core.test.mjs` `purpose delete removes only unowned missing-runtime matches`, `purpose delete stops for a human when every eligible match is held`, `purpose delete reports nothing to delete and rejects override selectors` |
+| SB-SIM-DELETE-007 | `purpose-delete-failed` is exit `4` and HTTP `423`. Held-only purpose delete is exit `5` and HTTP `412`. Mixed selectors, `--force-override`, and a bad actor type are exit `2` and HTTP `400`. | `broker-core/test/error-contract.test.mjs`; `client/test/simbroker.test.mjs` `purpose delete accepts agent and ci actors and rejects mixed selectors`; `broker-core/test/broker-core.test.mjs` `alias delete rejects force override and a purpose selector`, `purpose delete reports nothing to delete and rejects override selectors` |
+| SB-SIM-DELETE-008 | `driftCauseCode` survives registry normalization and is cleared only when a row returns to `healthy` or repair succeeds. Repair failure records a known reason code. Purpose repair publishes `runtime-not-found` or `device-type-not-found` beside `repair-failed` and still exits `4`. | `broker-core/test/broker-core.test.mjs` `purpose repair publishes runtime-not-found beside repair-failed`, `alias delete keeps the alias when simctl delete fails` |
+| SB-SIM-DELETE-009 | Doctor JSON includes `causeCode` or `null`. Only `runtime-not-found` and `device-type-not-found` add the alias delete remediation after host status and repair. Human doctor text prints that command. | `broker-core/test/broker-core.test.mjs` `doctor names alias delete only for a missing runtime or device type`, `doctor reports the drift reason and an alias repair command`; `client/test/simbroker.test.mjs` `doctor human formatter names alias delete for a missing runtime` |
+| SB-SIM-DELETE-010 | Direct and service CLI accept both forms, reject `--alias` with `--purpose` and `--force-override`, refresh the snapshot after success, and omit `servedBy` from purpose success. Help lists both commands. | `client/test/simbroker.test.mjs` `direct CLI delete removes one alias or one stuck purpose and refreshes the snapshot`, `purpose delete accepts agent and ci actors and rejects mixed selectors`; `client/test/brokerd.test.mjs` `service-backed purpose delete omits host paths from success JSON` |
+| SB-SIM-DELETE-011 | Delete execution time scales with two `simctl` commands per host alias and includes the capacity lock. No paths uses the six-alias fallback (`2_385_000` ms execution). An empty alias array adds no simctl time. The repair budget of `2630` / `2690` seconds with two pending retirements stays unchanged. | `client/test/simbroker.test.mjs` `service mutation timeouts cover broker lock waits`; `app/Tests/BrokerServiceClientTests.swift` `testDeleteTimeoutBudgetScalesWithHostAliasCount`, `testRepairTimeoutBudgetScalesWithPendingRetirements` |
+| SB-SIM-DELETE-012 | The app enables Delete for an unleased, unpinned, non-`repairing` alias, including booted `repair-needed`, and disables it for a lease, a pin, `repairing`, or when commands cannot be sent. Confirmation sends alias delete as human actor `simulator-broker-app` with no override. A selected alias missing from the snapshot clears to no selection. A filtered-out alias keeps the first filtered match. | `app/Tests/BrokerDashboardStoreTests.swift` `testDeleteStaysEnabledForBootedRepairNeededSimulator`, `testDeleteRequestIsIgnoredWhenTheSimulatorIsHeldOrCommandsCannotBeSent`, `testDeleteConfirmationSendsAliasDeleteWithoutOverride`, `testVanishedSimulatorSelectionClearsWithoutReplacingAFilteredAlias`, `testSceneRestorationClearsAMissingSimulatorAndFallsBackForProjectAndEvent`, `testCommandAvailabilityMatchesSelectedSimulatorState` |
+| SB-SIM-DELETE-013 | Sample agent instructions and the adoption checklist teach the one-attempt purpose delete after a matching repair exit `4`. Wrapper scripts do not contain `simulators delete`. | `examples/harness-adoption/test/harness-adoption.test.mjs` `sample agent instructions repair only for repair_matching_simulators`, `adoption checklist repairs only when capacity recommends repair_matching_simulators` |
+| SB-SIM-DELETE-014 | README and getting-started hello world teach purpose delete after repair exit `4` with `runtime-not-found` or `device-type-not-found`, and neither hello section contains `simulators delete --alias`. | `docs/test/front-door.test.mjs` `README Use it orders Homebrew CLI, cask, guided setup, then hello world` |
+
+Implementation map:
+
+- `broker-core/index.mjs` owns both delete forms, `driftCauseCode`, and doctor `causeCode`
+- `broker-core/error-contract.mjs` owns `purpose-delete-failed`
+- `client/command-dispatch.mjs` owns the flag split and help lines
+- `client/service/service-client.mjs` and `app/Sources/BrokerServiceClient.swift` own the delete timeout
+- `client/service/brokerd.mjs` omits `servedBy` on purpose success
+- `app/Sources/` owns the Delete button, menu, confirmation, and selection clearing
+- `spec/harness-integration.md` owns the agent and CI procedure
+- `.agents/skills/broker-harness-adoption/SKILL.md` points at that procedure and does not invent a second one
 - `examples/harness-adoption/sample-consumer-repo/scripts/` stays acquire-only
 
 ## 7. Public-safe idle lifecycle contract
@@ -842,6 +1059,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.19.0 | 2026-10-23 | Added alias and purpose simulator delete, persisted `driftCauseCode`, and the agent follow-up that deletes only unowned `runtime-not-found` or `device-type-not-found` matches. |
 | 0.18.2 | 2026-10-21 | Reserved `simctl list`, `du`, shutdown, erase, and reset-lock time for build-slot reclaim in the acquire, release, idle-reconcile, and service-startup budgets. |
 | 0.18.1 | 2026-10-21 | Preserved `slot-reclaim-failed` across registry sync, skipped reclaim for repair-latched aliases, aged never-erased slots from the newest use timestamp, and limited disk measurement to enabled candidates. |
 | 0.18.0 | 2026-10-21 | Added between-lease disk reclaim for build slots, with host-config policy defaults, manual opt-in, and `slot.reclaimed` events. |

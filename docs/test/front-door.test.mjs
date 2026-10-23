@@ -279,6 +279,10 @@ test("README Use it orders Homebrew CLI, cask, guided setup, then hello world", 
   assert.ok(hello.includes("driftReason"));
   assert.equal(hello.includes("simbroker simulators repair --alias <alias>"), false);
   assert.equal(hello.includes("simbroker simulators repair\n"), false);
+  assert.ok(hello.includes("simbroker simulators delete"));
+  assert.ok(hello.includes("runtime-not-found"));
+  assert.ok(hello.includes("device-type-not-found"));
+  assert.equal(hello.includes("simulators delete --alias"), false);
   assert.ok(hello.includes("simbroker lease acquire"));
   const gettingHello = headingSection(gettingStarted, "Hello world");
   assert.ok(gettingHello.includes("simbroker capacity check --purpose agent-ui-session --json"));
@@ -292,6 +296,10 @@ test("README Use it orders Homebrew CLI, cask, guided setup, then hello world", 
   assert.ok(gettingHello.includes("simbroker doctor"));
   assert.ok(gettingHello.includes("driftReason"));
   assert.equal(gettingHello.includes("simbroker simulators repair --alias <alias>"), false);
+  assert.ok(gettingHello.includes("simbroker simulators delete"));
+  assert.ok(gettingHello.includes("--purpose"));
+  assert.ok(gettingHello.includes("runtime-not-found"));
+  assert.equal(gettingHello.includes("simulators delete --alias"), false);
   assert.ok(/unavailable/.test(gettingHello));
   assert.ok(/repair_needed/.test(gettingHello));
 });

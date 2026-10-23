@@ -15,7 +15,7 @@ A first extracted implementation slice now exists:
 - automated coverage in `broker-core/test/` and `client/test/`
 - broker-aware sample harness smoke coverage in `examples/harness-adoption/test/` across manual human, interactive agent, unattended agent build-test, CI, failure-cleanup, memory-monitor containment failure cleanup, and detached simulator-like process containment patterns
 - broker containment coverage in `broker-core/test/` for memory ceiling observations, high-memory cleanup evidence, detached simulator-like process discovery, unrelated process preservation, stale-owner containment when process metadata exists, and incomplete-cleanup lease retention
-- lifecycle-control policy and override coverage for `boot`, `shutdown`, `erase`, and `repair`
+- lifecycle-control policy and override coverage for `boot`, `shutdown`, `erase`, `repair`, and `delete`
 - direct and service-backed exit-code contract coverage for invalid requests, unavailable capacity, repair-needed aliases, and override-required flows
 - direct and service-backed capacity coverage for public-safe check output,
   deterministic reconcile preview, exact human-confirmed additive apply,
@@ -61,9 +61,10 @@ A first extracted implementation slice now exists:
   passing `capacity check --purpose agent-ui-session` (`purposes[].status`, not
   top-level `status`). `unavailable` stops at reconcile. `recommendedAction`
   `repair_matching_simulators` runs purpose repair once (`simulators repair --repo-root <repo> --purpose <purpose> --actor-type agent --actor-id <id>`).
-  A `repair_needed` status with `install_runtime`, `run_broker_doctor`, or `inspect_unknown` follows that recommended action instead of purpose repair.
-  Exit `0` retries the check. Exit `5` waits for a human. Exit `4` stops
-  after one local `doctor` read of `driftReason`. The cask is the default
+  A `repair_needed` status with `install_runtime`, `run_broker_doctor`, or `inspect_unknown` follows that recommended action instead of purpose repair or purpose delete.
+  Exit `0` retries the check. Exit `5` waits for a human. Exit `4` whose reasons include `runtime-not-found` or `device-type-not-found` runs purpose delete once (`simulators delete --repo-root <repo> --purpose <purpose> --actor-type agent --actor-id <id>`).
+  Delete exit `0` retries the check and acquires only when the purpose is available. Delete exit `5` waits for a human. Any other repair or delete exit `4` stops
+  after one local `doctor` read of `causeCode` and `driftReason`. The cask is the default
   app install and does not require XcodeGen; XcodeGen is source-build-only.
   Released Simulators intentionally remain warm after lease release while the
   opt-in idle policy is absent; newcomer guidance names `idle status` and the

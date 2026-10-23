@@ -1287,7 +1287,24 @@ test("sample agent instructions repair only for repair_matching_simulators", () 
     assert.match(text, /run_broker_doctor/);
     assert.match(text, /inspect_unknown/);
     assert.match(text, /Do not run purpose repair for those actions/);
+    assert.match(text, /Do not run purpose delete for those actions/);
+    assert.match(text, /`simbroker simulators delete --repo-root "\$PWD" --purpose <purpose> --actor-type agent --actor-id <id> --json`/);
+    assert.match(text, /runtime-not-found/);
+    assert.match(text, /device-type-not-found/);
+    assert.match(text, /causeCode/);
     assert.equal(/follows that action:\s*`simbroker simulators repair/.test(text), false, relativePath);
+    assert.equal(text.includes("simulators delete --alias"), false, relativePath);
+  }
+
+  for (const scriptName of [
+    "run-agent-build-test.sh",
+    "run-agent-ui-session.sh",
+    "run-manual-testing-session.sh",
+    "with-broker-lease.sh",
+  ]) {
+    const script = fs.readFileSync(path.join(SAMPLE_REPO, "scripts", scriptName), "utf8");
+    assert.equal(script.includes("simulators delete"), false, scriptName);
+    assert.equal(script.includes("simulators repair"), false, scriptName);
   }
 });
 
@@ -1305,6 +1322,10 @@ test("adoption checklist repairs only when capacity recommends repair_matching_s
   assert.match(checklist, /install_runtime/);
   assert.match(checklist, /run_broker_doctor/);
   assert.match(checklist, /inspect_unknown/);
+  assert.match(checklist, /Do not run purpose delete for those actions/);
+  assert.match(checklist, /runtime-not-found/);
+  assert.match(checklist, /simulators delete --repo-root "\$PWD"/);
+  assert.match(checklist, /do not call purpose repair or `simulators delete`/);
 });
 
 test("sample repo project file validates against the current broker contract", () => {

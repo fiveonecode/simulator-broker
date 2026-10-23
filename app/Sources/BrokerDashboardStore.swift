@@ -177,6 +177,7 @@ final class BrokerDashboardStore {
         canShutdownSimulator: false,
         canEraseSimulator: false,
         canRepairSimulator: false,
+        canDeleteSimulator: false,
         canReleaseLease: false,
         canCreatePin: false,
         canClearPin: false
@@ -191,6 +192,10 @@ final class BrokerDashboardStore {
       canShutdownSimulator: canMutate && selectedSimulatorAllowsLifecycleMutation && selectedSimulator.powerState == "booted",
       canEraseSimulator: canMutate && selectedSimulatorAllowsLifecycleMutation,
       canRepairSimulator: canMutate,
+      canDeleteSimulator: canMutate
+        && selectedLease == nil
+        && selectedPin == nil
+        && selectedSimulator.health != "repairing",
       canReleaseLease: canMutate && selectedLease != nil,
       canCreatePin: canMutate && selectedPin == nil && hasEligiblePinProjects,
       canClearPin: canMutate && selectedPin != nil
@@ -1329,7 +1334,12 @@ final class BrokerDashboardStore {
     normalizeSimulatorFilters(using: readModel)
 
     let filteredSimulators = readModel.filteredSimulators(using: simulatorFilters)
-    if filteredSimulators.isEmpty {
+    let selectedAliasIsInSnapshot = readModel.snapshot.simulators.contains { simulator in
+      simulator.alias == inspectedSimulatorAlias
+    }
+    if let inspectedSimulatorAlias, selectedAliasIsInSnapshot == false {
+      self.inspectedSimulatorAlias = nil
+    } else if filteredSimulators.isEmpty {
       inspectedSimulatorAlias = nil
     } else if filteredSimulators.contains(where: { $0.alias == inspectedSimulatorAlias }) == false {
       inspectedSimulatorAlias = filteredSimulators.first?.alias
@@ -1523,6 +1533,8 @@ final class BrokerDashboardStore {
       return commandAvailability.canEraseSimulator
     case .repair:
       return commandAvailability.canRepairSimulator
+    case .delete:
+      return commandAvailability.canDeleteSimulator
     }
   }
 
@@ -1541,7 +1553,8 @@ final class BrokerDashboardStore {
           expectedLeaseId: expectedLeaseId
         )
       } catch let error as BrokerServiceCommandError {
-        if let overrideRequest = error.overrideRequest(for: request.action, alias: request.alias),
+        if request.action != .delete,
+          let overrideRequest = error.overrideRequest(for: request.action, alias: request.alias),
           authorityEpoch == serviceAuthorityEpoch,
           canSendCommands,
           canPresentSimulatorPrompt(for: request.alias)

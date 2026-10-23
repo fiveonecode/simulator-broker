@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `simbroker simulators delete --alias <alias>` removes one unleased, unpinned
+  simulator from the pool, including a booted repair-needed alias. A second
+  delete of a missing alias is a no-op. The macOS app Delete action sends
+  this command after confirmation and does not uninstall the iOS runtime.
+- `simbroker simulators delete --repo-root <repo> --purpose <purpose>
+  --actor-type <agent|ci|human> --actor-id <id>` deletes unleased, unpinned
+  repair-needed matches whose cause is `runtime-not-found` or
+  `device-type-not-found`. Agents and CI run it once after purpose repair
+  exits 4 with one of those reasons. Exit 5 stops for a human. Idle cleanup,
+  slot reclaim, and acquire wrappers do not delete.
+- Doctor JSON issues include `causeCode`. When that code is
+  `runtime-not-found` or `device-type-not-found`, remediation includes
+  `simbroker simulators delete --alias <alias>`.
+
 ## [0.1.0-alpha.10] - 2026-10-21
 
 Alpha 10 keeps the Alpha 9 install and four-custom-asset contract. A free

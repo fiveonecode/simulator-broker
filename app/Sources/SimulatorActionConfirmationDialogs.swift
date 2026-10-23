@@ -79,6 +79,8 @@ struct SimulatorActionConfirmationDialogs: ViewModifier {
       return "This will erase simulator data for \(alias) and shut it down."
     case .repair:
       return "This will run broker-managed repair for \(alias). If another actor holds the lease, the broker may require an explicit human override."
+    case .delete:
+      return "This removes \(alias) from the broker pool and deletes the simulator and its data. It does not uninstall the iOS runtime."
     case .boot, .shutdown:
       return ""
     }
@@ -90,6 +92,8 @@ struct SimulatorActionConfirmationDialogs: ViewModifier {
       return Text("Erase simulator?")
     case .repair:
       return Text("Repair simulator?")
+    case .delete:
+      return Text("Delete simulator?")
     default:
       return Text("")
     }

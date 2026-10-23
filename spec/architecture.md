@@ -147,7 +147,7 @@ The app must not become the only authority for broker policy. Repo-owned policy 
 
 The app and CLI must operate on the same broker authority and observe the same state model. No simulator mutation may exist only in the app.
 
-All lifecycle actions for broker-managed aliases, including boot, shutdown, erase, repair, pin, and release, must route through the broker authority rather than direct client `simctl` calls.
+All lifecycle actions for broker-managed aliases, including boot, shutdown, erase, repair, delete, pin, and release, must route through the broker authority rather than direct client `simctl` calls.
 
 Lease acquisition itself boots the selected alias before returning. Idle policy
 and cleanup are also broker-only mutations; neither the app nor a consumer repo
@@ -157,8 +157,10 @@ All destructive cleanup for broker-managed build/test leases must also route thr
 
 All capacity reconciliation for broker-managed aliases must route through
 broker authority. Consumer repos may request purposes and portable requirements,
-but they must not edit host config, choose host aliases, or create/delete
-broker capacity directly.
+but they must not edit host config, choose host aliases, or call `simctl`.
+Agents and CI may delete a simulator only through `simbroker simulators delete`.
+Idle cleanup and slot reclaim do not delete simulators. Capacity reconcile
+remains the human-confirmed way to add capacity.
 
 Machine setup follows the same rule. The core owns mutation planning and
 provisioning; the CLI owns platform preflight and service completion; the app

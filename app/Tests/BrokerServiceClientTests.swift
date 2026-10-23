@@ -251,6 +251,36 @@ final class BrokerServiceClientTests: XCTestCase {
     XCTAssertEqual(budget.transferTimeoutSeconds, 2690)
   }
 
+  func testDeleteTimeoutBudgetScalesWithHostAliasCount() throws {
+    let fixture = try makeServiceFixture()
+    try writeJSONObject([
+      "aliases": [
+        ["alias": "build-1", "simulatorId": "SIM-BUILD-1"],
+        ["alias": "build-2", "simulatorId": "SIM-BUILD-2"],
+      ],
+      "version": 1,
+    ], to: fixture.paths.hostConfigURL)
+
+    let repair = BrokerCommandRequest(command: "repair", group: "simulators", options: [:])
+      .timeoutBudget(paths: fixture.paths)
+    let delete = BrokerCommandRequest(command: "delete", group: "simulators", options: [:])
+      .timeoutBudget(paths: fixture.paths)
+
+    XCTAssertEqual(
+      delete.executionTimeoutSeconds,
+      repair.executionTimeoutSeconds - (10 * 120) + (2 * 2 * 120)
+    )
+    XCTAssertEqual(delete.transferTimeoutSeconds, delete.executionTimeoutSeconds + 60)
+
+    try writeJSONObject([
+      "aliases": [],
+      "version": 1,
+    ], to: fixture.paths.hostConfigURL)
+    let emptyDelete = BrokerCommandRequest(command: "delete", group: "simulators", options: [:])
+      .timeoutBudget(paths: fixture.paths)
+    XCTAssertEqual(emptyDelete.executionTimeoutSeconds, repair.executionTimeoutSeconds - (10 * 120))
+  }
+
   func testHostBootstrapTimeoutBudgetUsesCurrentHostConfig() throws {
     let fixture = try makeServiceFixture()
     try writeJSONObject([
