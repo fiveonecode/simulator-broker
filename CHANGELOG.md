@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Alpha 12 keeps the Alpha 11 install and four-custom-asset contract. Repair,
 recreate, and setup match an installed patch runtime from a major.minor
-request.
+request. The published tag is `v0.1.0-alpha.12`.
 
 ### Fixed
 
