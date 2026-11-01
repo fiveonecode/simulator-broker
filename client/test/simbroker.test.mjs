@@ -1260,12 +1260,119 @@ test("setup rejects missing or stale confirmation and irrelevant flags before mu
     assert.equal(rejected.json.reasonCode, "invalid-flag", args[0]);
   }
 
-  for (const iosVersion of ["banana", "26.4.1", "26.", ".4"]) {
+  for (const iosVersion of ["banana", "26.", ".4", "26.4.1.2"]) {
     const rejected = runCli(fixture, "setup", "--ios-version", iosVersion, "--json");
     assert.equal(rejected.status, 2, iosVersion);
     assert.equal(rejected.json.reasonCode, "invalid-flag", iosVersion);
     assert.equal(rejected.json.flag, "ios-version", iosVersion);
   }
+});
+
+function patchRuntimeCliFixture(version = "26.4.1") {
+  const root = makeTempDir();
+  const supportedDeviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      name: "iPad (A16)",
+      productFamily: "iPad",
+    },
+  ];
+  const simctl = createSimctlFixture(root, {
+    devices: [
+      createDeviceRecord({
+        deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        name: "Build 4",
+        runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-4",
+        udid: "SIM-BUILD-4",
+      }),
+    ],
+    runtimes: [
+      {
+        identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-4",
+        isAvailable: true,
+        supportedDeviceTypes,
+        version,
+      },
+    ],
+  });
+  return {
+    hostConfigPath: path.join(root, "host-config.json"),
+    root,
+    simctl,
+    stateRoot: path.join(root, "state"),
+  };
+}
+
+test("CLI setup selects runtime 26.4.1 for a 26.4 request on two fresh fixtures", () => {
+  const selected = [];
+  for (const hostId of ["patch-cli-a", "patch-cli-b"]) {
+    const fixture = patchRuntimeCliFixture();
+    const preview = runCli(fixture, "setup", "--ios-version", "26.4", "--host-id", hostId, "--json");
+    assert.equal(preview.status, 0, preview.stderr);
+    assert.equal(preview.json.runtime.version, "26.4.1");
+    assert.notEqual(preview.json.reasonCode, "runtime-not-found");
+    selected.push(preview.json.runtime.version);
+
+    const pinned = runCli(fixture, "setup", "--ios-version", "26.4.1", "--host-id", hostId, "--json");
+    assert.equal(pinned.status, 0, pinned.stderr);
+    assert.equal(pinned.json.runtime.version, "26.4.1");
+  }
+  assert.deepEqual(selected, ["26.4.1", "26.4.1"]);
+});
+
+test("CLI repair recreates a 26.4 alias on runtime 26.4.1 and still reports runtime-not-found", () => {
+  const fixture = patchRuntimeCliFixture();
+  writeJson(fixture.hostConfigPath, {
+    aliases: [
+      {
+        alias: "build-4",
+        capabilities: ["build-fast"],
+        deviceFamily: "iPhone",
+        displayName: "Build 4",
+        iosVersion: "26.4",
+        simulatorId: "SIM-BUILD-4",
+      },
+    ],
+    hostId: "patch-cli",
+    version: 1,
+  });
+  assert.equal(runCli(fixture, "host", "init").status, 0);
+  const state = readJson(fixture.simctl.statePath);
+  state.devices = [];
+  writeJson(fixture.simctl.statePath, state);
+  const repaired = runCli(fixture, "simulators", "repair", "--alias", "build-4", "--json");
+  assert.equal(repaired.status, 0, repaired.stderr);
+  assert.equal(repaired.json.simulator.iosVersion, "26.4.1");
+  assert.equal(readJson(fixture.hostConfigPath).aliases[0].iosVersion, "26.4.1");
+
+  const missing = patchRuntimeCliFixture("26.5");
+  writeJson(missing.hostConfigPath, {
+    aliases: [
+      {
+        alias: "build-4",
+        capabilities: ["build-fast"],
+        deviceFamily: "iPhone",
+        displayName: "Build 4",
+        iosVersion: "26.4",
+        simulatorId: "SIM-BUILD-4",
+      },
+    ],
+    hostId: "patch-cli-missing",
+    version: 1,
+  });
+  assert.equal(runCli(missing, "host", "init").status, 0);
+  const missingState = readJson(missing.simctl.statePath);
+  missingState.devices = [];
+  writeJson(missing.simctl.statePath, missingState);
+  const failed = runCli(missing, "simulators", "repair", "--alias", "build-4", "--json");
+  assert.equal(failed.status, 3);
+  assert.equal(failed.json.reasonCode, "runtime-not-found");
+  assert.equal(failed.json.exitCode, 3);
 });
 
 test("setup treats a truncated dashboard snapshot as finishing work", () => {

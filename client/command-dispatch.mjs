@@ -813,12 +813,13 @@ function helpPayload(group) {
   const help = {
     setup: {
       commands: [
-        "setup [--ios-version <major|exact>] [--host-id <id>] [--json]",
-        "setup --apply --confirm <plan-id> [--ios-version <major|exact>] [--host-id <id>] [--json]",
+        "setup [--ios-version <major|major.minor|major.minor.patch>] [--host-id <id>] [--json]",
+        "setup --apply --confirm <plan-id> [--ios-version <major|major.minor|major.minor.patch>] [--host-id <id>] [--json]",
       ],
       notes: [
         "Preview is read-only. Applying requires the exact displayed plan ID.",
         "Setup selects the newest installed iOS runtime that supports both iPhone and iPad unless --ios-version is provided.",
+        "A major.minor request matches that minor and its newest patch. A major.minor.patch request pins that version.",
       ],
       group: "setup",
       usage: "simbroker setup [flags]",

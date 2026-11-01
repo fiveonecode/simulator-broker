@@ -41,6 +41,7 @@ import {
   resolveBrokerPaths,
   shutdownSimulatorBroker,
   validateHostConfig,
+  validateProjectConfig,
   validateProjectBroker,
   writeAppSnapshotArtifact,
   writeAppSnapshotArtifactUnderMutationLock,
@@ -51,6 +52,43 @@ import { createDeviceRecord, createSimctlFixture } from "./support/simctl-fixtur
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-test-"));
+}
+
+const PATCH_DEVICE_TYPES = [
+  {
+    identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+    name: "iPhone 16",
+    productFamily: "iPhone",
+  },
+  {
+    identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+    name: "iPad (A16)",
+    productFamily: "iPad",
+  },
+];
+
+function iosRuntimeRecord({ available = true, identifier, version }) {
+  return {
+    buildversion: "23E254a",
+    identifier,
+    isAvailable: available,
+    supportedDeviceTypes: PATCH_DEVICE_TYPES,
+    version,
+  };
+}
+
+function patchRuntimePaths(root, { devices = [], runtimes }) {
+  const simctl = createSimctlFixture(root, { devices, runtimes });
+  const hostConfigPath = path.join(root, "host-config.json");
+  const projectFilePath = path.join(root, "repo/.simulator-broker/project.json");
+  const stateRoot = path.join(root, "state");
+  return {
+    hostConfigPath,
+    projectFilePath,
+    root,
+    simctl,
+    stateRoot,
+  };
 }
 
 function writeJson(filePath, payload) {
@@ -1075,45 +1113,40 @@ test("setup picks a deterministic runtime when duplicate identifiers advertise d
   assert.equal(forwardIphone.deviceTypeIdentifier, reversedIphone.deviceTypeIdentifier);
 });
 
-test("setup ignores available iOS runtimes whose version is outside the host schema", () => {
+test("setup selects a patch runtime and ignores versions outside major.minor.patch", () => {
   const root = makeTempDir();
-  const supportedDeviceTypes = [
-    {
-      identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
-      name: "iPhone 16",
-      productFamily: "iPhone",
-    },
-    {
-      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
-      name: "iPad (A16)",
-      productFamily: "iPad",
-    },
-  ];
-  const patchRuntime = {
-    buildversion: "22A123",
+  const patchRuntime = iosRuntimeRecord({
     identifier: "com.apple.CoreSimulator.SimRuntime.iOS-18-0",
-    isAvailable: true,
-    supportedDeviceTypes,
     version: "18.0.1",
-  };
-  const completeRuntime = {
-    buildversion: "23F76",
+  });
+  const completeRuntime = iosRuntimeRecord({
     identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
-    isAvailable: true,
-    supportedDeviceTypes,
     version: "26.5",
-  };
+  });
+  const fourComponentRuntime = iosRuntimeRecord({
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-19-0",
+    version: "19.0.1.1",
+  });
   const resolvedPaths = resolveBrokerPaths({
     hostConfigPath: path.join(root, "host-config.json"),
     stateRoot: path.join(root, "state"),
   });
 
   const patchOnly = createSimctlFixture(root, { runtimes: [patchRuntime] });
-  assert.throws(() => previewSetupBroker(resolvedPaths, {
+  const patchPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "patch-only",
     simctlAdapter: patchOnly.adapter,
-  }), (error) => error instanceof BrokerError && error.payload.reasonCode === "runtime-not-found");
+  });
+  assert.equal(patchPreview.status, "changes_required");
+  assert.equal(patchPreview.runtime.version, "18.0.1");
+  assert.equal(patchPreview.runtime.identifier, patchRuntime.identifier);
 
-  const mixed = createSimctlFixture(root, { runtimes: [patchRuntime, completeRuntime] });
+  const fourOnly = createSimctlFixture(root, { runtimes: [fourComponentRuntime] });
+  assert.throws(() => previewSetupBroker(resolvedPaths, {
+    simctlAdapter: fourOnly.adapter,
+  }), (error) => error instanceof BrokerError && error.payload.reasonCode === "runtime-not-found" && error.exitCode === 3);
+
+  const mixed = createSimctlFixture(root, { runtimes: [patchRuntime, fourComponentRuntime, completeRuntime] });
   const preview = previewSetupBroker(resolvedPaths, {
     simctlAdapter: mixed.adapter,
   });
@@ -1121,6 +1154,392 @@ test("setup ignores available iOS runtimes whose version is outside the host sch
   assert.equal(preview.runtime.version, "26.5");
   assert.equal(preview.runtime.identifier, completeRuntime.identifier);
   assert.ok(preview.devices.every((device) => device.runtimeVersion === "26.5"));
+});
+
+test("setup, repair, and recreate select iOS 26.4.1 for a 26.4 request", () => {
+  const runtime = iosRuntimeRecord({
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-4",
+    version: "26.4.1",
+  });
+  const setupRoot = makeTempDir();
+  const setupPaths = patchRuntimePaths(setupRoot, { runtimes: [runtime] });
+  const setupResolved = resolveBrokerPaths({
+    hostConfigPath: setupPaths.hostConfigPath,
+    stateRoot: setupPaths.stateRoot,
+  });
+  const preview = previewSetupBroker(setupResolved, {
+    hostId: "patch-setup",
+    iosVersion: "26.4",
+    simctlAdapter: setupPaths.simctl.adapter,
+  });
+  assert.equal(preview.runtime.version, "26.4.1");
+  assert.equal(preview.runtime.identifier, runtime.identifier);
+  assert.ok(preview.devices.every((device) => device.runtimeVersion === "26.4.1"));
+  const applied = applySetupBroker(setupResolved, {
+    confirmPlanId: preview.planId,
+    hostId: "patch-setup",
+    iosVersion: "26.4",
+    simctlAdapter: setupPaths.simctl.adapter,
+  });
+  assert.equal(applied.status, "ready");
+  const committed = readJson(setupPaths.hostConfigPath);
+  assert.ok(committed.aliases.every((alias) => alias.iosVersion === "26.4.1"));
+  assert.equal(validateHostConfig(committed).aliases[0].iosVersion, "26.4.1");
+  fs.rmSync(setupResolved.registryPath);
+  const resumed = previewSetupBroker(setupResolved, {
+    simctlAdapter: setupPaths.simctl.adapter,
+  });
+  assert.equal(resumed.status, "changes_required");
+  assert.ok(resumed.prerequisites.some((issue) => issue.id === "registry" && issue.status === "info"));
+
+  const repairRoot = makeTempDir();
+  const repairPaths = patchRuntimePaths(repairRoot, {
+    devices: [
+      createDeviceRecord({
+        deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        name: "Build 4",
+        runtimeIdentifier: runtime.identifier,
+        udid: "SIM-BUILD-4",
+      }),
+    ],
+    runtimes: [runtime],
+  });
+  writeJson(repairPaths.hostConfigPath, {
+    aliases: [
+      {
+        alias: "build-4",
+        capabilities: ["build-fast"],
+        deviceFamily: "iPhone",
+        displayName: "Build 4",
+        iosVersion: "26.4",
+        simulatorId: "SIM-BUILD-4",
+      },
+    ],
+    hostId: "patch-repair",
+    version: 1,
+  });
+  const repairResolved = resolveBrokerPaths({
+    hostConfigPath: repairPaths.hostConfigPath,
+    projectFilePath: repairPaths.projectFilePath,
+    stateRoot: repairPaths.stateRoot,
+  });
+  initBroker(repairResolved, runtimeOptions(repairPaths, { processExists: () => true }));
+  const fixtureState = readJson(repairPaths.simctl.statePath);
+  fixtureState.devices = [];
+  writeJson(repairPaths.simctl.statePath, fixtureState);
+  const beforeRepair = hostStatusBroker(repairResolved, runtimeOptions(repairPaths, { processExists: () => true }));
+  assert.equal(beforeRepair.simulators.find((simulator) => simulator.alias === "build-4").health, "repair-needed");
+
+  const repaired = repairSimulatorBroker(repairResolved, {
+    actorId: "human-operator",
+    actorType: "human",
+    alias: "build-4",
+    processExists: () => true,
+    simctlAdapter: repairPaths.simctl.adapter,
+  });
+  assert.equal(repaired.simulator.health, "healthy");
+  assert.equal(repaired.simulator.iosVersion, "26.4.1");
+  assert.notEqual(repaired.simulator.simulatorId, "SIM-BUILD-4");
+  const repairedHost = validateHostConfig(readJson(repairPaths.hostConfigPath));
+  assert.equal(repairedHost.aliases[0].iosVersion, "26.4.1");
+  assert.equal(repairedHost.aliases[0].simulatorId, repaired.simulator.simulatorId);
+  const afterRepair = hostStatusBroker(repairResolved, runtimeOptions(repairPaths, { processExists: () => true }));
+  const repairedSimulator = afterRepair.simulators.find((simulator) => simulator.alias === "build-4");
+  assert.equal(repairedSimulator.health, "healthy");
+  assert.equal(repairedSimulator.iosVersion, "26.4.1");
+
+  writeJson(repairPaths.projectFilePath, {
+    projectId: "patch-demo",
+    projectName: "Patch Demo",
+    purposes: [
+      {
+        capability: "build-fast",
+        defaultActorType: "agent",
+        displayName: "Agent Build Test",
+        id: "agent-build-test",
+        requires: {
+          deviceFamily: "iPhone",
+          iosVersion: "26.4",
+        },
+      },
+    ],
+    version: 1,
+  });
+  const leased = acquireLeaseBroker(repairResolved, {
+    actorId: "agent-1",
+    actorType: "agent",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "agent-build-test",
+    simctlAdapter: repairPaths.simctl.adapter,
+  });
+  assert.equal(leased.lease.alias, "build-4");
+  releaseLeaseBroker(repairResolved, {
+    actorId: "agent-1",
+    actorType: "agent",
+    leaseId: leased.lease.leaseId,
+    processExists: (pid) => pid === process.pid,
+    simctlAdapter: repairPaths.simctl.adapter,
+  });
+
+  for (const iosVersion of ["26", "26.4"]) {
+    const project = readJson(repairPaths.projectFilePath);
+    project.purposes[0].requires.iosVersion = iosVersion;
+    writeJson(repairPaths.projectFilePath, project);
+    const again = acquireLeaseBroker(repairResolved, {
+      actorId: "agent-1",
+      actorType: "agent",
+      ownerPid: process.pid,
+      processExists: (pid) => pid === process.pid,
+      purposeId: "agent-build-test",
+      simctlAdapter: repairPaths.simctl.adapter,
+    });
+    assert.equal(again.lease.alias, "build-4", iosVersion);
+    releaseLeaseBroker(repairResolved, {
+      actorId: "agent-1",
+      actorType: "agent",
+      leaseId: again.lease.leaseId,
+      processExists: (pid) => pid === process.pid,
+      simctlAdapter: repairPaths.simctl.adapter,
+    });
+  }
+
+  for (const iosVersion of ["26.5", "26.40"]) {
+    const project = readJson(repairPaths.projectFilePath);
+    project.purposes[0].requires.iosVersion = iosVersion;
+    writeJson(repairPaths.projectFilePath, project);
+    assert.throws(() => acquireLeaseBroker(repairResolved, {
+      actorId: "agent-1",
+      actorType: "agent",
+      ownerPid: process.pid,
+      processExists: (pid) => pid === process.pid,
+      purposeId: "agent-build-test",
+      simctlAdapter: repairPaths.simctl.adapter,
+    }), (error) => error.payload?.reasonCode === "no-matching-alias", iosVersion);
+  }
+});
+
+test("iOS runtime selection picks the highest patch and keeps runtime-not-found", () => {
+  const supported = (version, identifier = `com.apple.CoreSimulator.SimRuntime.iOS-${version.replaceAll(".", "-")}`) =>
+    iosRuntimeRecord({ identifier, version });
+  const root = makeTempDir();
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: path.join(root, "host-config.json"),
+    stateRoot: path.join(root, "state"),
+  });
+  const candidates = [
+    supported("26.4", "com.apple.CoreSimulator.SimRuntime.iOS-26-4-base"),
+    supported("26.4.2", "com.apple.CoreSimulator.SimRuntime.iOS-26-4-patch2"),
+    supported("26.4.10", "com.apple.CoreSimulator.SimRuntime.iOS-26-4-patch10"),
+    supported("26.4.1", "com.apple.CoreSimulator.SimRuntime.iOS-26-4"),
+    supported("26.5"),
+    supported("26.40"),
+    iosRuntimeRecord({
+      available: false,
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-4-unavailable",
+      version: "26.4.99",
+    }),
+    iosRuntimeRecord({
+      identifier: "com.apple.CoreSimulator.SimRuntime.tvOS-26-4",
+      version: "26.4.50",
+    }),
+    iosRuntimeRecord({
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-4-extra",
+      version: "26.4.1.2",
+    }),
+  ];
+  const simctl = createSimctlFixture(root, { runtimes: candidates });
+  const minor = previewSetupBroker(resolvedPaths, {
+    hostId: "highest-patch",
+    iosVersion: "26.4",
+    simctlAdapter: simctl.adapter,
+  });
+  assert.equal(minor.runtime.version, "26.4.10");
+  const pin = previewSetupBroker(resolvedPaths, {
+    hostId: "highest-patch",
+    iosVersion: "26.4.1",
+    simctlAdapter: simctl.adapter,
+  });
+  assert.equal(pin.runtime.version, "26.4.1");
+  assert.equal(pin.runtime.identifier, "com.apple.CoreSimulator.SimRuntime.iOS-26-4");
+
+  const bare = createSimctlFixture(root, {
+    runtimes: [supported("26.4", "com.apple.CoreSimulator.SimRuntime.iOS-26-4")],
+  });
+  const barePreview = previewSetupBroker(resolvedPaths, {
+    hostId: "bare-minor",
+    iosVersion: "26.4",
+    simctlAdapter: bare.adapter,
+  });
+  assert.equal(barePreview.runtime.version, "26.4");
+
+  const majorOnly = createSimctlFixture(root, {
+    runtimes: [supported("26.4.1", "com.apple.CoreSimulator.SimRuntime.iOS-26-4")],
+  });
+  const majorPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "major-patch",
+    iosVersion: "26",
+    simctlAdapter: majorOnly.adapter,
+  });
+  assert.equal(majorPreview.runtime.version, "26.4.1");
+  const newerMinor = createSimctlFixture(root, {
+    runtimes: [
+      supported("26.4.1", "com.apple.CoreSimulator.SimRuntime.iOS-26-4"),
+      supported("26.5"),
+    ],
+  });
+  const newerMinorPreview = previewSetupBroker(resolvedPaths, {
+    hostId: "major-newest",
+    iosVersion: "26",
+    simctlAdapter: newerMinor.adapter,
+  });
+  assert.equal(newerMinorPreview.runtime.version, "26.5");
+
+  for (const runtimes of [
+    [supported("26.5"), supported("26.40")],
+    [iosRuntimeRecord({
+      available: false,
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-4",
+      version: "26.4.1",
+    })],
+    [iosRuntimeRecord({
+      identifier: "com.apple.CoreSimulator.SimRuntime.tvOS-26-4",
+      version: "26.4.1",
+    })],
+  ]) {
+    const missing = createSimctlFixture(root, { runtimes });
+    assert.throws(() => previewSetupBroker(resolvedPaths, {
+      iosVersion: "26.4",
+      simctlAdapter: missing.adapter,
+    }), (error) => error instanceof BrokerError
+      && error.payload.reasonCode === "runtime-not-found"
+      && error.exitCode === 3);
+  }
+
+  const repairPaths = patchRuntimePaths(root, {
+    devices: [],
+    runtimes: [supported("26.5"), supported("26.40")],
+  });
+  writeJson(repairPaths.hostConfigPath, {
+    aliases: [
+      {
+        alias: "build-4",
+        capabilities: ["build-fast"],
+        deviceFamily: "iPhone",
+        displayName: "Build 4",
+        iosVersion: "26.4",
+        simulatorId: "SIM-MISSING",
+      },
+    ],
+    hostId: "patch-missing",
+    version: 1,
+  });
+  const repairResolved = resolveBrokerPaths({
+    hostConfigPath: repairPaths.hostConfigPath,
+    stateRoot: repairPaths.stateRoot,
+  });
+  initBroker(repairResolved, {
+    processExists: () => true,
+    simctlAdapter: repairPaths.simctl.adapter,
+  });
+  assert.throws(() => repairSimulatorBroker(repairResolved, {
+    alias: "build-4",
+    processExists: () => true,
+    simctlAdapter: repairPaths.simctl.adapter,
+  }), (error) => error instanceof BrokerError
+    && error.payload.reasonCode === "runtime-not-found"
+    && error.exitCode === 3
+    && /26\.4/.test(error.message));
+});
+
+test("host config and project requires accept an iOS patch pin", () => {
+  const alias = {
+    alias: "ui-1",
+    capabilities: ["interactive-resettable"],
+    deviceFamily: "iPhone",
+    displayName: "UI One",
+    iosVersion: "26.4.1",
+    simulatorId: "SIM-UI-1",
+  };
+  const loaded = validateHostConfig({
+    aliases: [alias],
+    hostId: "patch-record",
+    version: 1,
+  });
+  assert.equal(loaded.aliases[0].iosVersion, "26.4.1");
+  const project = validateProjectConfig({
+    projectId: "patch-project",
+    projectName: "Patch Project",
+    purposes: [
+      {
+        capability: "interactive-resettable",
+        defaultActorType: "agent",
+        displayName: "Agent UI",
+        id: "agent-ui-session",
+        requires: {
+          deviceFamily: "iPhone",
+          iosVersion: "26.4.1",
+        },
+      },
+    ],
+    version: 1,
+  });
+  assert.equal(project.purposes[0].requires.iosVersion, "26.4.1");
+
+  for (const iosVersion of ["26.", ".4", "banana", "26.4.1.2"]) {
+    assert.throws(() => validateHostConfig({
+      aliases: [{ ...alias, iosVersion }],
+      hostId: "patch-record",
+      version: 1,
+    }), (error) => error.payload?.reasonCode === "invalid-config", iosVersion);
+    assert.throws(() => validateProjectConfig({
+      projectId: "patch-project",
+      projectName: "Patch Project",
+      purposes: [
+        {
+          capability: "interactive-resettable",
+          defaultActorType: "agent",
+          displayName: "Agent UI",
+          id: "agent-ui-session",
+          requires: {
+            deviceFamily: "iPhone",
+            iosVersion,
+          },
+        },
+      ],
+      version: 1,
+    }), (error) => error.payload?.reasonCode === "invalid-config", iosVersion);
+  }
+
+  const root = makeTempDir();
+  const runtime = iosRuntimeRecord({
+    identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-4",
+    version: "26.4.1",
+  });
+  const paths = patchRuntimePaths(root, {
+    devices: [
+      createDeviceRecord({
+        deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        name: "UI One",
+        runtimeIdentifier: runtime.identifier,
+        udid: "SIM-UI-1",
+      }),
+    ],
+    runtimes: [runtime],
+  });
+  writeJson(paths.hostConfigPath, {
+    aliases: [alias],
+    hostId: "stored-patch",
+    version: 1,
+  });
+  const resolvedPaths = resolveBrokerPaths({
+    hostConfigPath: paths.hostConfigPath,
+    stateRoot: paths.stateRoot,
+  });
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const status = hostStatusBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  assert.equal(status.simulators[0].iosVersion, "26.4.1");
+  assert.equal(status.simulators[0].health, "healthy");
 });
 
 test("setup rejects an available iOS runtime that omits version before planning", () => {

@@ -835,8 +835,8 @@ function setupOptions(flags) {
     });
   }
   const iosVersion = setupValueFlag(flags, "ios-version");
-  if (iosVersion !== null && !/^\d+(?:\.\d+)?$/.test(iosVersion)) {
-    throw new BrokerError("Flag --ios-version must be an iOS major or exact major.minor version.", {
+  if (iosVersion !== null && !/^\d+(?:\.\d+){0,2}$/.test(iosVersion)) {
+    throw new BrokerError("Flag --ios-version must be an iOS <major>, <major.minor>, or <major.minor.patch> version.", {
       flag: "ios-version",
       reasonCode: "invalid-flag",
     });
