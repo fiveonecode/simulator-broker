@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Repair, recreate, and setup match an iOS `X.Y` request to an installed `X.Y`
+  or `X.Y.Z` runtime and choose the highest patch. `X` still matches that
+  major, including patch runtimes. `X.Y.Z` is an exact pin in host config,
+  project `requires`, and `--ios-version`. A request that matches nothing
+  still fails with `runtime-not-found`.
+
 ## [0.1.0-alpha.11] - 2026-10-23
 
 Alpha 11 keeps the Alpha 10 install and four-custom-asset contract. Humans,

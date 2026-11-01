@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/global-simulator-broker.md`, `spec/architecture.md`, `spec/harness-integration.md`, `spec/build-and-test.md`, `spec/project-structure.md`
 
 > **Document ID:** `GSB-PLAN-001`
-> **Version:** `0.10.0`
-> **Last Updated:** `2026-10-23`
+> **Version:** `0.10.1`
+> **Last Updated:** `2026-11-01`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -217,13 +217,17 @@ Requirement semantics:
 Allowed `requires` fields in v1:
 
 - `deviceFamily`: enum `iPhone` or `iPad`
-- `iosVersion`: string matching `^\d+(\.\d+)?$`
+- `iosVersion`: string matching `^\d+(\.\d+){0,2}$` (`<major>`, `<major.minor>`, or `<major.minor.patch>`)
 
 Validation and matching rules:
 
 - fields are ANDed together when both are present
-- `iosVersion: "18"` matches any installed iOS `18.x` runtime
-- `iosVersion: "18.2"` matches only iOS `18.2`
+- `iosVersion: "18"` matches installed iOS `18`, `18.x`, and `18.x.y`
+- `iosVersion: "18.2"` matches iOS `18.2` and `18.2.y`, and does not match `18.20` or `18.3`
+- `iosVersion: "18.2.1"` matches only iOS `18.2.1`
+- components compare as integers, and the highest matching available iOS runtime is selected
+- `<major.minor>` remains the normal config form; `<major.minor.patch>` is an exact pin
+- repair, recreate, and setup store the selected runtime version on the alias, including a patch, and that stored value still loads
 - device type names such as `iPhone 16` are not allowed in repo config v1
 - if no `requires` block is present, selection is driven only by capability,
   health, lease and pin state, power state, and most recent release time

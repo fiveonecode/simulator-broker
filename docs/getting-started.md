@@ -140,8 +140,9 @@ simbroker setup
 ```
 
 It performs a read-only preview first and asks once before making changes. Use
-`--ios-version 26` for the newest installed compatible 26.x runtime or an exact
-value such as `--ios-version 26.4`. If no compatible runtime is installed,
+`--ios-version 26` for the newest installed compatible 26 runtime,
+`--ios-version 26.4` for 26.4 or its newest patch such as 26.4.1, or
+`--ios-version 26.4.1` to pin that patch. If no compatible runtime is installed,
 setup shows Xcode Settings > Components and `xcodebuild -downloadPlatform iOS`
 as manual recovery; it never downloads a runtime, accepts a license, runs
 first-launch tasks, or invokes `sudo` for you.

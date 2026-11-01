@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.19.0`
-> **Last Updated:** `2026-10-23`
+> **Version:** `0.19.1`
+> **Last Updated:** `2026-11-01`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -374,6 +374,13 @@ Default operational decisions for v1:
 
 - repo project config uses explicit requirements only; there is no soft-preference layer
 - repo project config v1 supports only `deviceFamily` and `iosVersion` in `requires`
+- host-config `iosVersion`, project `requires.iosVersion`, and `--ios-version` accept `<major>`, `<major.minor>`, or `<major.minor.patch>`
+- `<major>` matches that major, including `<major.minor>` and `<major.minor.patch>` runtimes
+- `<major.minor>` matches that minor and any patch (`26.4` matches `26.4` and `26.4.1`, and does not match `26.5` or `26.40`); this remains the normal config form
+- `<major.minor.patch>` is an exact pin
+- matching compares components as integers and selects the highest available iOS runtime; unavailable, non-iOS, and other version shapes do not match
+- repair, recreate, and setup store the selected runtime version on the alias, and a stored patch still satisfies a `major` or `major.minor` requirement for that same line
+- when nothing matches, runtime selection fails with `runtime-not-found` and exit code `3`
 - when multiple aliases satisfy a requirement set, the single deterministic
   warm-reuse ordering chooses among them; no legacy rotation mode exists
 - acquisition succeeds only after the selected simulator is booted
@@ -1059,6 +1066,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.19.1 | 2026-11-01 | Match an `X.Y` runtime request to an installed `X.Y` or `X.Y.Z` runtime, and accept an exact `X.Y.Z` pin in host config, project requirements, and `--ios-version`. |
 | 0.19.0 | 2026-10-23 | Added alias and purpose simulator delete, persisted `driftCauseCode`, and the agent follow-up that deletes only unowned `runtime-not-found` or `device-type-not-found` matches. |
 | 0.18.2 | 2026-10-21 | Reserved `simctl list`, `du`, shutdown, erase, and reset-lock time for build-slot reclaim in the acquire, release, idle-reconcile, and service-startup budgets. |
 | 0.18.1 | 2026-10-21 | Preserved `slot-reclaim-failed` across registry sync, skipped reclaim for repair-latched aliases, aged never-erased slots from the newest use timestamp, and limited disk measurement to enabled candidates. |

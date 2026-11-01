@@ -698,11 +698,14 @@ function compareVersions(left, right) {
 }
 
 function isHostSchemaIosVersion(version) {
-  return /^\d+(\.\d+)?$/.test(String(version ?? ""));
+  return /^\d+(?:\.\d+){0,2}$/.test(String(version ?? ""));
 }
 
-function isMajorOnlyVersion(version) {
-  return /^\d+$/.test(String(version ?? ""));
+function iosVersionComponents(version) {
+  if (isHostSchemaIosVersion(version) === false) {
+    return null;
+  }
+  return String(version).split(".").map((part) => Number(part));
 }
 
 function simulatorDisplayName(hostId, alias) {
@@ -817,7 +820,7 @@ function validateDeviceFamily(value, field) {
 function validateIosVersion(value, field) {
   const iosVersion = requireString(value, field);
   if (isHostSchemaIosVersion(iosVersion) === false) {
-    throw new BrokerError(`${field} must match <major> or <major.minor>.`, {
+    throw new BrokerError(`${field} must match <major>, <major.minor>, or <major.minor.patch>.`, {
       reasonCode: "invalid-config",
       field,
     });
@@ -1201,16 +1204,24 @@ function runtimeMatchesRequestedVersion(runtime, requestedVersion) {
   if (typeof runtime?.version !== "string" || runtime.version.length === 0) {
     return false;
   }
-  if (!isHostSchemaIosVersion(runtime.version)) {
+  const runtimeParts = iosVersionComponents(runtime.version);
+  if (runtimeParts === null) {
     return false;
   }
   if (!requestedVersion) {
     return true;
   }
-  const runtimeVersion = runtime.version;
-  return isMajorOnlyVersion(requestedVersion)
-    ? runtimeVersion.split(".")[0] === String(requestedVersion)
-    : runtimeVersion === String(requestedVersion);
+  const requestedParts = iosVersionComponents(requestedVersion);
+  if (requestedParts === null) {
+    return false;
+  }
+  // A patch request is an exact pin. A major or minor request matches that
+  // prefix, so 26.4 matches 26.4 and 26.4.1 and does not match 26.40.
+  if (requestedParts.length === 3) {
+    return runtimeParts.length === 3
+      && runtimeParts.every((part, index) => part === requestedParts[index]);
+  }
+  return requestedParts.every((part, index) => runtimeParts[index] === part);
 }
 
 function selectRuntimeForAlias(simctl, iosVersion) {
