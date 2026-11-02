@@ -73,8 +73,9 @@ This repo exists to develop a reusable local simulator broker:
 - broker-aware build/test leases now support downstream process registration, memory ceiling containment, evidence bundles, and forced-abort cleanup for detached simulator-like processes
 - broker capacity commands now support public-safe `capacity check`,
   non-mutating deterministic `capacity reconcile` preview, and
-  human-confirmed additive apply with local transaction evidence, rollback, and
-  recovery
+  additive apply confirmed by a human or an agent, with local transaction
+  evidence, rollback, and recovery. `ci` may not apply. The app Simulators
+  screen confirms the same plan
 - guide-aligned `broker-harness-adoption` skill artifacts live under `.agents/skills/broker-harness-adoption/`
 - repo-owned Symphony execution is governed by `WORKFLOW.md`, which uses
   `scripts/validate.sh` as the canonical full-repository validation entry point

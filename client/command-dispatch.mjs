@@ -828,7 +828,11 @@ function helpPayload(group) {
       commands: [
         "capacity check --repo-root <repo> [--purpose <purpose>] [--json]",
         "capacity reconcile --repo-root <repo> [--purpose <purpose>] [--json]",
-        "capacity reconcile --repo-root <repo> [--purpose <purpose>] --apply --confirm <plan-id> --actor-type human --actor-id <operator-id> [--json]",
+        "capacity reconcile --repo-root <repo> [--purpose <purpose>] --apply --confirm <plan-id> --actor-type <human|agent> --actor-id <id> [--json]",
+      ],
+      notes: [
+        "Apply creates only missing purpose capacity and requires the current plan ID.",
+        "human and agent may apply. ci may not.",
       ],
       group: "capacity",
       usage: "simbroker capacity <command>",

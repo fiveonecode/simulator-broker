@@ -7275,14 +7275,14 @@ function validateCapacityApplyShape(options) {
       reasonCode: "capacity-confirmation-required",
     });
   }
-  if (options.actorType !== "human") {
-    throw new BrokerError("Capacity reconcile apply requires --actor-type human.", {
-      reasonCode: "capacity-human-required",
+  if (options.actorType !== "human" && options.actorType !== "agent") {
+    throw new BrokerError("Capacity reconcile apply requires --actor-type human or agent.", {
+      reasonCode: "capacity-actor-forbidden",
     });
   }
   if (!options.actorId) {
-    throw new BrokerError("Capacity reconcile apply requires --actor-id <operator-id>.", {
-      reasonCode: "capacity-human-required",
+    throw new BrokerError("Capacity reconcile apply requires --actor-id.", {
+      reasonCode: "capacity-actor-required",
     });
   }
 }

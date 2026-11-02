@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/architecture.md`, `spec/implementation-plan.md`, `spec/build-and-test.md`, `spec/project-structure.md`, `spec/tasks/public-safe-on-demand-simulator-lifecycle.md`, `references/README.md`
 
 > **Document ID:** `GSB-001`
-> **Version:** `0.19.1`
-> **Last Updated:** `2026-11-01`
+> **Version:** `0.20.0`
+> **Last Updated:** `2026-11-02`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 > **Implementation owners:** `spec-steward`, `ios-dev`
@@ -257,7 +257,8 @@ Current implementation slice:
 - `events watch`
 - `pin create` and `pin clear`
 - `capacity check` and `capacity reconcile` for public-safe capacity diagnosis,
-  deterministic reconcile preview, and human-confirmed additive capacity apply
+  deterministic reconcile preview, and additive capacity apply confirmed by a
+  human or an agent. `ci` may not apply
 - `doctor`. Human text stays the default. `--json` issues for an unhealthy
   alias include `alias`, `causeCode` or `null`, `driftReason`, `health`,
   `reasonCode: alias-unhealthy`, and path-qualified `remediationCommands` for
@@ -700,11 +701,15 @@ selection.
 
 #### Residual risk
 
-Purpose delete shrinks capacity, so the next check may be `unavailable`.
-Reconcile stays human-confirmed. A `simctl` shutdown refusal leaves the
+Purpose delete shrinks capacity, so the next check may be `unavailable`
+with `recommendedAction` `create_capacity`. An agent may preview that
+purpose and apply one confirmed reconcile. CI may not. A second apply of a
+`no_changes` plan creates nothing. A `simctl` shutdown refusal leaves the
 alias for a later retry. A host-config write that fails after the device is
 already gone is recovered by the next delete through the missing-device
-path.
+path. An agent who can edit the consumer `project.json` can declare a new
+purpose and create one simulator for that requirement tuple. That is the
+same authority a human apply has.
 
 | ID | Requirement | Verifier |
 | --- | --- | --- |
@@ -923,7 +928,8 @@ selected project purpose fields, capacity-relevant host config, refreshed
 inventory, health, lease, and pin state. Volatile timestamps, paths, PIDs, and
 presentation-only fields are excluded from the digest.
 
-Apply is additive only and requires exact current human confirmation:
+Apply is additive only and requires the exact current plan ID from a human
+or an agent:
 
 ```bash
 simbroker capacity reconcile \
@@ -931,19 +937,60 @@ simbroker capacity reconcile \
   [--purpose <purpose-id>] \
   --apply \
   --confirm <plan-id> \
-  --actor-type human \
-  --actor-id <operator-id> \
+  --actor-type <human|agent> \
+  --actor-id <id> \
   --json
 ```
 
-Apply must reject missing confirmation, stale confirmation, missing actor ID,
-and non-human actor type with exit `5` before mutation. It must reject blocked
-plans before mutation. These checks use a read-only state snapshot and run
-before transaction recovery. Read-only capacity snapshots ignore lease records
+Apply checks shape before mutation, in this order:
+
+1. Missing `--confirm` is `capacity-confirmation-required`.
+2. An actor type other than `human` or `agent`, including `ci`, is
+   `capacity-actor-forbidden`.
+3. A missing or blank actor id is `capacity-actor-required`.
+
+A confirmation that is not the current plan ID is `capacity-plan-stale`.
+Each of those four outcomes is exit `5` before mutation. A blocked plan
+fails before mutation. A second apply of a `no_changes` plan creates
+nothing. These checks use a read-only state snapshot and run before
+transaction recovery. Read-only capacity snapshots ignore lease records
 whose owner fails the same PID and containment-identity liveness checks used by
 the mutating state loader, without reclaiming the lease or writing cleanup
 evidence. There is no unattended `--yes`, force flag, stdin confirmation, or
 environment-variable bypass in v1.
+
+When `capacity check` reports `recommendedAction` `create_capacity`, an
+agent previews that purpose, applies once only when status is
+`changes_required`, runs `capacity check` once more, and acquires only when
+the purpose is `available`. The agent stops on a blocked preview, apply
+exit `4` or `5`, or a check that is still not `available`. The agent does
+not apply a second time. CI must not apply.
+
+The macOS app Simulators toolbar has one **Add simulators** button. It is
+enabled when commands can be sent, no mutation is in flight, and the sheet
+is closed. With no registered project file, it shows `Onboard a repo before
+adding simulators.` and sends no command. Otherwise a sheet preselects the
+first registered project, offers all purposes or one purpose, and previews
+reconcile. The sheet lists each public create action: device family, iOS
+requirement or `newest compatible`, capability, reset policy, and purpose
+ids. `changes_required` enables Create. `no_changes` says the project
+already has the simulators it declares. `blocked` shows purpose ids, reason
+codes, and the recommended action, and does not enable Create. Confirm
+sends apply as actor type `human` and actor id `simulator-broker-app` with
+the preview plan id. The button does not ask for an alias, device type, or
+runtime. A stale plan shows the broker message, which tells the operator to
+rerun preview. Success refreshes through the existing mutation path.
+
+Busy matching capacity stays blocked and does not create an extra
+simulator. Repair-needed capacity stays on purpose repair. A missing
+runtime or device type stays `install_runtime` or `run_broker_doctor`.
+Setup and `host init` are unchanged. Idle enable, disable, and cleanup stay
+human-only.
+
+| ID | Requirement | Verifier |
+| --- | --- | --- |
+| SB-CAPACITY-APPLY-001 | Apply requires `--confirm` first (`capacity-confirmation-required`), then actor type `human` or `agent` (`capacity-actor-forbidden` otherwise, including `ci`), then a non-empty actor id (`capacity-actor-required`). A stale plan is `capacity-plan-stale`. All four are exit `5` before mutation. A blocked plan fails before mutation. A second apply of a `no_changes` plan creates nothing. An agent apply creates one device per missing requirement tuple and omits the actor id from public JSON. | `broker-core/test/broker-core.test.mjs` `capacity reconcile apply creates additive capacity and is idempotent after a fresh no-changes preview`, `capacity reconcile apply lets an agent create missing capacity once`, `capacity reconcile apply rejects ci, a blank actor, and a stale plan before mutation`, `capacity reconcile apply preserves shape errors when rejection plans cannot be built`; `broker-core/test/error-contract.test.mjs`; `client/test/simbroker.test.mjs` `capacity check, preview, and confirmed apply work through the direct CLI`; `client/test/brokerd.test.mjs` service capacity parity |
+| SB-CAPACITY-APPLY-002 | The Simulators **Add simulators** button previews reconcile for a registered project, confirms only a `changes_required` plan as human actor `simulator-broker-app`, and does not apply a blocked or `no_changes` plan. No registered project sends no command. A null iOS requirement decodes. | `app/Tests/BrokerDashboardStoreTests.swift` `testAddSimulatorsStagesPreviewThenConfirmsAsHuman`, `testAddSimulatorsDoesNotApplyBlockedOrUnchangedPlans`, `testAddSimulatorsWithoutAProjectDoesNotSend`, `testCapacityPreviewEnvelopeDecodesActionsAndNullRuntime` |
 
 The broker chooses the additive alias name, display name, device type, newest
 compatible stable iOS runtime, and reset policy. Existing aliases, simulator
@@ -1066,6 +1113,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.20.0 | 2026-11-02 | Allowed a human or an agent to apply one confirmed capacity reconcile. `ci` and a blank actor are rejected before mutation. The app Simulators screen can confirm the same plan. |
 | 0.19.1 | 2026-11-01 | Match an `X.Y` runtime request to an installed `X.Y` or `X.Y.Z` runtime, and accept an exact `X.Y.Z` pin in host config, project requirements, and `--ios-version`. |
 | 0.19.0 | 2026-10-23 | Added alias and purpose simulator delete, persisted `driftCauseCode`, and the agent follow-up that deletes only unowned `runtime-not-found` or `device-type-not-found` matches. |
 | 0.18.2 | 2026-10-21 | Reserved `simctl list`, `du`, shutdown, erase, and reset-lock time for build-slot reclaim in the acquire, release, idle-reconcile, and service-startup budgets. |

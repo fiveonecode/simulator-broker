@@ -19,6 +19,11 @@ Use Simulator Broker for broker-managed simulator work in this repo.
   `simbroker simulators delete --repo-root "$PWD" --purpose <purpose> --actor-type agent --actor-id <id> --json`
 
   Delete exit `0` retries `capacity check` once and acquires only when `purposes[].status` is `available`. Delete exit `5` stops for a human. Any other repair or delete exit `4` runs `simbroker doctor` locally, reads `causeCode` and `driftReason`, and stops. Do not paste doctor output, aliases, simulator IDs, or host paths into public logs.
+- When `capacity check` reports `recommendedAction` `create_capacity`, preview reconcile once and apply that plan once when status is `changes_required`:
+
+  `simbroker capacity reconcile --repo-root "$PWD" --purpose <purpose> --apply --confirm <plan-id> --actor-type agent --actor-id <id> --json`
+
+  Then run `capacity check` once and acquire only when `purposes[].status` is `available`. Stop on a blocked preview, apply exit `4` or `5`, or a check that is still not available. Do not apply a second time. Do not use `--actor-type ci`.
 - Do not hardcode host alias names into repo logic.
 - Do not call `xcrun simctl` boot, shutdown, erase, delete, or repair on broker-managed simulators.
-- Do not put repair or delete inside the wrapper scripts. Those scripts only acquire and release.
+- Do not put repair, delete, or capacity apply inside the wrapper scripts. Those scripts only acquire and release.

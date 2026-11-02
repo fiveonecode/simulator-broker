@@ -18,8 +18,9 @@ A first extracted implementation slice now exists:
 - lifecycle-control policy and override coverage for `boot`, `shutdown`, `erase`, `repair`, and `delete`
 - direct and service-backed exit-code contract coverage for invalid requests, unavailable capacity, repair-needed aliases, and override-required flows
 - direct and service-backed capacity coverage for public-safe check output,
-  deterministic reconcile preview, exact human-confirmed additive apply,
-  rollback, committed recovery, idempotency, and audit events
+  deterministic reconcile preview, exact plan confirmation from a human or an
+  agent, `ci` rejected before mutation, rollback, committed recovery,
+  idempotency, and audit events
 - deterministic warm-reuse, boot-on-acquire, idle-policy boundary, exclusion,
   stale-recovery, lock-race, scheduler, confirmed-cleanup, and failure coverage
 - tracked-text public-surface scanning with an ignored local denylist extension
@@ -60,6 +61,9 @@ A first extracted implementation slice now exists:
   Homebrew does not create simulators. Hello world requires setup ready and a
   passing `capacity check --purpose agent-ui-session` (`purposes[].status`, not
   top-level `status`). `unavailable` stops at reconcile. `recommendedAction`
+  `create_capacity` previews that purpose and applies the current plan once
+  when status is `changes_required` (`capacity reconcile --repo-root <repo> --purpose <purpose> --apply --confirm <plan-id> --actor-type agent --actor-id <id>`),
+  then checks capacity once. The agent does not apply a second time. `ci` does not apply.
   `repair_matching_simulators` runs purpose repair once (`simulators repair --repo-root <repo> --purpose <purpose> --actor-type agent --actor-id <id>`).
   A `repair_needed` status with `install_runtime`, `run_broker_doctor`, or `inspect_unknown` follows that recommended action instead of purpose repair or purpose delete.
   Exit `0` retries the check. Exit `5` waits for a human. Exit `4` whose reasons include `runtime-not-found` or `device-type-not-found` runs purpose delete once (`simulators delete --repo-root <repo> --purpose <purpose> --actor-type agent --actor-id <id>`).
@@ -473,7 +477,7 @@ node client/bin/simbroker.mjs capacity --help
 node client/bin/simbroker.mjs idle --help
 node client/bin/simbroker.mjs capacity check --repo-root <repo> [--purpose <purpose>] --json
 node client/bin/simbroker.mjs capacity reconcile --repo-root <repo> [--purpose <purpose>] --json
-node client/bin/simbroker.mjs capacity reconcile --repo-root <repo> [--purpose <purpose>] --apply --confirm <plan-id> --actor-type human --actor-id <operator-id> --json
+node client/bin/simbroker.mjs capacity reconcile --repo-root <repo> [--purpose <purpose>] --apply --confirm <plan-id> --actor-type <human|agent> --actor-id <id> --json
 node client/bin/simbroker.mjs idle status --json
 node client/bin/simbroker.mjs idle enable --grace-seconds <60-86400> --actor-type human --actor-id <operator-id> --json
 node client/bin/simbroker.mjs idle disable --actor-type human --actor-id <operator-id> --json
@@ -550,8 +554,8 @@ Add stronger profiles next for:
 - `npm run test:broker-core` proves lifecycle-control policy, holder conflict handling, lease/pin/lifecycle serialization, current-user state permissions, reset rollback, repair rebinding, repair retirement retry, audit-event recording, UTF-8-safe bounded recent-event tail reads, bounded `simctl` subprocess execution, no-breach containment observations, memory ceiling evidence capture, owned-only cleanup, detached simulator-like process inclusion, unrelated process preservation, stale-owner containment when process metadata exists, and lease retention when cleanup fails
 - `npm run test:broker-core` also proves capacity check privacy, deterministic
   reconcile plan IDs, one action per unique requirement tuple, non-actionable
-  live busy capacity, read-only stale-owner filtering, exact human confirmation
-  before recovery, additive host-config merge under shared mutation locking,
+  live busy capacity, read-only stale-owner filtering, exact confirmation from
+  a human or an agent before recovery, `ci` rejected before mutation, additive host-config merge under shared mutation locking,
   no-changes idempotency, verified pre-commit rollback, recovery-required
   journal blocking, and committed transaction recovery through fixture-backed
   `simctl`

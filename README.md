@@ -152,6 +152,25 @@ Read `purposes[].status` (and `summary` counts), not the top-level
 If `purposes[].status` is `unavailable`, stop. Preview missing capacity
 with `simbroker capacity reconcile --json`. Do not acquire a lease.
 
+If `purposes[].recommendedAction` is `create_capacity`, preview that purpose
+once and apply the current plan once when status is `changes_required`:
+
+```bash
+simbroker capacity reconcile \
+  --repo-root "$PWD" \
+  --purpose agent-ui-session \
+  --apply \
+  --confirm <plan-id> \
+  --actor-type agent \
+  --actor-id hello-world \
+  --json
+```
+
+Then run `capacity check` once and acquire only when `purposes[].status` is
+`available`. Stop on a blocked preview, apply exit `4` or `5`, or a check
+that is still not available. Do not apply a second time. Do not use
+`--actor-type ci`.
+
 If `purposes[].recommendedAction` is `repair_matching_simulators`, repair
 that purpose once:
 

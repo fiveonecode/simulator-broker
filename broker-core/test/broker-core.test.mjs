@@ -5205,9 +5205,97 @@ test("capacity reconcile apply creates additive capacity and is idempotent after
   });
   assert.equal(noChangesApply.status, "no_changes");
   assert.equal(noChangesApply.created, 0);
+
+  const agentNoChangesApply = reconcileCapacityBroker(resolvedPaths, {
+    actorId: "agent-1",
+    actorType: "agent",
+    apply: true,
+    confirmPlanId: noChangesPreview.planId,
+    processExists: () => true,
+    purposeId: "agent-ipad-session",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(agentNoChangesApply.status, "no_changes");
+  assert.equal(agentNoChangesApply.created, 0);
+  assert.equal(readJson(paths.hostConfigPath).aliases.length, hostConfig.aliases.length);
 });
 
-test("capacity reconcile apply rejects stale and non-human confirmation before mutation", () => {
+test("capacity reconcile apply lets an agent create missing capacity once", () => {
+  const paths = makePaths();
+  writeIPhoneOnlyHostConfig(paths.hostConfigPath);
+  writeCapacityProject(paths.projectFilePath, [
+    {
+      id: "agent-ipad-session",
+      displayName: "Agent iPad Session",
+      capability: "interactive-resettable",
+      defaultActorType: "agent",
+      requires: {
+        deviceFamily: "iPad",
+        iosVersion: "18",
+      },
+    },
+  ]);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const beforeCount = readJson(paths.hostConfigPath).aliases.length;
+  const preview = reconcileCapacityBroker(resolvedPaths, {
+    processExists: () => true,
+    purposeId: "agent-ipad-session",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.throws(() => {
+    reconcileCapacityBroker(resolvedPaths, {
+      actorId: "ci-bot",
+      actorType: "ci",
+      apply: true,
+      confirmPlanId: preview.planId,
+      processExists: () => true,
+      purposeId: "agent-ipad-session",
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => error.payload?.reasonCode === "capacity-actor-forbidden" && error.exitCode === 5);
+  assert.equal(readJson(paths.hostConfigPath).aliases.length, beforeCount);
+
+  const apply = reconcileCapacityBroker(resolvedPaths, {
+    actorId: "agent-1",
+    actorType: "agent",
+    apply: true,
+    confirmPlanId: preview.planId,
+    processExists: () => true,
+    purposeId: "agent-ipad-session",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(apply.status, "applied");
+  assert.equal(apply.created, 1);
+  assert.equal(JSON.stringify(apply).includes("agent-1"), false);
+  const createdAlias = readJson(paths.hostConfigPath).aliases.find((alias) => alias.deviceFamily === "iPad");
+  assert.equal(createdAlias.alias, "ipad-1");
+  const appliedTransaction = readCapacityTransactions(resolvedPaths)
+    .find((transaction) => transaction.status === "finalized" && transaction.additions.length === 1);
+  assert.equal(appliedTransaction.actorType, "agent");
+  assert.equal(appliedTransaction.actorId, "agent-1");
+
+  const secondPreview = reconcileCapacityBroker(resolvedPaths, {
+    processExists: () => true,
+    purposeId: "agent-ipad-session",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const secondApply = reconcileCapacityBroker(resolvedPaths, {
+    actorId: "agent-1",
+    actorType: "agent",
+    apply: true,
+    confirmPlanId: secondPreview.planId,
+    processExists: () => true,
+    purposeId: "agent-ipad-session",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  assert.equal(secondApply.status, "no_changes");
+  assert.equal(secondApply.created, 0);
+  assert.equal(readJson(paths.hostConfigPath).aliases.length, beforeCount + 1);
+});
+
+test("capacity reconcile apply rejects ci, a blank actor, and a stale plan before mutation", () => {
   const paths = makePaths();
   writeIPhoneOnlyHostConfig(paths.hostConfigPath);
   writeCapacityProject(paths.projectFilePath, [
@@ -5226,10 +5314,39 @@ test("capacity reconcile apply rejects stale and non-human confirmation before m
   initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
   const hostConfigBefore = fs.readFileSync(paths.hostConfigPath, "utf8");
   const deviceCountBefore = readJson(paths.simctl.statePath).devices.length;
+  const preview = reconcileCapacityBroker(resolvedPaths, {
+    processExists: () => true,
+    purposeId: "agent-ipad-session",
+    simctlAdapter: paths.simctl.adapter,
+  });
 
   assert.throws(() => {
     reconcileCapacityBroker(resolvedPaths, {
-      actorId: "agent",
+      actorId: "ci-bot",
+      actorType: "ci",
+      apply: true,
+      confirmPlanId: preview.planId,
+      processExists: () => true,
+      purposeId: "agent-ipad-session",
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => error.payload?.reasonCode === "capacity-actor-forbidden" && error.exitCode === 5);
+
+  assert.throws(() => {
+    reconcileCapacityBroker(resolvedPaths, {
+      actorId: "   ",
+      actorType: "human",
+      apply: true,
+      confirmPlanId: preview.planId,
+      processExists: () => true,
+      purposeId: "agent-ipad-session",
+      simctlAdapter: paths.simctl.adapter,
+    });
+  }, (error) => error.payload?.reasonCode === "capacity-actor-required" && error.exitCode === 5);
+
+  assert.throws(() => {
+    reconcileCapacityBroker(resolvedPaths, {
+      actorId: "agent-1",
       actorType: "agent",
       apply: true,
       confirmPlanId: "sha256:not-current",
@@ -5237,19 +5354,7 @@ test("capacity reconcile apply rejects stale and non-human confirmation before m
       purposeId: "agent-ipad-session",
       simctlAdapter: paths.simctl.adapter,
     });
-  }, (error) => error.payload?.reasonCode === "capacity-human-required" && error.exitCode === 5);
-
-  assert.throws(() => {
-    reconcileCapacityBroker(resolvedPaths, {
-      actorId: "   ",
-      actorType: "human",
-      apply: true,
-      confirmPlanId: "sha256:not-current",
-      processExists: () => true,
-      purposeId: "agent-ipad-session",
-      simctlAdapter: paths.simctl.adapter,
-    });
-  }, (error) => error.payload?.reasonCode === "capacity-human-required" && error.exitCode === 5);
+  }, (error) => error.payload?.reasonCode === "capacity-plan-stale" && error.exitCode === 5);
 
   assert.throws(() => {
     reconcileCapacityBroker(resolvedPaths, {
@@ -5268,15 +5373,21 @@ test("capacity reconcile apply rejects stale and non-human confirmation before m
   const events = readEventsBroker(resolvedPaths, {
     type: "capacity.reconcile.failed",
   });
-  assert.equal(events.events.length, 3);
+  assert.equal(events.events.length, 4);
   assert.ok(events.events.every((event) => event.payload.reasonCode.startsWith("capacity-")));
   const blankActorTransaction = readCapacityTransactions(resolvedPaths)
     .find((transaction) =>
       transaction.status === "rejected"
       && transaction.actorType === "human"
-      && transaction.rejection?.reasonCode === "capacity-human-required");
+      && transaction.rejection?.reasonCode === "capacity-actor-required");
   assert.ok(blankActorTransaction);
   assert.equal(blankActorTransaction.actorId, null);
+  const ciTransaction = readCapacityTransactions(resolvedPaths)
+    .find((transaction) =>
+      transaction.status === "rejected"
+      && transaction.actorType === "ci"
+      && transaction.rejection?.reasonCode === "capacity-actor-forbidden");
+  assert.ok(ciTransaction);
 });
 
 test("capacity reconcile apply preserves shape errors when rejection plans cannot be built", () => {
@@ -5314,14 +5425,14 @@ test("capacity reconcile apply preserves shape errors when rejection plans canno
 
   assert.throws(() => {
     reconcileCapacityBroker(unknownPurposeBrokerPaths, {
-      actorId: "agent",
-      actorType: "agent",
+      actorId: "ci-bot",
+      actorType: "ci",
       apply: true,
       confirmPlanId: "sha256:not-current",
       purposeId: "unknown-purpose",
       simctlAdapter: unknownPurposePaths.simctl.adapter,
     });
-  }, (error) => error.payload?.reasonCode === "capacity-human-required" && error.exitCode === 5);
+  }, (error) => error.payload?.reasonCode === "capacity-actor-forbidden" && error.exitCode === 5);
 });
 
 test("capacity reconcile apply preserves setup blocker reason codes", () => {

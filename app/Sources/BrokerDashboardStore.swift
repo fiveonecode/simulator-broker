@@ -75,6 +75,7 @@ final class BrokerDashboardStore {
   private let localCommandRunner: any BrokerLocalCommandRunning
   private let loader: any BrokerSnapshotLoading
   private var completedRefreshOutcomes: [Int: BrokerRefreshOutcome] = [:]
+  private var capacityPreviewPending = false
   private var idleCleanupPreviewGeneration = 0
   private var refreshGeneration = 0
   private var refreshOutcomeWaiters: [Int: [UUID: CheckedContinuation<BrokerRefreshOutcome, Never>]] = [:]
@@ -97,6 +98,7 @@ final class BrokerDashboardStore {
   var loadedState: BrokerLoadedState?
   var pendingClearPinRequest: BrokerPendingClearPinRequest?
   var pendingCreatePinRequest: BrokerPendingCreatePinRequest?
+  var capacitySheet: BrokerCapacitySheetSession?
   var pendingIdleCleanupRequest: BrokerPendingIdleCleanupRequest?
   var pendingLifecycleRequest: BrokerPendingLifecycleRequest?
   var pendingOverrideRequest: BrokerLifecycleOverrideRequest?
@@ -941,6 +943,207 @@ final class BrokerDashboardStore {
     }
   }
 
+  var capacityProjects: [BrokerProjectSummary] {
+    readModel?.snapshot.projects.filter { project in
+      let path = project.projectFilePath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      return path.isEmpty == false
+    } ?? []
+  }
+
+  func beginAddSimulators() {
+    guard canSendCommands, isApplyingAction == false, capacitySheet == nil, selectedPane == .simulators else {
+      return
+    }
+    guard let project = capacityProjects.first else {
+      lastActionMessage = nil
+      lastErrorMessage = "Onboard a repo before adding simulators."
+      return
+    }
+    capacitySheet = BrokerCapacitySheetSession(
+      id: UUID(),
+      isLoading: true,
+      preview: nil,
+      previewError: nil,
+      projectId: project.projectId,
+      purposeId: nil
+    )
+    loadCapacityPreview()
+  }
+
+  func updateCapacitySelection(projectId: String, purposeId: String?) {
+    guard var sheet = capacitySheet else {
+      return
+    }
+    guard sheet.projectId != projectId || sheet.purposeId != purposeId else {
+      return
+    }
+    sheet.projectId = projectId
+    sheet.purposeId = purposeId
+    sheet.preview = nil
+    sheet.previewError = nil
+    sheet.isLoading = true
+    capacitySheet = sheet
+    loadCapacityPreview()
+  }
+
+  func cancelAddSimulators() {
+    capacityPreviewPending = false
+    capacitySheet = nil
+  }
+
+  func confirmAddSimulators() {
+    guard canSendCommands,
+          isApplyingAction == false,
+          let sheet = capacitySheet,
+          let preview = sheet.preview,
+          preview.status == "changes_required",
+          preview.actions.isEmpty == false,
+          let project = capacityProject(id: sheet.projectId)
+    else {
+      return
+    }
+    let planId = preview.planId
+    let projectFilePath = project.projectFilePath
+    let purposeId = sheet.purposeId
+    let createCount = preview.actions.count
+    capacityPreviewPending = false
+    capacitySheet = nil
+    Task {
+      do {
+        try await applyConfirmedCapacityPlan(
+          planId: planId,
+          projectFilePath: projectFilePath,
+          purposeId: purposeId,
+          createCount: createCount
+        )
+      } catch {
+        lastErrorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  private func capacityProject(id: String) -> (projectId: String, projectFilePath: String)? {
+    guard let project = capacityProjects.first(where: { $0.projectId == id }) else {
+      return nil
+    }
+    let path = project.projectFilePath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard path.isEmpty == false else {
+      return nil
+    }
+    return (project.projectId, path)
+  }
+
+  private func loadCapacityPreview() {
+    guard capacitySheet != nil, selectedPane == .simulators else {
+      capacityPreviewPending = false
+      return
+    }
+    guard isApplyingAction == false else {
+      capacityPreviewPending = true
+      return
+    }
+    capacityPreviewPending = false
+    guard let sheet = capacitySheet, let project = capacityProject(id: sheet.projectId) else {
+      publishCapacityPreviewFailure("The selected project is missing a project file path.")
+      return
+    }
+    let projectId = sheet.projectId
+    let purposeId = sheet.purposeId
+    var options: [String: BrokerJSONValue] = [
+      "projectFilePath": .string(project.projectFilePath),
+    ]
+    if let purposeId, purposeId.isEmpty == false {
+      options["purposeId"] = .string(purposeId)
+    }
+    let request = BrokerCommandRequest(command: "reconcile", group: "capacity", options: options)
+    isApplyingAction = true
+    Task {
+      var shouldContinue = false
+      defer {
+        isApplyingAction = false
+        if shouldContinue || capacityPreviewPending {
+          capacityPreviewPending = false
+          loadCapacityPreview()
+        }
+      }
+      do {
+        let response = try await commandClient.send(request)
+        guard selectionStillMatches(projectId: projectId, purposeId: purposeId) else {
+          shouldContinue = capacitySheet != nil && selectedPane == .simulators
+          return
+        }
+        guard let planId = response.planId,
+              planId.isEmpty == false,
+              let status = response.status,
+              status.isEmpty == false
+        else {
+          publishCapacityPreviewFailure("Capacity preview did not include a plan.")
+          return
+        }
+        var updated = capacitySheet
+        updated?.isLoading = false
+        updated?.previewError = nil
+        updated?.preview = BrokerCapacityPreview(
+          actions: response.actions ?? [],
+          blockedReasons: response.blockedReasons ?? [],
+          planId: planId,
+          status: status
+        )
+        capacitySheet = updated
+      } catch {
+        guard selectionStillMatches(projectId: projectId, purposeId: purposeId) else {
+          shouldContinue = capacitySheet != nil && selectedPane == .simulators
+          return
+        }
+        publishCapacityPreviewFailure(error.localizedDescription)
+      }
+    }
+  }
+
+  private func selectionStillMatches(projectId: String, purposeId: String?) -> Bool {
+    guard selectedPane == .simulators, let capacitySheet else {
+      return false
+    }
+    return capacitySheet.projectId == projectId && capacitySheet.purposeId == purposeId
+  }
+
+  private func publishCapacityPreviewFailure(_ message: String) {
+    guard var sheet = capacitySheet else {
+      return
+    }
+    sheet.isLoading = false
+    sheet.preview = nil
+    sheet.previewError = message
+    capacitySheet = sheet
+  }
+
+  private func applyConfirmedCapacityPlan(
+    planId: String,
+    projectFilePath: String,
+    purposeId: String?,
+    createCount: Int
+  ) async throws {
+    var options: [String: BrokerJSONValue] = [
+      "actorId": .string(Self.appHumanActorId),
+      "actorType": .string("human"),
+      "apply": .bool(true),
+      "confirmPlanId": .string(planId),
+      "projectFilePath": .string(projectFilePath),
+    ]
+    if let purposeId, purposeId.isEmpty == false {
+      options["purposeId"] = .string(purposeId)
+    }
+    let request = BrokerCommandRequest(command: "reconcile", group: "capacity", options: options)
+    let noun = createCount == 1 ? "simulator" : "simulators"
+    try await executeMutation(
+      actionName: "capacity-reconcile",
+      successMessage: "Added \(createCount) \(noun).",
+      acceptSuccessfulRefreshRetry: true
+    ) { [self, request] in
+      _ = try await self.commandClient.send(request)
+    }
+  }
+
   func releaseLease(_ lease: BrokerLease) async throws {
     let request = BrokerCommandRequest(
       command: "release",
@@ -1508,6 +1711,8 @@ final class BrokerDashboardStore {
   }
 
   private func clearPendingSimulatorPrompts() {
+    capacityPreviewPending = false
+    capacitySheet = nil
     pendingClearPinRequest = nil
     pendingCreatePinRequest = nil
     pendingLifecycleRequest = nil

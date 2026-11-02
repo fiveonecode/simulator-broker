@@ -106,8 +106,9 @@ Owns:
 - stable non-zero exit codes shared by direct CLI mode and service-backed CLI mode
 - build/test containment commands: `lease register-process` records downstream command metadata, and `lease contain` records monitor observations or performs cleanup for memory ceiling, forced abort, timeout, stale owner, and manual cleanup reasons
 - capacity commands: `capacity check` diagnoses whether repo purposes can
-  acquire capacity now; `capacity reconcile` previews and, with exact human
-  confirmation, applies additive broker-managed capacity
+  acquire capacity now; `capacity reconcile` previews and, with the exact
+  current plan ID from a human or an agent, applies additive broker-managed
+  capacity. `ci` may not apply
 - idle commands: status, explicit human enable/disable, reconcile, and
   count-only cleanup preview plus exact human-confirmed apply
 - lazy `brokerd` startup for normal acquisitions when idle policy is configured,
@@ -135,6 +136,11 @@ Current implementation slice:
   apply/disable, and count-confirmed cleanup over broker transport
 - a dedicated guided setup sheet driven by `simbroker setup --json`; the
   `@MainActor` store owns plan/phase/confirmation/task state and cancellation
+- one Simulators toolbar **Add simulators** button. The sheet picks a
+  registered snapshot project, optionally one purpose, previews capacity
+  reconcile, and confirms a `changes_required` plan as actor type `human`
+  and actor id `simulator-broker-app`. It does not ask for an alias, device
+  type, or runtime
 
 Does not own:
 
@@ -160,7 +166,9 @@ broker authority. Consumer repos may request purposes and portable requirements,
 but they must not edit host config, choose host aliases, or call `simctl`.
 Agents and CI may delete a simulator only through `simbroker simulators delete`.
 Idle cleanup and slot reclaim do not delete simulators. Capacity reconcile
-remains the human-confirmed way to add capacity.
+remains the confirmed way to add capacity. A human or an agent may apply the
+current plan once. CI may not. The macOS app applies as a human through the
+Simulators **Add simulators** button.
 
 Machine setup follows the same rule. The core owns mutation planning and
 provisioning; the CLI owns platform preflight and service completion; the app

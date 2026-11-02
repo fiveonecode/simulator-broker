@@ -1294,6 +1294,10 @@ test("sample agent instructions repair only for repair_matching_simulators", () 
     assert.match(text, /causeCode/);
     assert.equal(/follows that action:\s*`simbroker simulators repair/.test(text), false, relativePath);
     assert.equal(text.includes("simulators delete --alias"), false, relativePath);
+    assert.match(text, /create_capacity/);
+    assert.match(text, /Do not apply a second time/);
+    assert.match(text, /--actor-type ci/);
+    assert.match(text, /capacity reconcile --repo-root "\$PWD" --purpose <purpose> --apply --confirm <plan-id> --actor-type agent/);
   }
 
   for (const scriptName of [
@@ -1305,6 +1309,7 @@ test("sample agent instructions repair only for repair_matching_simulators", () 
     const script = fs.readFileSync(path.join(SAMPLE_REPO, "scripts", scriptName), "utf8");
     assert.equal(script.includes("simulators delete"), false, scriptName);
     assert.equal(script.includes("simulators repair"), false, scriptName);
+    assert.equal(script.includes("capacity reconcile"), false, scriptName);
   }
 });
 
@@ -1326,6 +1331,10 @@ test("adoption checklist repairs only when capacity recommends repair_matching_s
   assert.match(checklist, /runtime-not-found/);
   assert.match(checklist, /simulators delete --repo-root "\$PWD"/);
   assert.match(checklist, /do not call purpose repair or `simulators delete`/);
+  assert.match(checklist, /create_capacity/);
+  assert.match(checklist, /Do not apply a second time/);
+  assert.match(checklist, /--actor-type ci/);
+  assert.match(checklist, /capacity reconcile --apply/);
 });
 
 test("sample repo project file validates against the current broker contract", () => {

@@ -69,8 +69,9 @@ const REPAIR_NEEDED_REASON_CODES = new Set([
 ]);
 
 const OVERRIDE_REQUIRED_REASON_CODES = new Set([
+  "capacity-actor-forbidden",
+  "capacity-actor-required",
   "capacity-confirmation-required",
-  "capacity-human-required",
   "capacity-plan-stale",
   "human-override-required",
   "idle-confirmation-required",

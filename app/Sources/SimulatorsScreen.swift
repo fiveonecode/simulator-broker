@@ -40,6 +40,15 @@ struct SimulatorsScreen: View {
         placement: .toolbar,
         prompt: "Search alias, project, purpose, actor, or drift"
       )
+      .toolbar {
+        ToolbarItem(placement: .primaryAction) {
+          Button("Add simulators", action: store.beginAddSimulators)
+            .disabled(store.canSendCommands == false || store.isApplyingAction || store.capacitySheet != nil)
+        }
+      }
+      .sheet(item: $store.capacitySheet, onDismiss: store.cancelAddSimulators) { _ in
+        AddSimulatorsSheet(store: store)
+      }
     }
   }
 
