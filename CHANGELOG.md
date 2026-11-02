@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.13] - 2026-11-02
+
+Alpha 13 keeps the Alpha 12 install and four-custom-asset contract. A human
+or an agent can apply one confirmed capacity reconcile. CI cannot apply.
+The adoption skill teaches that same one-attempt apply.
+
 ### Added
 
 - A human or an agent can apply one confirmed `capacity reconcile` plan.
