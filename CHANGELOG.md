@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.14] - 2026-11-02
+
+Alpha 14 keeps the Alpha 13 install and four-custom-asset contract. The
+Add simulators button accepts the capacity apply result the broker returns.
+
+### Fixed
+
+- The macOS app accepts a capacity apply result whose `unchanged` field is a
+  count, and a blocked preview whose `purposeId` is null. Confirm no longer
+  reports invalid JSON after the broker has created the simulators.
+
 ## [0.1.0-alpha.13] - 2026-11-02
 
 Alpha 13 keeps the Alpha 12 install and four-custom-asset contract. A human

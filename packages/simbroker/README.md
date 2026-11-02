@@ -4,7 +4,7 @@ Alpha CLI for Simulator Broker. Node.js 20 or newer is required. Creating and
 running iOS Simulators still requires macOS and Xcode.
 
 ```bash
-npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.13/simbroker-0.1.0-alpha.13.tgz
+npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.14/simbroker-0.1.0-alpha.14.tgz
 simbroker --help
 ```
 
