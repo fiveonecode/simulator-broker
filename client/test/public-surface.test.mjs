@@ -619,6 +619,62 @@ test("dirty worktree files treats git diff-files exit 1 as the dirty name list",
   assert.deepEqual([...dirty], ["dirty.md"]);
 });
 
+test("public surface scan skips grapheme segmentation when the file cannot contain the path", () => {
+  const root = makeTempDir();
+  const homePath = path.posix.join(path.posix.sep, "home", "runner");
+  const rawPath = path.join(root, "raw.txt");
+  const escapedPath = path.join(root, "escaped.txt");
+  const missPath = path.join(root, "miss.txt");
+  fs.writeFileSync(rawPath, `artifact: ${homePath}/work/private.log\n`);
+  fs.writeFileSync(escapedPath, `{"log":"${homePath.replaceAll("/", "\\/")}\\/private.log"}\n`);
+  fs.writeFileSync(missPath, "x".repeat(2_000_000));
+
+  const raw = scanPublicSurface({
+    files: ["raw.txt"],
+    homePath,
+    root,
+  });
+  const escaped = scanPublicSurface({
+    files: ["escaped.txt"],
+    homePath,
+    root,
+  });
+  const startedAt = Date.now();
+  const miss = scanPublicSurface({
+    files: ["miss.txt"],
+    homePath,
+    root,
+  });
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(raw.ok, false);
+  assert.deepEqual(raw.issues, [{ line: 1, path: "raw.txt", rule: "local-home-path" }]);
+  assert.ok(raw.graphemeSegmentations > 0);
+  assert.equal(escaped.ok, false);
+  assert.deepEqual(escaped.issues, [{ line: 1, path: "escaped.txt", rule: "local-home-path" }]);
+  assert.ok(escaped.graphemeSegmentations > 0);
+  assert.equal(miss.ok, true);
+  assert.deepEqual(miss.issues, []);
+  assert.equal(miss.graphemeSegmentations, 0);
+  assert.ok(elapsedMs < 1000, `miss scan took ${elapsedMs}ms`);
+});
+
+test("public surface scan still finds a home path that matches only after grapheme normalization", () => {
+  const root = makeTempDir();
+  const homePath = path.posix.join(path.posix.sep, "tmp", "caf\u00e9");
+  fs.writeFileSync(path.join(root, "notes.txt"), `saved ${homePath.normalize("NFD")}/notes\n`);
+
+  const report = scanPublicSurface({
+    files: ["notes.txt"],
+    homePath,
+    root,
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.issues, [{ line: 1, path: "notes.txt", rule: "local-home-path" }]);
+  assert.ok(report.graphemeSegmentations > 0);
+});
+
 test("dirty worktree files is empty for a clean tracked worktree", () => {
   const root = makeTempDir();
   execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });

@@ -273,7 +273,36 @@ function normalizeJsonEscapes(text) {
   };
 }
 
-function canonicalTextWithOffsets(text, sourceOffsets) {
+function containsNonAscii(text) {
+  return /[^\u0000-\u007f]/u.test(text);
+}
+
+function textMayContainCanonicalValue(text, value) {
+  if (typeof text !== "string" || typeof value !== "string" || value.length === 0) {
+    return false;
+  }
+  if (text.includes(value)) {
+    return true;
+  }
+  const slashEscaped = value.replaceAll("/", "\\/");
+  if (slashEscaped !== value && text.includes(slashEscaped)) {
+    return true;
+  }
+  // A grapheme/NFC difference or a JSON escape other than a plain slash pair
+  // can still match. ASCII text with neither the path nor a backslash cannot.
+  if (containsNonAscii(value) || containsNonAscii(text)) {
+    return true;
+  }
+  if (text.includes("\\") || value.includes("\\")) {
+    return true;
+  }
+  return false;
+}
+
+function canonicalTextWithOffsets(text, sourceOffsets, stats) {
+  if (stats) {
+    stats.graphemeSegmentations += 1;
+  }
   let normalized = "";
   const originalOffsets = [];
   const pushSegment = (segment, index) => {
@@ -309,28 +338,39 @@ function canonicalTextWithOffsets(text, sourceOffsets) {
   };
 }
 
-function indexOfCanonicalHomePath(text, value) {
-  const { normalized, originalOffsets } = canonicalTextWithOffsets(text);
+function indexOfCanonicalHomePath(text, value, stats) {
+  if (!textMayContainCanonicalValue(text, value)) {
+    return -1;
+  }
+  const { normalized, originalOffsets } = canonicalTextWithOffsets(text, undefined, stats);
   const normalizedOffset = indexOfHomePath(normalized, value);
   return normalizedOffset === -1 ? -1 : originalOffsets[normalizedOffset];
 }
 
-function indexOfJsonEscapedHomePath(text, value) {
+function indexOfJsonEscapedHomePath(text, value, stats) {
+  if (!textMayContainCanonicalValue(text, value)) {
+    return -1;
+  }
   const slashNormalized = normalizeJsonEscapes(text);
   const { normalized, originalOffsets } = canonicalTextWithOffsets(
     slashNormalized.normalized,
     slashNormalized.originalOffsets,
+    stats,
   );
   const normalizedOffset = indexOfHomePath(normalized, value);
   return normalizedOffset === -1 ? -1 : originalOffsets[normalizedOffset];
 }
 
-function indexOfJsonEscapedValue(text, value) {
+function indexOfJsonEscapedValue(text, value, stats) {
+  if (!textMayContainCanonicalValue(text, value)) {
+    return -1;
+  }
   const canonicalValue = canonicalText(value);
   const jsonNormalized = normalizeJsonEscapes(text);
   const { normalized, originalOffsets } = canonicalTextWithOffsets(
     jsonNormalized.normalized,
     jsonNormalized.originalOffsets,
+    stats,
   );
   const normalizedOffset = normalized.indexOf(canonicalValue);
   return normalizedOffset === -1 ? -1 : originalOffsets[normalizedOffset];
@@ -362,6 +402,7 @@ export function scanPublicSurface({
   ];
   const issues = [];
   const issueKeys = new Set();
+  const stats = { graphemeSegmentations: 0 };
 
   const addIssue = (issue) => {
     const issueKey = `${issue.path}\0${issue.line}\0${issue.rule}`;
@@ -386,9 +427,9 @@ export function scanPublicSurface({
     }
     const diagnosticPath = diagnosticPathFor(normalizedRelativeFile);
     for (const rule of builtInRules) {
-      let offset = indexOfCanonicalHomePath(text, rule.value);
+      let offset = indexOfCanonicalHomePath(text, rule.value, stats);
       if (offset === -1) {
-        offset = indexOfJsonEscapedHomePath(text, rule.value);
+        offset = indexOfJsonEscapedHomePath(text, rule.value, stats);
       }
       if (offset !== -1) {
         addIssue({
@@ -399,7 +440,7 @@ export function scanPublicSurface({
       }
     }
     for (const rule of denylistRules) {
-      const offset = indexOfJsonEscapedValue(text, rule.value);
+      const offset = indexOfJsonEscapedValue(text, rule.value, stats);
       if (offset !== -1) {
         addIssue({
           line: lineNumberForOffset(text, offset),
@@ -483,6 +524,7 @@ export function scanPublicSurface({
 
   return {
     filesScanned: candidateFiles.length,
+    graphemeSegmentations: stats.graphemeSegmentations,
     issues,
     ok: issues.length === 0,
   };
