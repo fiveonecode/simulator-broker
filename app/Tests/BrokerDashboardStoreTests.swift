@@ -125,6 +125,35 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertEqual(envelope.blockedReasons?.first?.blockingReasons.first?.code, "matching-capacity-busy")
   }
 
+  func testCapacityApplyEnvelopeAcceptsUnchangedCount() throws {
+    let json = """
+    {"ok":true,"status":"applied","planId":"sha256:plan","created":1,"unchanged":0,"mode":"apply","command":"capacity.reconcile"}
+    """
+    let envelope = try JSONDecoder().decode(BrokerCommandEnvelope.self, from: Data(json.utf8))
+    XCTAssertEqual(envelope.ok, true)
+    XCTAssertEqual(envelope.status, "applied")
+    XCTAssertEqual(envelope.planId, "sha256:plan")
+    XCTAssertNil(envelope.unchanged)
+  }
+
+  func testCapacityEnvelopeKeepsBooleanUnchanged() throws {
+    let json = #"{"ok":true,"unchanged":false}"#
+    let envelope = try JSONDecoder().decode(BrokerCommandEnvelope.self, from: Data(json.utf8))
+    XCTAssertEqual(envelope.unchanged, false)
+  }
+
+  func testCapacityBlockedPreviewAcceptsNullPurposeId() throws {
+    let json = """
+    {"ok":true,"planId":"sha256:plan","status":"blocked","blockedReasons":[{"blockingReasons":[{"code":"missing-project-file"}],"purposeId":null,"recommendedAction":"configure_repo"}]}
+    """
+    let envelope = try JSONDecoder().decode(BrokerCommandEnvelope.self, from: Data(json.utf8))
+    let blocked = try XCTUnwrap(envelope.blockedReasons?.first)
+    XCTAssertNil(blocked.purposeId)
+    XCTAssertEqual(blocked.blockingReasons.first?.code, "missing-project-file")
+    XCTAssertEqual(blocked.recommendedAction, "configure_repo")
+    XCTAssertEqual(blocked.id, "project:configure_repo")
+  }
+
   func testAddSimulatorsStagesPreviewThenConfirmsAsHuman() async throws {
     let snapshot = try loadFixture(named: "busy-snapshot")
     let loadedState = makeLoadedState(snapshot: snapshot)

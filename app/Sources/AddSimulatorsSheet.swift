@@ -126,7 +126,7 @@ struct AddSimulatorsSheet: View {
         Text("This plan cannot create simulators.")
         ForEach(preview.blockedReasons) { blocked in
           VStack(alignment: .leading, spacing: 4) {
-            Text(blocked.purposeId)
+            Text(blocked.purposeId ?? "Project")
               .font(.headline)
             Text(blocked.blockingReasons.map(\.code).joined(separator: ", "))
             Text(blocked.recommendedAction)

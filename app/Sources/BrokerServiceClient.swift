@@ -590,10 +590,10 @@ struct BrokerCapacityReasonCode: Decodable, Equatable, Sendable {
 
 struct BrokerCapacityBlockedReason: Decodable, Equatable, Identifiable, Sendable {
   let blockingReasons: [BrokerCapacityReasonCode]
-  let purposeId: String
+  let purposeId: String?
   let recommendedAction: String
 
-  var id: String { "\(purposeId):\(recommendedAction)" }
+  var id: String { "\(purposeId ?? "project"):\(recommendedAction)" }
 }
 
 struct BrokerCapacityAction: Decodable, Equatable, Identifiable, Sendable {
@@ -651,6 +651,56 @@ struct BrokerCommandEnvelope: Decodable, Sendable {
     self.shutdownCount = shutdownCount
     self.status = status
     self.unchanged = unchanged
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    actions = try container.decodeIfPresent([BrokerCapacityAction].self, forKey: .actions)
+    blockedReasons = try container.decodeIfPresent([BrokerCapacityBlockedReason].self, forKey: .blockedReasons)
+    currentHolder = try container.decodeIfPresent(BrokerLeaseSummary.self, forKey: .currentHolder)
+    eligibleCount = try container.decodeIfPresent(Int.self, forKey: .eligibleCount)
+    error = try container.decodeIfPresent(String.self, forKey: .error)
+    exitCode = try container.decodeIfPresent(Int.self, forKey: .exitCode)
+    failureCount = try container.decodeIfPresent(Int.self, forKey: .failureCount)
+    ok = try container.decodeIfPresent(Bool.self, forKey: .ok)
+    planId = try container.decodeIfPresent(String.self, forKey: .planId)
+    reasonCode = try container.decodeIfPresent(String.self, forKey: .reasonCode)
+    requiredConfirmationFields = try container.decodeIfPresent([String].self, forKey: .requiredConfirmationFields)
+    shutdownCount = try container.decodeIfPresent(Int.self, forKey: .shutdownCount)
+    status = try container.decodeIfPresent(String.self, forKey: .status)
+    unchanged = try Self.decodeUnchanged(from: container)
+  }
+
+  private static func decodeUnchanged(from container: KeyedDecodingContainer<CodingKeys>) throws -> Bool? {
+    guard container.contains(.unchanged) else {
+      return nil
+    }
+    if try container.decodeNil(forKey: .unchanged) {
+      return nil
+    }
+    if let boolValue = try? container.decode(Bool.self, forKey: .unchanged) {
+      return boolValue
+    }
+    // Capacity reconcile reports a count in this field. Other commands report a bool.
+    _ = try container.decode(Int.self, forKey: .unchanged)
+    return nil
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case actions
+    case blockedReasons
+    case currentHolder
+    case eligibleCount
+    case error
+    case exitCode
+    case failureCount
+    case ok
+    case planId
+    case reasonCode
+    case requiredConfirmationFields
+    case shutdownCount
+    case status
+    case unchanged
   }
 }
 
