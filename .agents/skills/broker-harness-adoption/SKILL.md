@@ -29,7 +29,7 @@ Use this skill when a repo needs to adopt Simulator Broker as part of its human 
 
 - Add or update `.simulator-broker/project.json`.
 - Add one shared broker-aware lease helper plus thin flow-specific wrappers when the repo has multiple simulator workflow classes.
-- Update agent instructions so agents acquire by purpose, repair a purpose once when `recommendedAction` is `repair_matching_simulators`, delete that purpose once when the repair exits `4` with `runtime-not-found` or `device-type-not-found`, and avoid direct `simctl` mutation on broker-managed aliases.
+- Update agent instructions so agents acquire by purpose, repair a purpose once when `recommendedAction` is `repair_matching_simulators`, delete that purpose once when the repair exits `4` with `runtime-not-found` or `device-type-not-found`, apply one confirmed capacity reconcile when `recommendedAction` is `create_capacity`, and avoid direct `simctl` mutation on broker-managed aliases. CI must not apply.
 - Update CI or automation wiring when the repo uses simulators in unattended runs.
 
 ### 4. Preserve the broker model
@@ -44,7 +44,7 @@ Use this skill when a repo needs to adopt Simulator Broker as part of its human 
   - `simbroker lease show`
   - `simbroker events watch`
   - `simbroker doctor` after one repair or delete exit `4` that is not a missing runtime or device type
-- Keep wrapper scripts acquire-only. Purpose repair can replace a device, and purpose delete removes one, so both stay explicit commands.
+- Keep wrapper scripts acquire-only. Purpose repair can replace a device, purpose delete removes one, and capacity apply creates one, so all three stay explicit commands.
 
 ### 5. Repair a purpose before waiting
 
@@ -77,11 +77,25 @@ simbroker simulators delete \
 - Delete exit `0` (`deleted` or `nothing_to_delete`): retry `capacity check` once and acquire only when the purpose is `available`.
 - Delete exit `5`: stop and ask a human. Never pass `--force-override`.
 - Any other delete exit `4`: run `simbroker doctor` locally, read `causeCode` and `driftReason`, and stop. Do not repair or delete that denial again.
+- When `recommendedAction` is `create_capacity`, preview that purpose once and apply the current plan once when status is `changes_required`:
+
+```bash
+simbroker capacity reconcile \
+  --repo-root "$PWD" \
+  --purpose <purpose> \
+  --apply \
+  --confirm <plan-id> \
+  --actor-type agent \
+  --actor-id <id> \
+  --json
+```
+
+- Then run `capacity check` once and acquire only when the purpose is `available`. Stop on a blocked preview, apply exit `4` or `5`, or a check that is still not `available`. Do not apply a second time. Do not use `--actor-type ci`. CI must not apply.
 - Do not call `xcrun simctl` boot, shutdown, erase, delete, or repair on a broker-managed simulator.
 - Do not paste doctor output, aliases, simulator IDs, or host paths into public logs.
-- Idle cleanup and slot reclaim do not delete simulators. Wrapper scripts stay acquire-only.
+- Idle cleanup and slot reclaim do not delete simulators. Wrapper scripts stay acquire-only, including capacity apply.
 
-Public repair `reasons` include `simulator-missing`, `simulator-unavailable`, `simulator-config-mismatch`, `boot-on-acquire-failed`, `reset-on-acquire-failed`, `idle-shutdown-failed`, `repair-interrupted`, `repair-failed`, `runtime-not-found`, `device-type-not-found`, and `unhealthy-alias`. Purpose delete adds `delete-failed` when a delete throws. The command JSON is counts and those codes only. CI uses `--actor-type ci` with a stable actor id. The same procedure is in `spec/harness-integration.md` and the sample `AGENTS.md`.
+Public repair `reasons` include `simulator-missing`, `simulator-unavailable`, `simulator-config-mismatch`, `boot-on-acquire-failed`, `reset-on-acquire-failed`, `idle-shutdown-failed`, `repair-interrupted`, `repair-failed`, `runtime-not-found`, `device-type-not-found`, and `unhealthy-alias`. Purpose delete adds `delete-failed` when a delete throws. The command JSON is counts and those codes only. CI uses `--actor-type ci` with a stable actor id for repair and delete, and must not apply capacity reconcile. The same procedure is in `spec/harness-integration.md` and the sample `AGENTS.md`.
 
 ### 6. Reuse the sample repo when helpful
 
