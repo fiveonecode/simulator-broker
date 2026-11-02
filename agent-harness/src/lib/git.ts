@@ -95,6 +95,19 @@ export function getCommitMessage(repoRoot: string, sha: string): string {
   return runGit(repoRoot, ["show", "-s", "--format=%B", sha]);
 }
 
+export function getCommitChangedPaths(repoRoot: string, sha: string): string[] {
+  const output = runGit(repoRoot, [
+    "diff-tree",
+    "--root",
+    "-m",
+    "--no-commit-id",
+    "--name-only",
+    "-r",
+    sha,
+  ]);
+  return [...new Set(output.length === 0 ? [] : output.split("\n").filter(Boolean))];
+}
+
 export function getCommitShasForPaths(repoRoot: string, range: string, paths: string[]): string[] {
   if (paths.length === 0) {
     return [];

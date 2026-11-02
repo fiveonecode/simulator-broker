@@ -115,6 +115,9 @@ function makeStructuredCommitMessage(
     "- spec/build-and-test.md",
     "Session:",
     `- ${session}`,
+    "Not verified:",
+    "Risks:",
+    "Approval needed:",
   ].join("\n");
 }
 
@@ -560,6 +563,100 @@ describe("task completion gate", () => {
 
     expect(result.status).toBe("failed");
     expect(result.commitCheck.details.join(" ")).toContain("Missing commit section Why:");
+    rmSync(repoRoot, { force: true, recursive: true });
+  });
+
+  it.each(["Not verified:", "Risks:", "Approval needed:"])("rejects a code change that omits %s", (omitted) => {
+    const { repoRoot, sessionDir, taskFilePath } = createRepoFixture();
+    const contextPack = makeContextPack();
+    contextPack.verificationObligations = [];
+    const contract = writeTaskSession(sessionDir, contextPack, repoRoot);
+    const message = makeStructuredCommitMessage("Update task fixture")
+      .split("\n")
+      .filter((line) => line !== omitted)
+      .join("\n");
+
+    commitTaskChange(repoRoot, taskFilePath, message);
+    writeVerifyResult(sessionDir, "implementation", makeCurrentVerifyResult(repoRoot, contract, {
+      profileId: "implementation",
+      proofKind: "code",
+    }));
+
+    const result = evaluateTaskCompletion(sessionDir, repoRoot, readTaskContract(sessionDir), loadSessionVerifyResults(sessionDir));
+
+    expect(result.status).toBe("failed");
+    expect(result.commitCheck.passed).toBe(false);
+    expect(result.commitCheck.details.join(" ")).toContain(`Missing change receipt line ${omitted}`);
+    rmSync(repoRoot, { force: true, recursive: true });
+  });
+
+  it("rejects a code commit under a directory path when a receipt line is missing", () => {
+    const { repoRoot, sessionDir, taskFilePath } = createRepoFixture();
+    const contextPack = makeContextPack("broker-core");
+    contextPack.verificationObligations = [];
+    const contract = writeTaskSession(sessionDir, contextPack, repoRoot);
+    const message = makeStructuredCommitMessage("Update task fixture")
+      .split("\n")
+      .filter((line) => line !== "Risks:")
+      .join("\n");
+
+    commitTaskChange(repoRoot, taskFilePath, message);
+    writeVerifyResult(sessionDir, "implementation", makeCurrentVerifyResult(repoRoot, contract, {
+      profileId: "implementation",
+      proofKind: "code",
+      paths: ["broker-core"],
+    }));
+
+    const result = evaluateTaskCompletion(sessionDir, repoRoot, readTaskContract(sessionDir), loadSessionVerifyResults(sessionDir));
+
+    expect(result.commitCheck.passed).toBe(false);
+    expect(result.commitCheck.details.join(" ")).toContain("Missing change receipt line Risks:");
+    rmSync(repoRoot, { force: true, recursive: true });
+  });
+
+  it("accepts a docs-only commit when the contract also names a code path", () => {
+    const codePath = "broker-core/index.mjs";
+    const { repoRoot, sessionDir } = createRepoFixture();
+    const contextPack = makeContextPack(codePath);
+    contextPack.paths = ["broker-core/README.md", codePath];
+    contextPack.verificationObligations = [];
+    const contract = writeTaskSession(sessionDir, contextPack, repoRoot);
+    const message = makeStructuredCommitMessage("Update task fixture")
+      .split("\n")
+      .filter((line) => line !== "Not verified:" && line !== "Risks:" && line !== "Approval needed:")
+      .join("\n");
+    writeFileSync(path.join(repoRoot, "broker-core/README.md"), "notes only\n");
+    runGit(repoRoot, ["add", "broker-core/README.md"]);
+    runGit(repoRoot, ["commit", "-m", message]);
+    writeVerifyResult(sessionDir, "implementation", makeCurrentVerifyResult(repoRoot, contract, {
+      profileId: "implementation",
+      proofKind: "code",
+      paths: ["broker-core/README.md", codePath],
+    }));
+
+    const result = evaluateTaskCompletion(sessionDir, repoRoot, readTaskContract(sessionDir), loadSessionVerifyResults(sessionDir));
+
+    expect(result.status).toBe("passed");
+    expect(result.commitCheck.passed).toBe(true);
+    rmSync(repoRoot, { force: true, recursive: true });
+  });
+
+  it("accepts a code change whose receipt lines are present and empty", () => {
+    const { repoRoot, sessionDir, taskFilePath } = createRepoFixture();
+    const contextPack = makeContextPack();
+    contextPack.verificationObligations = [];
+    const contract = writeTaskSession(sessionDir, contextPack, repoRoot);
+
+    commitTaskChange(repoRoot, taskFilePath);
+    writeVerifyResult(sessionDir, "implementation", makeCurrentVerifyResult(repoRoot, contract, {
+      profileId: "implementation",
+      proofKind: "code",
+    }));
+
+    const result = evaluateTaskCompletion(sessionDir, repoRoot, readTaskContract(sessionDir), loadSessionVerifyResults(sessionDir));
+
+    expect(result.status).toBe("passed");
+    expect(result.commitCheck.passed).toBe(true);
     rmSync(repoRoot, { force: true, recursive: true });
   });
 

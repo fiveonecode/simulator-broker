@@ -9,6 +9,7 @@ import { getRepoRoot, listArtifactFiles, loadVerifyProfiles } from "./config.js"
 import { readDetachedRunArtifact } from "./detached-run.js";
 import {
   getChangedFilesForRange,
+  getCommitChangedPaths,
   getCommitMessage,
   getFirstParentCommitShasForPaths,
   getHeadCommit,
@@ -48,6 +49,8 @@ const ADVISORY_EVALUATION_MARKDOWN_FILE_NAME = "advisory-evaluation.md";
 const ADVISORY_EVALUATION_RUBRIC_FILE_NAME = "advisory-evaluation-rubric.json";
 const VERIFY_RESULTS_DIRECTORY = "verify";
 const COMMIT_SECTION_HEADERS = ["Why:", "Changed:", "Verification:", "Affected:", "Refs:", "Session:"];
+const CHANGE_RECEIPT_LINES = ["Not verified:", "Risks:", "Approval needed:"];
+const CODE_CHANGE_PATH = /\.(swift|m|mm|h|c|cc|cpp|js|mjs|cjs|ts|tsx|jsx|py|rb|sh)$/i;
 const STRUCTURED_COMMIT_LOCAL_PATH_MESSAGE =
   "Commit message contains local machine path(s). Use repo-relative paths, GitHub URLs, commit SHAs, or public task artifact labels instead of local paths.";
 const STRUCTURED_COMMIT_LOCAL_PATH_PATTERNS = [
@@ -380,6 +383,16 @@ function getStructuredCommitMessageIssues(message: string): string[] {
     ...getStructuredCommitSectionIssues(message),
     ...getCommitMessageLocalPathIssues(message),
   ];
+}
+
+export function sessionChangesCode(paths: readonly string[]): boolean {
+  return paths.some((candidate) => CODE_CHANGE_PATH.test(candidate));
+}
+
+export function getChangeReceiptIssues(message: string): string[] {
+  const lines = message.split(/\r?\n/).map((line) => line.trim());
+  return CHANGE_RECEIPT_LINES.filter((label) => !lines.some((line) => line.startsWith(label)))
+    .map((label) => `Missing change receipt line ${label}`);
 }
 
 function getStructuredCommitSections(message: string): Map<string, string> {
@@ -1233,7 +1246,13 @@ export function evaluateTaskCompletion(
     .filter(([, message]) => commitBelongsToSession(message, sessionIdentifiers))
     .map(([sha]) => sha);
   const invalidCommitMessages = [...commitMessages.entries()].flatMap(([sha, message]) => {
-    const issues = getStructuredCommitMessageIssues(message).map((issue) => `${sha}: ${issue}`);
+    const requireChangeReceipt = commitBelongsToSession(message, sessionIdentifiers)
+      && sessionChangesCode(getCommitChangedPaths(repoRoot, sha));
+    const receiptIssues = requireChangeReceipt ? getChangeReceiptIssues(message) : [];
+    const issues = [
+      ...getStructuredCommitMessageIssues(message),
+      ...receiptIssues,
+    ].map((issue) => `${sha}: ${issue}`);
     if (issues.length > 0) {
       return issues;
     }
