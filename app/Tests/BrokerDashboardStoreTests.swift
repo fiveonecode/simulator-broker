@@ -114,6 +114,136 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertNil(store.pendingIdleCleanupRequest)
   }
 
+  func testCapacityPreviewEnvelopeDecodesActionsAndNullRuntime() throws {
+    let json = """
+    {"ok":true,"planId":"sha256:plan","status":"changes_required","actions":[{"actionId":"capacity-1","kind":"create_capacity","purposeIds":["agent-ui-session"],"requirement":{"capability":"interactive-resettable","deviceFamily":"iPhone","iosVersion":null,"resetPolicy":"erase-on-acquire"}}],"blockedReasons":[{"blockingReasons":[{"code":"matching-capacity-busy"}],"purposeId":"manual-testing","recommendedAction":"retry_when_available"}]}
+    """
+    let envelope = try JSONDecoder().decode(BrokerCommandEnvelope.self, from: Data(json.utf8))
+    let action = try XCTUnwrap(envelope.actions?.first)
+    XCTAssertEqual(action.requirement.deviceFamily, "iPhone")
+    XCTAssertNil(action.requirement.iosVersion)
+    XCTAssertEqual(envelope.blockedReasons?.first?.blockingReasons.first?.code, "matching-capacity-busy")
+  }
+
+  func testAddSimulatorsStagesPreviewThenConfirmsAsHuman() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let commandClient = RecordingCommandClient()
+    let action = BrokerCapacityAction(
+      actionId: "capacity-1",
+      kind: "create_capacity",
+      purposeIds: ["agent-ui-session"],
+      requirement: BrokerCapacityRequirement(
+        capability: "interactive-resettable",
+        deviceFamily: "iPhone",
+        iosVersion: "18",
+        resetPolicy: "erase-on-acquire"
+      )
+    )
+    await commandClient.enqueueResponse(
+      capacityPreviewEnvelope(status: "changes_required", actions: [action])
+    )
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: commandClient,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+    store.selectedPane = .simulators
+
+    store.beginAddSimulators()
+    try await waitUntil { store.capacitySheet?.preview != nil && store.isApplyingAction == false }
+    XCTAssertEqual(store.capacitySheet?.preview?.status, "changes_required")
+    XCTAssertEqual(store.capacitySheet?.preview?.planId, "sha256:plan")
+    XCTAssertEqual(store.capacitySheet?.projectId, "sample-project")
+    XCTAssertNil(store.capacitySheet?.purposeId)
+
+    store.confirmAddSimulators()
+    try await waitUntil { await commandClient.requests().count == 2 }
+    let requests = await commandClient.requests()
+    XCTAssertEqual(requests[0].group, "capacity")
+    XCTAssertEqual(requests[0].command, "reconcile")
+    XCTAssertEqual(requests[0].options["projectFilePath"]?.stringValue, "/tmp/sample-project/.simulator-broker/project.json")
+    XCTAssertNil(requests[0].options["purposeId"])
+    XCTAssertNil(requests[0].options["apply"])
+    XCTAssertEqual(requests[1].options["apply"]?.boolValue, true)
+    XCTAssertEqual(requests[1].options["confirmPlanId"]?.stringValue, "sha256:plan")
+    XCTAssertEqual(requests[1].options["actorType"]?.stringValue, "human")
+    XCTAssertEqual(requests[1].options["actorId"]?.stringValue, "simulator-broker-app")
+    XCTAssertNil(requests[1].options["purposeId"])
+    XCTAssertNil(store.capacitySheet)
+  }
+
+  func testAddSimulatorsDoesNotApplyBlockedOrUnchangedPlans() async throws {
+    let snapshot = try loadFixture(named: "busy-snapshot")
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let blockedClient = RecordingCommandClient()
+    await blockedClient.enqueueResponse(
+      capacityPreviewEnvelope(
+        status: "blocked",
+        blocked: [
+          BrokerCapacityBlockedReason(
+            blockingReasons: [BrokerCapacityReasonCode(code: "matching-capacity-busy")],
+            purposeId: "agent-ui-session",
+            recommendedAction: "retry_when_available"
+          ),
+        ]
+      )
+    )
+    let blockedStore = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: blockedClient,
+      runtimePaths: loadedState.paths
+    )
+    blockedStore.loadedState = loadedState
+    blockedStore.selectedPane = .simulators
+    blockedStore.beginAddSimulators()
+    try await waitUntil { blockedStore.capacitySheet?.preview != nil && blockedStore.isApplyingAction == false }
+    blockedStore.confirmAddSimulators()
+    try await Task.yield()
+    let blockedRequests = await blockedClient.requests()
+    XCTAssertEqual(blockedRequests.count, 1)
+    XCTAssertNotNil(blockedStore.capacitySheet)
+
+    let unchangedClient = RecordingCommandClient()
+    await unchangedClient.enqueueResponse(capacityPreviewEnvelope(status: "no_changes"))
+    let unchangedStore = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: unchangedClient,
+      runtimePaths: loadedState.paths
+    )
+    unchangedStore.loadedState = loadedState
+    unchangedStore.selectedPane = .simulators
+    unchangedStore.beginAddSimulators()
+    try await waitUntil { unchangedStore.capacitySheet?.preview != nil && unchangedStore.isApplyingAction == false }
+    unchangedStore.confirmAddSimulators()
+    try await Task.yield()
+    let unchangedRequests = await unchangedClient.requests()
+    XCTAssertEqual(unchangedRequests.count, 1)
+    XCTAssertNotNil(unchangedStore.capacitySheet)
+  }
+
+  func testAddSimulatorsWithoutAProjectDoesNotSend() async throws {
+    let snapshot = try loadMutableFixture(named: "busy-snapshot") { object in
+      object["projects"] = []
+    }
+    let loadedState = makeLoadedState(snapshot: snapshot)
+    let commandClient = RecordingCommandClient()
+    let store = BrokerDashboardStore(
+      loader: StubSnapshotLoader(state: loadedState),
+      commandClient: commandClient,
+      runtimePaths: loadedState.paths
+    )
+    store.loadedState = loadedState
+    store.selectedPane = .simulators
+
+    store.beginAddSimulators()
+    let requests = await commandClient.requests()
+    XCTAssertTrue(requests.isEmpty)
+    XCTAssertNil(store.capacitySheet)
+    XCTAssertEqual(store.lastErrorMessage, "Onboard a repo before adding simulators.")
+  }
+
   func testIdleCleanupPreviewMarksBusyBeforeTaskStarts() async throws {
     let snapshot = try loadFixture(named: "busy-snapshot")
     let loadedState = makeLoadedState(snapshot: snapshot)
@@ -3877,6 +4007,26 @@ final class BrokerDashboardStoreTests: XCTestCase {
     XCTAssertTrue(store.canSendCommands)
     XCTAssertFalse(store.serviceStatusUnverified)
     XCTAssertNil(store.lastActionMessage)
+  }
+
+  private func capacityPreviewEnvelope(
+    status: String,
+    actions: [BrokerCapacityAction] = [],
+    blocked: [BrokerCapacityBlockedReason] = []
+  ) -> BrokerCommandEnvelope {
+    BrokerCommandEnvelope(
+      actions: actions,
+      blockedReasons: blocked,
+      currentHolder: nil,
+      error: nil,
+      exitCode: nil,
+      ok: true,
+      planId: "sha256:plan",
+      reasonCode: nil,
+      requiredConfirmationFields: nil,
+      status: status,
+      unchanged: nil
+    )
   }
 
   private func loadMutableFixture(

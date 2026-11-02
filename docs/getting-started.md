@@ -51,7 +51,7 @@ does not require XcodeGen. The app still needs the CLI installed separately.
 ## Install the CLI with npm
 
 ```bash
-npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.12/simbroker-0.1.0-alpha.12.tgz
+npm install -g https://github.com/fiveonecode/simulator-broker/releases/download/v0.1.0-alpha.13/simbroker-0.1.0-alpha.13.tgz
 command -v simbroker
 simbroker --help
 ```
@@ -76,8 +76,8 @@ To install from a tagged Alpha without cloning, download
 then run:
 
 ```bash
-tar -xzf simulator-broker-0.1.0-alpha.12-cli.tar.gz
-./simulator-broker-0.1.0-alpha.12-cli/bin/simbroker --help
+tar -xzf simulator-broker-0.1.0-alpha.13-cli.tar.gz
+./simulator-broker-0.1.0-alpha.13-cli/bin/simbroker --help
 ```
 
 The archive is the Node CLI only and contains that versioned top-level
@@ -199,6 +199,25 @@ Read `purposes[].status` (and `summary` counts), not the top-level
 
 If `purposes[].status` is `unavailable`, stop. Preview missing capacity
 with `simbroker capacity reconcile --json`. Do not acquire a lease.
+
+If `purposes[].recommendedAction` is `create_capacity`, preview that purpose
+once and apply the current plan once when status is `changes_required`:
+
+```bash
+simbroker capacity reconcile \
+  --repo-root "$PWD" \
+  --purpose agent-ui-session \
+  --apply \
+  --confirm <plan-id> \
+  --actor-type agent \
+  --actor-id hello-world \
+  --json
+```
+
+Then run `capacity check` once and acquire only when `purposes[].status` is
+`available`. Stop on a blocked preview, apply exit `4` or `5`, or a check
+that is still not available. Do not apply a second time. Do not use
+`--actor-type ci`.
 
 If `purposes[].recommendedAction` is `repair_matching_simulators`, repair
 that purpose once:

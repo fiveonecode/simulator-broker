@@ -2,8 +2,8 @@
 Related: `spec/README.md`, `spec/implementation-plan.md`, `spec/global-simulator-broker.md`, `spec/agents.md`, `spec/build-and-test.md`
 
 > **Document ID:** `GSB-HARNESS-001`
-> **Version:** `0.6.0`
-> **Last Updated:** `2026-10-23`
+> **Version:** `0.7.0`
+> **Last Updated:** `2026-11-02`
 > **Status:** `Draft`
 > **Owner:** `spec-steward`
 
@@ -206,10 +206,24 @@ simbroker simulators delete \
 
 - delete exit `0` retries `capacity check` once and acquires only when the purpose is `available`. Delete exit `5` stops for a human. Never pass `--force-override`
 - any other repair exit `4`, or a delete exit `4`, runs `simbroker doctor` once, reads `causeCode` and `driftReason` locally, and stops. Do not run purpose repair or purpose delete a second time for that denial
+- when `recommendedAction` is `create_capacity`, preview that purpose once and apply the current plan once when status is `changes_required`:
+
+```bash
+simbroker capacity reconcile \
+  --repo-root "$PWD" \
+  --purpose <purpose> \
+  --apply \
+  --confirm <plan-id> \
+  --actor-type agent \
+  --actor-id <id> \
+  --json
+```
+
+- then run `capacity check` once and acquire only when the purpose is `available`. Stop on a blocked preview, apply exit `4` or `5`, or a check that is still not `available`. Do not apply a second time. Do not use `--actor-type ci`
 - never call `xcrun simctl` boot, shutdown, erase, delete, or repair on a broker-managed simulator
 - never paste doctor output, aliases, simulator IDs, or host paths into public logs
 - never attempt human-only override flows such as forced repair override or deleting a leased or pinned simulator
-- keep wrapper scripts acquire-only. Purpose repair can replace a device, and purpose delete removes one, so both stay explicit commands. Idle cleanup and slot reclaim do not delete simulators
+- keep wrapper scripts acquire-only. Purpose repair can replace a device, purpose delete removes one, and capacity apply creates one, so all three stay explicit commands. Idle cleanup and slot reclaim do not delete simulators
 - when the repo ships a macOS app, route desktop build, launch, and focused test work through `xcode-build` and keep a repo-owned `script/build_and_run.sh` plus `.codex/environments/environment.toml` Run action in sync
 - when the repo ships a macOS app, use `swiftui-pro`, `swift-concurrency-pro`, `apple-doc-research`, and `xcode-build` as the desktop-specific review and implementation guide rails
 
@@ -220,6 +234,7 @@ Any CI or scheduled automation that uses simulators must:
 - acquire by purpose before simulator work starts
 - use the same one-attempt purpose repair as an agent, with `--actor-type ci` and a stable actor id, when `recommendedAction` is `repair_matching_simulators`
 - use the same one-attempt purpose delete when that repair exits `4` and `reasons` include `runtime-not-found` or `device-type-not-found`
+- do not run `capacity reconcile --apply`. CI is not a create actor
 - pass stable `--actor-type ci`
 - pass stable `--job-id` and `--job-kind` when available
 - release in a cleanup step that still runs after failure
@@ -241,13 +256,16 @@ This is the canonical harness flow for local scripts, agent sessions, and CI.
    `--force-override`. A `repair_needed` status with `install_runtime`,
    `run_broker_doctor`, or `inspect_unknown` follows that action and does not
    repair or delete.
-4. If check reports missing structural capacity, a human operator may run
-   `simbroker capacity reconcile` to preview a deterministic additive plan and
-   then apply that exact plan with `--apply --confirm <plan-id> --actor-type
-   human --actor-id <operator-id>`. A plan blocked only because simulators
-   need repair is not an apply plan. The agent runs purpose repair when
-   `recommendedAction` is `repair_matching_simulators`. A provisioning blocker
-   keeps its own recommended action.
+4. If `recommendedAction` is `create_capacity`, preview that purpose once.
+   Apply that plan once only when status is `changes_required`, with
+   `--apply --confirm <plan-id> --actor-type agent --actor-id <id>`. Then run
+   `capacity check` once and acquire only when the purpose is `available`.
+   Stop on a blocked preview, apply exit `4` or `5`, or a check that is still
+   not `available`. Do not apply a second time. Do not use `--actor-type ci`.
+   A human may apply the same current plan. A plan blocked only because
+   simulators need repair is not an apply plan. The agent runs purpose repair
+   when `recommendedAction` is `repair_matching_simulators`. A provisioning
+   blocker keeps its own recommended action.
 5. Acquire a lease by purpose.
 6. Read simulator metadata from the lease artifact. Successful acquisition
    means the selected simulator has already been booted by the broker.
@@ -257,9 +275,10 @@ This is the canonical harness flow for local scripts, agent sessions, and CI.
 10. Contain on forced abort, timeout, or ceiling breach.
 11. Release the lease on success.
 
-Wrapper scripts stay acquire-only. Repair and delete are separate steps
-because a repair can replace the simulator and a delete removes it. Do not
-fold either command into `run-agent-ui-session.sh` or the shared lease helper.
+Wrapper scripts stay acquire-only. Repair, delete, and capacity apply are
+separate steps because a repair can replace the simulator, a delete removes
+it, and an apply creates one. Do not fold any of those commands into
+`run-agent-ui-session.sh` or the shared lease helper.
 Idle cleanup and slot reclaim do not delete simulators.
 
 Stable public drift reasons an agent may see on the repair result are
@@ -270,10 +289,11 @@ Stable public drift reasons an agent may see on the repair result are
 `delete-failed` when a delete throws. The full command contract is in
 `spec/global-simulator-broker.md`.
 
-Agents and CI may consume capacity check and preview JSON as evidence, but they
-must not run human-confirmed apply unattended. Apply is an operator action that
-creates additive broker-managed capacity and writes local-only transaction
-evidence.
+Agents may consume capacity check and preview JSON as evidence. When
+`recommendedAction` is `create_capacity`, an agent applies that current plan
+once, as specified above, and does not apply again. CI may preview and must
+not apply. Apply creates additive broker-managed capacity and writes
+local-only transaction evidence. There is no `--yes`.
 
 Illustrative shell pattern:
 
@@ -360,6 +380,7 @@ Harness behavior rules:
 - use `lease explain` when acquire fails and the failure needs a structured explanation
 - use purpose repair once when `recommendedAction` is `repair_matching_simulators`, then retry acquire once on exit `0`
 - use purpose delete once when that repair exits `4` with `runtime-not-found` or `device-type-not-found`, then retry the capacity check once on delete exit `0`
+- when `recommendedAction` is `create_capacity`, preview once and apply that `changes_required` plan once as an agent, then check capacity once. Do not apply a second time. CI does not apply
 - use `host status` or `events watch` for operator-visible debugging
 - keep doctor output on the local machine. Do not copy aliases, simulator IDs, or host paths into public logs
 - treat the lease artifact as the canonical per-run handle for release and inspection
@@ -474,6 +495,7 @@ The harness-awareness phase is complete only when:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| 0.7.0 | 2026-11-02 | Taught agents to apply one confirmed capacity reconcile when `recommendedAction` is `create_capacity`. CI still must not apply. Wrappers stay acquire-only. |
 | 0.6.0 | 2026-10-23 | Taught agents and CI to delete a purpose once when repair exits `4` with `runtime-not-found` or `device-type-not-found`, and kept wrappers acquire-only. |
 | 0.5.0 | 2026-10-05 | Taught agents to repair a purpose once when capacity recommends `repair_matching_simulators`, then retry acquire, and to stop for a human when a live holder remains. |
 | 0.4.1 | 2026-08-10 | Clarified that successful acquisition returns a broker-booted simulator. |

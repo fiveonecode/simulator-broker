@@ -56,6 +56,22 @@ struct BrokerPendingIdleCleanupRequest: Identifiable {
   var id: String { planId }
 }
 
+struct BrokerCapacityPreview: Equatable, Sendable {
+  let actions: [BrokerCapacityAction]
+  let blockedReasons: [BrokerCapacityBlockedReason]
+  let planId: String
+  let status: String
+}
+
+struct BrokerCapacitySheetSession: Identifiable, Equatable {
+  let id: UUID
+  var isLoading: Bool
+  var preview: BrokerCapacityPreview?
+  var previewError: String?
+  var projectId: String
+  var purposeId: String?
+}
+
 private struct BrokerDashboardStoreFocusedKey: FocusedValueKey {
   typealias Value = BrokerDashboardStore
 }

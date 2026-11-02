@@ -2716,6 +2716,29 @@ test("service-backed capacity preview matches direct plan id and apply uses serv
   assert.equal(servicePreview.json.planId, directPreview.json.planId);
   assert.deepEqual(servicePreview.json.actions, directPreview.json.actions);
 
+  const ciApply = runCli(
+    fixture,
+    "capacity",
+    "reconcile",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ipad-session",
+    "--apply",
+    "--confirm",
+    servicePreview.json.planId,
+    "--actor-type",
+    "ci",
+    "--actor-id",
+    "ci-bot",
+    "--json",
+  );
+  assert.equal(ciApply.status, 5);
+  assert.equal(ciApply.json.exitCode, 5);
+  assert.equal(ciApply.json.ok, false);
+  assert.equal(ciApply.json.reasonCode, "capacity-actor-forbidden");
+  assert.equal(readJson(fixture.hostConfigPath).aliases.some((alias) => alias.alias === "ipad-1"), false);
+
   const apply = runCli(
     fixture,
     "capacity",

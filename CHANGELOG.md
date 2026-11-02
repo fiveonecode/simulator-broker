@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.13] - 2026-11-02
+
+Alpha 13 keeps the Alpha 12 install and four-custom-asset contract. A human
+or an agent can apply one confirmed capacity reconcile. CI cannot apply.
+The adoption skill teaches that same one-attempt apply.
+
+### Added
+
+- A human or an agent can apply one confirmed `capacity reconcile` plan.
+  `--actor-type ci` and a blank actor id are rejected before any simulator
+  is created. The macOS app Simulators screen has an **Add simulators**
+  button that previews the same plan and confirms it as a human.
+
 ## [0.1.0-alpha.12] - 2026-11-01
 
 Alpha 12 keeps the Alpha 11 install and four-custom-asset contract. Repair,

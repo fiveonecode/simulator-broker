@@ -3029,6 +3029,47 @@ test("capacity check, preview, and confirmed apply work through the direct CLI",
   assert.equal(staleConfirm.status, 5);
   assert.equal(staleConfirm.json.reasonCode, "capacity-plan-stale");
 
+  const ciApply = runCli(
+    fixture,
+    "capacity",
+    "reconcile",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ipad-session",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--actor-type",
+    "ci",
+    "--actor-id",
+    "ci-bot",
+    "--json",
+  );
+  assert.equal(ciApply.status, 5);
+  assert.equal(ciApply.json.reasonCode, "capacity-actor-forbidden");
+  assert.equal(readJson(fixture.hostConfigPath).aliases.some((alias) => alias.alias === "ipad-1"), false);
+
+  const blankActor = runCli(
+    fixture,
+    "capacity",
+    "reconcile",
+    "--repo-root",
+    fixture.repoRoot,
+    "--purpose",
+    "agent-ipad-session",
+    "--apply",
+    "--confirm",
+    preview.json.planId,
+    "--actor-type",
+    "agent",
+    "--actor-id",
+    "   ",
+    "--json",
+  );
+  assert.equal(blankActor.status, 5);
+  assert.equal(blankActor.json.reasonCode, "capacity-actor-required");
+
   const apply = runCli(
     fixture,
     "capacity",
@@ -3041,15 +3082,15 @@ test("capacity check, preview, and confirmed apply work through the direct CLI",
     "--confirm",
     preview.json.planId,
     "--actor-type",
-    "human",
+    "agent",
     "--actor-id",
-    "operator",
+    "agent-1",
     "--json",
   );
   assert.equal(apply.status, 0);
   assert.equal(apply.json.status, "applied");
   assert.equal(apply.json.created, 1);
-  assert.equal(JSON.stringify(apply.json).includes("operator"), false);
+  assert.equal(JSON.stringify(apply.json).includes("agent-1"), false);
 
   const hostConfig = readJson(fixture.hostConfigPath);
   assert.equal(hostConfig.aliases.some((alias) => alias.alias === "ipad-1"), true);

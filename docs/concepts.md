@@ -78,7 +78,8 @@ not mutate simulator state behind the broker's back.
 
 `capacity check` reports whether a repo purpose can be served.
 `capacity reconcile` previews missing aliases and applies only after a human
-confirms the exact plan ID.
+or an agent confirms the exact current plan ID. CI may not apply. The macOS
+app confirms that plan from the Simulators **Add simulators** button.
 
 Automatic shutdown is off until a human sets a duration in the app or CLI.
 Idle cleanup is also confirm-only.

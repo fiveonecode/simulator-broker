@@ -31,6 +31,10 @@ This Alpha already includes:
   only after a host config exists and after `capacity check` for
   `agent-ui-session`. Read `purposes[].status`, not the top-level
   `status`. Stop on `unavailable` and preview with `capacity reconcile`.
+  On `recommendedAction` `create_capacity`, an agent previews that purpose
+  and applies the current plan once when status is `changes_required`, then
+  checks capacity once. The agent does not apply a second time. CI does not
+  apply. The app **Add simulators** button confirms the same plan as a human.
   On `recommendedAction` `repair_matching_simulators`, run
   `simulators repair --repo-root <repo> --purpose <purpose> --actor-type agent --actor-id <id>`
   once. A `repair_needed` status with `install_runtime`, `run_broker_doctor`, or
@@ -69,7 +73,7 @@ This Alpha already includes:
   notarization of the payload app
 - `simbroker project init` for `.simulator-broker/project.json`
   with version-agnostic iPhone UI requirements by default
-- `capacity check` and human-confirmed `capacity reconcile`
+- `capacity check` and `capacity reconcile` confirmed by a human or an agent. CI may not apply. The app **Add simulators** button applies as actor id `simulator-broker-app`
 - `idle` inspect, reconcile, and confirm-only cleanup
 - between-lease disk reclaim for build slots (8 leases, 24h, or 8 GiB; manual
   opt-in; `slot.reclaimed` events; `host status` / `doctor` summary)

@@ -284,6 +284,11 @@ test("README Use it orders Homebrew CLI, cask, guided setup, then hello world", 
   assert.ok(hello.includes("device-type-not-found"));
   assert.equal(hello.includes("simulators delete --alias"), false);
   assert.ok(hello.includes("simbroker lease acquire"));
+  assert.ok(hello.includes("create_capacity"));
+  assert.ok(hello.includes("--apply"));
+  assert.ok(hello.includes("--confirm <plan-id>"));
+  assert.ok(hello.includes("Do not apply a second time"));
+  assert.ok(hello.includes("--actor-type ci"));
   const gettingHello = headingSection(gettingStarted, "Hello world");
   assert.ok(gettingHello.includes("simbroker capacity check --purpose agent-ui-session --json"));
   assert.ok(gettingHello.includes("purposes[].status"));
@@ -302,6 +307,12 @@ test("README Use it orders Homebrew CLI, cask, guided setup, then hello world", 
   assert.equal(gettingHello.includes("simulators delete --alias"), false);
   assert.ok(/unavailable/.test(gettingHello));
   assert.ok(/repair_needed/.test(gettingHello));
+  assert.ok(gettingHello.includes("create_capacity"));
+  assert.ok(gettingHello.includes("--apply"));
+  assert.ok(gettingHello.includes("--confirm <plan-id>"));
+  assert.ok(gettingHello.includes("Do not apply a second time"));
+  assert.ok(gettingHello.includes("--actor-type ci"));
+  assert.ok(gettingHello.includes("--actor-id hello-world"));
 });
 
 test("newcomer app guidance uses the cask and keeps XcodeGen source-build-only", () => {

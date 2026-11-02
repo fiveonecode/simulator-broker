@@ -577,7 +577,37 @@ private struct BrokerHostConfigTimeoutSummary: Decodable {
   let pendingRetirements: [String]?
 }
 
+struct BrokerCapacityRequirement: Decodable, Equatable, Sendable {
+  let capability: String
+  let deviceFamily: String
+  let iosVersion: String?
+  let resetPolicy: String
+}
+
+struct BrokerCapacityReasonCode: Decodable, Equatable, Sendable {
+  let code: String
+}
+
+struct BrokerCapacityBlockedReason: Decodable, Equatable, Identifiable, Sendable {
+  let blockingReasons: [BrokerCapacityReasonCode]
+  let purposeId: String
+  let recommendedAction: String
+
+  var id: String { "\(purposeId):\(recommendedAction)" }
+}
+
+struct BrokerCapacityAction: Decodable, Equatable, Identifiable, Sendable {
+  let actionId: String
+  let kind: String
+  let purposeIds: [String]
+  let requirement: BrokerCapacityRequirement
+
+  var id: String { actionId }
+}
+
 struct BrokerCommandEnvelope: Decodable, Sendable {
+  let actions: [BrokerCapacityAction]?
+  let blockedReasons: [BrokerCapacityBlockedReason]?
   let currentHolder: BrokerLeaseSummary?
   let eligibleCount: Int?
   let error: String?
@@ -592,6 +622,8 @@ struct BrokerCommandEnvelope: Decodable, Sendable {
   let unchanged: Bool?
 
   init(
+    actions: [BrokerCapacityAction]? = nil,
+    blockedReasons: [BrokerCapacityBlockedReason]? = nil,
     currentHolder: BrokerLeaseSummary?,
     eligibleCount: Int? = nil,
     error: String?,
@@ -605,6 +637,8 @@ struct BrokerCommandEnvelope: Decodable, Sendable {
     status: String? = nil,
     unchanged: Bool?
   ) {
+    self.actions = actions
+    self.blockedReasons = blockedReasons
     self.currentHolder = currentHolder
     self.eligibleCount = eligibleCount
     self.error = error
