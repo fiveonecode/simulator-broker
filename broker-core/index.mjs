@@ -6311,7 +6311,7 @@ function publicRequestedCapacity(requirement) {
 
 function runtimeSuppliesDeviceFamily(runtime, inventory, deviceFamily) {
   return runtimeSupportedDeviceTypes(runtime, inventory)
-    .some((deviceType) => deviceType.productFamily === deviceFamily);
+    .some((deviceType) => isCompleteSetupDeviceType(deviceType, deviceFamily));
 }
 
 function selectRuntimeFromInventory(inventory, iosVersion, deviceFamily) {
@@ -6326,8 +6326,8 @@ function selectRuntimeFromInventory(inventory, iosVersion, deviceFamily) {
       runtime: null,
     };
   }
-  // Family first. Setup build order would otherwise keep a higher-build
-  // runtime that does not supply the requested family.
+  // Family first, and only a complete device type counts. A higher-build
+  // runtime with a partial record must not win and then throw.
   const runtimes = matches
     .filter((runtime) => runtimeSuppliesDeviceFamily(runtime, inventory, deviceFamily))
     .sort(compareSetupRuntimes);

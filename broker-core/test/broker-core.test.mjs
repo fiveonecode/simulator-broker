@@ -5297,6 +5297,154 @@ test("capacity reconcile breaks equal runtime versions with the setup order", ()
   assert.deepEqual(created.map((entry) => entry.runtimeIdentifier), [higherBuildRuntime]);
 });
 
+test("capacity reconcile skips a higher runtime whose requested device types are incomplete", () => {
+  const completeRuntime = "com.apple.CoreSimulator.SimRuntime.iOS-27-0";
+  const prepared = prepareFamilyCapacity([
+    capacityRuntime({
+      buildversion: "24B91016s",
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
+      supportedDeviceTypes: [
+        {
+          identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+          productFamily: "iPad",
+        },
+        {
+          name: "iPad (A16)",
+          productFamily: "iPad",
+        },
+        {
+          identifier: "",
+          name: "",
+          productFamily: "iPad",
+        },
+      ],
+      version: "27.2",
+    }),
+    capacityRuntime({
+      buildversion: "24A434",
+      identifier: completeRuntime,
+      supportedDeviceTypes: fullCapacityDeviceTypes(),
+      version: "27.0",
+    }),
+  ], "iPad");
+  const preview = previewFamilyCapacity(prepared);
+  const { applied, created } = applyFamilyCapacity(prepared, preview);
+
+  assert.equal(preview.status, "changes_required");
+  assert.equal(applied.status, "applied");
+  assert.deepEqual(created.map(({ deviceTypeIdentifier, runtimeIdentifier }) => ({
+    deviceTypeIdentifier,
+    runtimeIdentifier,
+  })), [{
+    deviceTypeIdentifier: CAPACITY_IPAD_DEVICE.identifier,
+    runtimeIdentifier: completeRuntime,
+  }]);
+});
+
+test("capacity reconcile reports device-type-not-found when matching device types are incomplete", () => {
+  const prepared = prepareFamilyCapacity([
+    capacityRuntime({
+      buildversion: "24B91016s",
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
+      supportedDeviceTypes: [
+        {
+          identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+          productFamily: "iPad",
+        },
+        {
+          name: "iPad (A16)",
+          productFamily: "iPad",
+        },
+      ],
+      version: "27.2",
+    }),
+    capacityRuntime({
+      buildversion: "24A94232",
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-1",
+      supportedDeviceTypes: [CAPACITY_IPHONE_DEVICE],
+      version: "27.1",
+    }),
+  ], "iPad");
+  const preview = previewFamilyCapacity(prepared);
+  const report = checkCapacityBroker(prepared.resolvedPaths, {
+    processExists: () => true,
+    purposeId: prepared.purposeId,
+    simctlAdapter: prepared.paths.simctl.adapter,
+  });
+
+  assert.equal(preview.status, "blocked");
+  assert.deepEqual(preview.actions, []);
+  assert.deepEqual(preview.blockedReasons[0].blockingReasons, [{ code: "device-type-not-found" }]);
+  assert.equal(preview.blockedReasons[0].recommendedAction, "run_broker_doctor");
+  assert.equal(report.ok, true);
+  assert.equal(report.purposes[0].status, "unavailable");
+  assert.deepEqual(report.purposes[0].blockingReasons, [{ code: "device-type-not-found" }]);
+  assert.equal(report.purposes[0].recommendedAction, "run_broker_doctor");
+});
+
+test("capacity reconcile ignores an incomplete global device type when supportedDeviceTypes is omitted", () => {
+  const prepared = prepareFamilyCapacity([
+    capacityRuntime({
+      buildversion: "24B8117",
+      identifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
+      version: "27.2",
+    }),
+  ], "iPad");
+  const state = readJson(prepared.paths.simctl.statePath);
+  state.devicetypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      productFamily: "iPad",
+    },
+    CAPACITY_IPHONE_DEVICE,
+  ];
+  writeJson(prepared.paths.simctl.statePath, state);
+  const preview = previewFamilyCapacity(prepared);
+
+  assert.equal(preview.status, "blocked");
+  assert.deepEqual(preview.actions, []);
+  assert.deepEqual(preview.blockedReasons[0].blockingReasons, [{ code: "device-type-not-found" }]);
+  assert.equal(preview.blockedReasons[0].recommendedAction, "run_broker_doctor");
+});
+
+test("capacity check stays available when provisioning device types are incomplete", () => {
+  const paths = makePaths();
+  const state = readJson(paths.simctl.statePath);
+  const runtime = state.runtimes.find((entry) => entry.identifier === "com.apple.CoreSimulator.SimRuntime.iOS-18-2");
+  runtime.supportedDeviceTypes = [
+    {
+      identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-A16",
+      productFamily: "iPad",
+    },
+    {
+      name: "iPhone 16",
+      productFamily: "iPhone",
+    },
+  ];
+  writeJson(paths.simctl.statePath, state);
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  const report = checkCapacityBroker(resolvedPaths, {
+    processExists: () => true,
+    purposeId: "agent-ipad-session",
+    simctlAdapter: paths.simctl.adapter,
+  });
+  const preview = reconcileCapacityBroker(resolvedPaths, {
+    processExists: () => true,
+    purposeId: "agent-ipad-session",
+    simctlAdapter: paths.simctl.adapter,
+  });
+
+  assert.equal(report.ok, true);
+  assert.equal(report.purposes[0].status, "available");
+  assert.equal(report.purposes[0].recommendedAction, "none");
+  assert.equal(preview.status, "no_changes");
+  assert.deepEqual(preview.actions, []);
+});
+
 test("capacity reconcile does not require both device families", () => {
   const iphoneRuntime = "com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4";
   const prepared = prepareFamilyCapacity([

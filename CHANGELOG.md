@@ -10,8 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Capacity reconcile skips a runtime that matches the requested iOS version
-  but cannot supply the requested device family. Equal versions follow the
-  setup runtime order.
+  but has no complete device type for the requested family. A record that
+  omits a non-empty identifier or name does not qualify. Equal versions follow
+  the setup runtime order. The blocked result stays in the exit-0 report.
 
 ## [0.1.0-alpha.14] - 2026-11-02
 
