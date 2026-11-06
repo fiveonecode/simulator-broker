@@ -94,7 +94,8 @@ The extracted system must work for any repo that uses AI agentic development har
   a successful lease
 - fail invalid explicit alias or simulator overrides
 - avoid borrowing aliases across configured role pools
-- serialize slow erase/reset work for UI roles under a dedicated reset lock
+- serialize erase and boot for one UI alias under that alias's reset lock, and
+  allow at most two such operations at once under reset-capacity tokens
 - serialize release, process registration, lease containment, pin clearing, inactive project-registration cleanup, lifecycle operations, final app snapshot artifact writes, and state-refresh operations that normalize registry or stale lease state through the broker mutation authority so lease, pin, registry, lifecycle state, and shared app snapshots cannot race each other
 
 ### Current integration surface
@@ -144,12 +145,21 @@ Current implementation slice:
 - registry synchronization against `simctl` marks a missing device
   `repair-needed` with `simulator-missing`, an unavailable device with
   `simulator-unavailable`, and a family or runtime mismatch with
-  `simulator-config-mismatch`. An existing `slot-reclaim-failed` reason is
-  preserved across that synchronization. Synchronization never clears
-  `repair-needed`. A leftover `repairing` entry becomes `repair-needed` with
+  `simulator-config-mismatch` only when the runtime inventory contains at
+  least one available iOS runtime and the alias is not mid-prepare or leased.
+  An empty runtime list leaves health unchanged. An existing
+  `slot-reclaim-failed` reason is preserved across that synchronization.
+  Synchronization never clears `repair-needed`. Entering `repair-needed`
+  appends `simulator.unhealthy` with `driftReason` and `driftCauseCode`.
+  A leftover `repairing` entry becomes `repair-needed` with
   `repair-interrupted` on the next load. Only a successful repair returns
   the alias to `healthy`
-- reset-on-acquire coordination behind a dedicated reset lock with rollback on reset failure
+- reset-on-acquire coordination behind the per-alias reset lock and a
+  two-slot reset-capacity limit, with rollback on reset failure. `simctl`
+  shutdown, erase, boot, and `bootstatus` for that work run outside the
+  broker mutation lock. A running `brokerd` may complete the erase and boot
+  after release; acquire adopts that result only when the stored data-volume
+  identity still matches the live device and the proof names the previous lease
 - boot-on-acquire with lease rollback and `repair-needed`
   (`boot-on-acquire-failed`) when boot fails. The real `simctl` adapter treats
   a boot result whose text says the device is already `Booted` or `Booting`

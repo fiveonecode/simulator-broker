@@ -2559,6 +2559,19 @@ export function applySetupBroker(paths, options = {}) {
   });
 }
 
+function runtimeInventoryUsable(inventory) {
+  const runtimes = inventory?.runtimesJson?.runtimes;
+  return Array.isArray(runtimes) && runtimes.some((runtime) => (
+    runtime?.isAvailable !== false
+    && typeof runtime.version === "string"
+    && runtime.version.length > 0
+  ));
+}
+
+function syncSkipsTransientHealth(registryEntry) {
+  return prepareInProgress(registryEntry) || typeof registryEntry?.activeLeaseId === "string";
+}
+
 function syncRegistryWithSimctl(hostConfig, registry, options = {}) {
   const inventory = options.simctlInventory ?? readSimctlInventory(options);
   const deviceIndex = createDeviceIndex({
@@ -2566,18 +2579,28 @@ function syncRegistryWithSimctl(hostConfig, registry, options = {}) {
     devicesJson: inventory.devicesJson,
     runtimesJson: inventory.runtimesJson,
   });
+  const runtimesUsable = runtimeInventoryUsable(inventory);
 
   for (const hostAlias of hostConfig.aliases) {
     const registryEntry = registry.aliases[hostAlias.alias];
     const device = deviceIndex.get(hostAlias.simulatorId) ?? null;
+    const skipTransient = !runtimesUsable || syncSkipsTransientHealth(registryEntry);
 
     if (!device || device.isAvailable === false) {
+      if (skipTransient) {
+        continue;
+      }
       registryEntry.health = "repair-needed";
       registryEntry.driftReason = preserveSlotReclaimFailure(
         registryEntry,
         device ? "simulator-unavailable" : "simulator-missing",
       );
       registryEntry.powerState = "shutdown";
+      continue;
+    }
+
+    if (skipTransient || typeof device.runtimeVersion !== "string" || device.runtimeVersion.length === 0) {
+      registryEntry.powerState = device.state === "Booted" ? "booted" : "shutdown";
       continue;
     }
 
@@ -2723,8 +2746,13 @@ function normalizeRegistry(rawRegistry, hostConfig, timestamp) {
       lastBootedAt: typeof entry.lastBootedAt === "string" ? entry.lastBootedAt : null,
       lastErasedAt: typeof entry.lastErasedAt === "string" ? entry.lastErasedAt : null,
       lastLeaseReleasedAt: typeof entry.lastLeaseReleasedAt === "string" ? entry.lastLeaseReleasedAt : null,
+      lastReleasedLeaseId: typeof entry.lastReleasedLeaseId === "string" ? entry.lastReleasedLeaseId : null,
       lastLeaseStartedAt: typeof entry.lastLeaseStartedAt === "string" ? entry.lastLeaseStartedAt : null,
       leasesSinceErase: normalizeNonNegativeInteger(entry.leasesSinceErase) ?? 0,
+      cleanProof: normalizeCleanProof(entry.cleanProof),
+      cleanProofConsumedBy: typeof entry.cleanProofConsumedBy === "string" ? entry.cleanProofConsumedBy : null,
+      cleanReadyAt: typeof entry.cleanReadyAt === "string" ? entry.cleanReadyAt : null,
+      prepare: normalizePrepareState(entry.prepare),
       lastRepairedAt: typeof entry.lastRepairedAt === "string" ? entry.lastRepairedAt : null,
       lastShutdownAt: typeof entry.lastShutdownAt === "string" ? entry.lastShutdownAt : null,
       pinId: typeof entry.pinId === "string" ? entry.pinId : null,
@@ -2822,12 +2850,66 @@ function resetLeasesSinceErase(registryEntry) {
   registryEntry.leasesSinceErase = 0;
 }
 
-function markAliasLeaseReleased(registryEntry, timestamp) {
+function normalizeCleanProof(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const epoch = normalizeNonNegativeInteger(value.epoch);
+  if (epoch === null || typeof value.simulatorId !== "string" || typeof value.dataIdentity !== "string") {
+    return null;
+  }
+  if (value.successorOfLeaseId !== null && typeof value.successorOfLeaseId !== "string") {
+    return null;
+  }
+  if (typeof value.ready !== "boolean") {
+    return null;
+  }
+  return {
+    dataIdentity: value.dataIdentity,
+    epoch,
+    ready: value.ready,
+    simulatorId: value.simulatorId,
+    successorOfLeaseId: value.successorOfLeaseId ?? null,
+  };
+}
+
+function normalizePrepareState(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  if (!["queued", "erasing", "booting", "failed"].includes(value.state) || typeof value.token !== "string") {
+    return null;
+  }
+  const ownerPid = Number.isInteger(value.ownerPid) ? value.ownerPid : null;
+  return {
+    ownerPid,
+    state: value.state,
+    token: value.token,
+  };
+}
+
+function invalidateCleanProof(registryEntry) {
+  if (!registryEntry) {
+    return;
+  }
+  registryEntry.cleanProof = null;
+  registryEntry.cleanProofConsumedBy = null;
+  registryEntry.cleanReadyAt = null;
+}
+
+function prepareInProgress(registryEntry) {
+  return ["queued", "erasing", "booting"].includes(registryEntry?.prepare?.state);
+}
+
+function markAliasLeaseReleased(registryEntry, timestamp, leaseId = null) {
   if (!registryEntry) {
     return;
   }
   registryEntry.activeLeaseId = null;
   registryEntry.lastLeaseReleasedAt = timestamp;
+  if (typeof leaseId === "string") {
+    registryEntry.lastReleasedLeaseId = leaseId;
+  }
   incrementLeasesSinceErase(registryEntry);
   registryEntry.updatedAt = timestamp;
 }
@@ -3138,6 +3220,8 @@ function idleBaseCandidates(state) {
     const registryEntry = state.registry.aliases[hostAlias.alias];
     return registryEntry.powerState === "booted"
       && registryEntry.health === "healthy"
+      && registryEntry.prepare?.state !== "erasing"
+      && registryEntry.prepare?.state !== "booting"
       && !state.leasesByAlias.has(hostAlias.alias)
       && !state.pinsByAlias.has(hostAlias.alias)
       && !hostAlias.capabilities.includes("manual-persistent");
@@ -3145,11 +3229,18 @@ function idleBaseCandidates(state) {
 }
 
 function idleDeadline(registryEntry, graceSeconds) {
+  const graceMs = graceSeconds * 1_000;
+  if (registryEntry.cleanProof?.ready === true) {
+    const readyAtMs = Date.parse(registryEntry.cleanReadyAt ?? "");
+    if (Number.isFinite(readyAtMs)) {
+      return readyAtMs + graceMs;
+    }
+  }
   const releasedAtMs = Date.parse(registryEntry.lastLeaseReleasedAt ?? "");
   if (!Number.isFinite(releasedAtMs)) {
     return null;
   }
-  return releasedAtMs + (graceSeconds * 1_000);
+  return releasedAtMs + graceMs;
 }
 
 function idleEligibleCandidates(state, policy, timestamp) {
@@ -3903,7 +3994,8 @@ function validateForceOverride(action, options, requester, alias, activeLease) {
 function revokeLeaseForOverride(paths, state, lease, { action, actorId, actorType, overrideReason, timestamp }) {
   assertLeaseArtifactPathAllowed(paths, lease.artifactPath);
   const registryEntry = state.registry.aliases[lease.alias];
-  markAliasLeaseReleased(registryEntry, timestamp);
+  markAliasLeaseReleased(registryEntry, timestamp, lease.leaseId);
+  invalidateCleanProof(registryEntry);
   state.registry.updatedAt = timestamp;
   state.leasesByAlias.delete(lease.alias);
   writeRegistry(paths, state.registry);
@@ -4056,7 +4148,54 @@ function initializeLockScope(paths, initializePersistentState) {
   }
 }
 
-function withResetLock(paths, work, {
+function recordFreshUnhealthy(paths, hostConfig, registry, healthBeforeSync, timestamp) {
+  for (const hostAlias of hostConfig.aliases) {
+    const entry = registry.aliases[hostAlias.alias];
+    const previousHealth = healthBeforeSync.get(hostAlias.alias) ?? null;
+    if (!entry || entry.health !== "repair-needed" || previousHealth === "repair-needed" || previousHealth === "repairing") {
+      continue;
+    }
+    appendEventRecord(paths, "simulator.unhealthy", {
+      alias: hostAlias.alias,
+      actorType: "system",
+      jobId: null,
+      leaseId: entry.activeLeaseId ?? null,
+      payload: {
+        driftCauseCode: entry.driftCauseCode ?? null,
+        driftReason: entry.driftReason ?? null,
+        health: entry.health,
+      },
+      projectId: null,
+      purposeId: null,
+    }, timestamp);
+  }
+}
+
+function aliasResetLockPaths(paths, alias) {
+  if (typeof alias !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(alias)) {
+    throw new BrokerError("Invalid alias for the simulator reset lock.", {
+      alias: alias ?? null,
+      reasonCode: "invalid-config",
+    });
+  }
+  const dir = path.join(paths.locksDir, "reset", `${alias}.lock`);
+  return {
+    dir,
+    ownerPath: path.join(dir, "owner.json"),
+  };
+}
+
+function tryAcquireDirectoryLock(dir, ownerPath, now) {
+  fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(dir);
+  fs.chmodSync(dir, 0o700);
+  writeJsonAtomicRestricted(ownerPath, {
+    pid: process.pid,
+    startedAt: now,
+  });
+}
+
+function withDirectoryLock(paths, dir, ownerPath, work, {
   now = nowIso(),
   processExists = defaultProcessExists,
   processSampler = processExists === defaultProcessExists ? defaultProcessSampler : null,
@@ -4068,26 +4207,21 @@ function withResetLock(paths, work, {
 
   while (true) {
     try {
-      fs.mkdirSync(paths.resetLockDir);
-      fs.chmodSync(paths.resetLockDir, 0o700);
-      writeJsonAtomicRestricted(paths.resetLockOwnerPath, {
-        pid: process.pid,
-        startedAt: now,
-      });
+      tryAcquireDirectoryLock(dir, ownerPath, now);
       break;
     } catch (error) {
       if (error?.code !== "EEXIST") {
         throw error;
       }
 
-      const lockSnapshot = readLockSnapshot(paths.resetLockDir, paths.resetLockOwnerPath, {
+      const lockSnapshot = readLockSnapshot(dir, ownerPath, {
         processExists,
         processSampler,
         timeoutMs,
       });
       if (lockSnapshot.released
         || ((lockSnapshot.staleOwner || lockSnapshot.abandonedOwner)
-          && reclaimStaleLock(paths.resetLockDir, paths.resetLockOwnerPath, lockSnapshot, {
+          && reclaimStaleLock(dir, ownerPath, lockSnapshot, {
             processExists,
             processSampler,
             timeoutMs,
@@ -4109,8 +4243,82 @@ function withResetLock(paths, work, {
   try {
     return work();
   } finally {
-    removeLockIfOwned(paths.resetLockDir, paths.resetLockOwnerPath);
+    removeLockIfOwned(dir, ownerPath);
   }
+}
+
+function withResetCapacity(paths, work, options = {}) {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
+  const pollMs = options.pollMs ?? DEFAULT_LOCK_POLL_MS;
+  const startedAt = Date.now();
+  let held = null;
+
+  while (!held) {
+    for (const slot of [1, 2]) {
+      const dir = path.join(paths.locksDir, "reset-capacity", String(slot));
+      const ownerPath = path.join(dir, "owner.json");
+      try {
+        ensureStatePaths(paths);
+        tryAcquireDirectoryLock(dir, ownerPath, options.now ?? nowIso());
+        held = { dir, ownerPath };
+        break;
+      } catch (error) {
+        if (error?.code !== "EEXIST") {
+          throw error;
+        }
+        const lockSnapshot = readLockSnapshot(dir, ownerPath, {
+          processExists: options.processExists ?? defaultProcessExists,
+          processSampler: options.processSampler ?? null,
+          timeoutMs,
+        });
+        if (lockSnapshot.released
+          || ((lockSnapshot.staleOwner || lockSnapshot.abandonedOwner)
+            && reclaimStaleLock(dir, ownerPath, lockSnapshot, {
+              processExists: options.processExists ?? defaultProcessExists,
+              processSampler: options.processSampler ?? null,
+              timeoutMs,
+            }))) {
+          try {
+            tryAcquireDirectoryLock(dir, ownerPath, options.now ?? nowIso());
+            held = { dir, ownerPath };
+            break;
+          } catch (retryError) {
+            if (retryError?.code !== "EEXIST") {
+              throw retryError;
+            }
+          }
+        }
+      }
+    }
+    if (held) {
+      break;
+    }
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new BrokerError("Timed out waiting for the simulator reset lock.", {
+        reasonCode: "reset-lock-timeout",
+        stateRoot: paths.stateRoot,
+      });
+    }
+    sleepSync(pollMs);
+  }
+
+  try {
+    return work();
+  } finally {
+    removeLockIfOwned(held.dir, held.ownerPath);
+  }
+}
+
+function withAliasResetLock(paths, alias, work, options = {}) {
+  const lockPaths = aliasResetLockPaths(paths, alias);
+  return withDirectoryLock(paths, lockPaths.dir, lockPaths.ownerPath, work, options);
+}
+
+function withResetLock(paths, work, options = {}) {
+  if (typeof options.alias === "string") {
+    return withAliasResetLock(paths, options.alias, work, options);
+  }
+  return withDirectoryLock(paths, paths.resetLockDir, paths.resetLockOwnerPath, work, options);
 }
 
 function removeLockIfOwned(lockDir, ownerPath) {
@@ -4854,7 +5062,8 @@ function removeLeaseAfterContainment(paths, state, lease, timestamp) {
   assertLeaseArtifactPathAllowed(paths, lease.artifactPath);
   const registryEntry = state.registry.aliases[lease.alias];
   if (registryEntry) {
-    markAliasLeaseReleased(registryEntry, timestamp);
+    markAliasLeaseReleased(registryEntry, timestamp, lease.leaseId);
+    invalidateCleanProof(registryEntry);
     state.registry.updatedAt = timestamp;
     writeRegistry(paths, state.registry);
   }
@@ -5016,7 +5225,8 @@ function loadBrokerState(paths, { processExists = defaultProcessExists, registry
     }
     const registryEntry = registry.aliases[lease.alias];
     if (registryEntry) {
-      markAliasLeaseReleased(registryEntry, timestamp);
+      markAliasLeaseReleased(registryEntry, timestamp, lease.leaseId);
+      invalidateCleanProof(registryEntry);
     }
     removeLeaseRecordFiles(paths, lease);
     appendEventRecord(paths, "lease.reclaimed", {
@@ -5041,7 +5251,12 @@ function loadBrokerState(paths, { processExists = defaultProcessExists, registry
     entry.pinId = pinsByAlias.get(hostAlias.alias)?.pinId ?? null;
     entry.updatedAt = timestamp;
   }
+  const healthBeforeSync = new Map(hostConfig.aliases.map((hostAlias) => [
+    hostAlias.alias,
+    registry.aliases[hostAlias.alias]?.health ?? null,
+  ]));
   syncRegistryWithSimctl(hostConfig, registry, simctlOptions);
+  recordFreshUnhealthy(paths, hostConfig, registry, healthBeforeSync, timestamp);
   registry.updatedAt = timestamp;
   if (registryPersistenceDetails) {
     writeIdleRegistry(paths, registry, registryPersistenceDetails);
@@ -5235,6 +5450,7 @@ function aliasSnapshot(hostAlias, registryEntry, activeLease, activePin) {
     lastShutdownAt: registryEntry.lastShutdownAt,
     pin: summarizePinOwner(activePin),
     powerState: registryEntry.powerState,
+    prepareState: registryEntry.prepare?.state ?? null,
     resetPolicy: hostAlias.resetPolicy,
     simulatorId: hostAlias.simulatorId,
   };
@@ -7584,6 +7800,8 @@ function rollbackAcquireLease(paths, state, leaseRecord, timestamp, reasonCode) 
   registryEntry.activeLeaseId = null;
   registryEntry.health = "repair-needed";
   registryEntry.driftReason = reasonCode;
+  invalidateCleanProof(registryEntry);
+  registryEntry.prepare = null;
   registryEntry.updatedAt = timestamp;
   state.registry.updatedAt = timestamp;
   writeRegistry(paths, state.registry);
@@ -7628,68 +7846,244 @@ function maybeResetLeaseOnAcquire(paths, state, leaseRecord, options = {}) {
   writeRegistry(paths, state.registry);
 }
 
-function maybeBootLeaseOnAcquire(paths, state, leaseRecord, options = {}) {
-  const registryEntry = state.registry.aliases[leaseRecord.alias];
-  if (registryEntry.powerState === "booted") {
-    const hostAlias = findHostAliasOrThrow(state, leaseRecord.alias);
-    const adapter = resolveLifecycleAdapter(options);
-    invokeLifecycleAdapter("waitReady", adapter, {
-      action: "waitReady",
-      alias: leaseRecord.alias,
-      hostAlias,
-      paths,
-      requester: {
-        actorId: leaseRecord.actorId,
-        actorType: leaseRecord.actorType,
-        jobId: leaseRecord.jobId,
-      },
-      state,
-      timestamp: leaseRecord.startedAt,
-    });
+function acquireLockOptions(leaseRecord, options = {}) {
+  return {
+    now: leaseRecord?.startedAt ?? nowIso(options.now),
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  };
+}
+
+function readDataIdentity(simctl, simulatorId) {
+  if (typeof simctl?.readDeviceDataIdentity !== "function") {
+    return null;
+  }
+  try {
+    const identity = simctl.readDeviceDataIdentity(simulatorId);
+    return typeof identity === "string" && identity.length > 0 ? identity : null;
+  } catch {
+    return null;
+  }
+}
+
+function proofMatchesLease(entry, leaseRecord, previousLeaseId, identity) {
+  const proof = entry?.cleanProof;
+  if (!proof || !identity || proof.dataIdentity !== identity || proof.simulatorId !== leaseRecord.simulatorId) {
     return false;
   }
-  const hostAlias = findHostAliasOrThrow(state, leaseRecord.alias);
-  const adapter = resolveLifecycleAdapter(options);
-  invokeLifecycleAdapter("boot", adapter, {
-    action: "boot",
-    alias: leaseRecord.alias,
-    hostAlias,
-    paths,
-    requester: {
-      actorId: leaseRecord.actorId,
+  if ((proof.successorOfLeaseId ?? null) !== (previousLeaseId ?? null)) {
+    return false;
+  }
+  if (entry.cleanProofConsumedBy) {
+    return false;
+  }
+  return entry.activeLeaseId === leaseRecord.leaseId;
+}
+
+function publishBootedLease(paths, leaseRecord, options, {
+  booted,
+  dataIdentity = null,
+  erased,
+  epoch,
+  previousLeaseId,
+}) {
+  return withLeaseMutationLock(paths, () => {
+    const state = loadBrokerState(paths, stateLoadOptions({
+      ...options,
+      skipLeaseIds: [leaseRecord.leaseId],
+    }, leaseRecord.startedAt));
+    const registryEntry = state.registry.aliases[leaseRecord.alias];
+    registryEntry.cleanProof = {
+      dataIdentity: dataIdentity ?? `unproven:${leaseRecord.simulatorId}:${epoch}`,
+      epoch,
+      ready: true,
+      simulatorId: leaseRecord.simulatorId,
+      successorOfLeaseId: previousLeaseId ?? null,
+    };
+    registryEntry.cleanProofConsumedBy = leaseRecord.leaseId;
+    registryEntry.cleanReadyAt = null;
+    registryEntry.prepare = null;
+    registryEntry.powerState = "booted";
+    registryEntry.health = "healthy";
+    registryEntry.driftReason = null;
+    registryEntry.driftCauseCode = null;
+    registryEntry.lastBootedAt = leaseRecord.startedAt;
+    if (erased) {
+      registryEntry.lastErasedAt = leaseRecord.startedAt;
+      registryEntry.lastShutdownAt = leaseRecord.startedAt;
+      resetLeasesSinceErase(registryEntry);
+    }
+    registryEntry.updatedAt = leaseRecord.startedAt;
+    state.registry.updatedAt = leaseRecord.startedAt;
+    writeRegistry(paths, state.registry);
+    if (booted) {
+      appendEventRecord(paths, "simulator.booted", {
+        alias: leaseRecord.alias,
+        actorType: leaseRecord.actorType,
+        jobId: leaseRecord.jobId,
+        leaseId: leaseRecord.leaseId,
+        payload: {
+          action: "boot",
+          actorId: leaseRecord.actorId,
+          implicitOnAcquire: true,
+          powerState: "booted",
+        },
+        projectId: leaseRecord.projectId,
+        purposeId: leaseRecord.purposeId,
+      }, leaseRecord.startedAt);
+    }
+  }, acquireLockOptions(leaseRecord, options));
+}
+
+function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
+  const simctl = resolveSimctlAdapter(options);
+  const locks = {
+    ...acquireLockOptions(leaseRecord, options),
+    timeoutMs: options.resetLockTimeoutMilliseconds ?? options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  };
+  let stage = "reset";
+  try {
+    withResetCapacity(paths, () => {
+      withAliasResetLock(paths, leaseRecord.alias, () => {
+        const decision = withLeaseMutationLock(paths, () => {
+          const state = loadBrokerState(paths, stateLoadOptions({
+      ...options,
+      skipLeaseIds: [leaseRecord.leaseId],
+    }, leaseRecord.startedAt));
+          const entry = state.registry.aliases[leaseRecord.alias];
+          const identity = readDataIdentity(simctl, leaseRecord.simulatorId);
+          if (!proofMatchesLease(entry, leaseRecord, previousLeaseId, identity)) {
+            return { action: "erase", epoch: (entry.cleanProof?.epoch ?? 0) };
+          }
+          if (entry.cleanProof.ready === true && entry.powerState === "booted") {
+            return { action: "wait", epoch: entry.cleanProof.epoch };
+          }
+          return { action: "boot", epoch: entry.cleanProof.epoch };
+        }, locks);
+        let booted = false;
+        if (decision.action === "wait") {
+          stage = "boot";
+          if (typeof simctl.waitForBooted === "function") {
+            simctl.waitForBooted(leaseRecord.simulatorId);
+          }
+        } else if (decision.action === "boot") {
+          stage = "boot";
+          simctl.bootDevice(leaseRecord.simulatorId);
+          booted = true;
+        } else {
+          stage = "reset";
+          simctl.shutdownDevice(leaseRecord.simulatorId);
+          simctl.eraseDevice(leaseRecord.simulatorId);
+          sleepSync(options.resetSettleMilliseconds ?? DEFAULT_RESET_SETTLE_MS);
+          stage = "boot";
+          simctl.bootDevice(leaseRecord.simulatorId);
+          booted = true;
+        }
+        const identity = readDataIdentity(simctl, leaseRecord.simulatorId);
+        const epoch = decision.action === "erase" ? decision.epoch + 1 : decision.epoch;
+        publishBootedLease(paths, leaseRecord, options, {
+          booted,
+          dataIdentity: identity,
+          erased: decision.action === "erase",
+          epoch,
+          previousLeaseId,
+        });
+      }, locks);
+    }, locks);
+  } catch (error) {
+    if (error instanceof BrokerError && (
+      error.payload?.reasonCode === "reset-on-acquire-failed"
+      || error.payload?.reasonCode === "boot-on-acquire-failed"
+    )) {
+      throw error;
+    }
+    const reasonCode = stage === "boot" ? "boot-on-acquire-failed" : "reset-on-acquire-failed";
+    let rollbackError = null;
+    try {
+      rollbackError = withLeaseMutationLock(paths, () => {
+        const state = loadBrokerState(paths, stateLoadOptions({
+          ...options,
+          skipLeaseIds: [leaseRecord.leaseId],
+        }, leaseRecord.startedAt));
+        return rollbackAcquireLeaseFailureSafe(paths, state, leaseRecord, leaseRecord.startedAt, reasonCode);
+      }, acquireLockOptions(leaseRecord, options));
+    } catch (rollbackLoadError) {
+      rollbackError = rollbackLoadError;
+    }
+    throw new BrokerError(
+      reasonCode === "reset-on-acquire-failed"
+        ? `Failed to reset alias ${leaseRecord.alias} before handing out the lease.`
+        : `Failed to boot alias ${leaseRecord.alias} before handing out the lease.`,
+      {
+        alias: leaseRecord.alias,
+        cause: error?.message ?? String(error),
+        leaseId: leaseRecord.leaseId,
+        reasonCode,
+        ...(rollbackError ? {
+          rollbackCause: rollbackError?.message ?? String(rollbackError),
+          rollbackFailed: true,
+        } : {}),
+        resetPolicy: leaseRecord.resetPolicy,
+        simulatorId: leaseRecord.simulatorId,
+      },
+    );
+  }
+}
+
+function maybeBootLeaseOnAcquire(paths, _state, leaseRecord, options = {}) {
+  const simctl = resolveSimctlAdapter(options);
+  const locks = acquireLockOptions(leaseRecord, options);
+  const powerState = withLeaseMutationLock(paths, () => {
+    const state = loadBrokerState(paths, stateLoadOptions({
+      ...options,
+      skipLeaseIds: [leaseRecord.leaseId],
+    }, leaseRecord.startedAt));
+    return state.registry.aliases[leaseRecord.alias]?.powerState ?? "shutdown";
+  }, locks);
+  if (powerState !== "booted") {
+    simctl.bootDevice(leaseRecord.simulatorId);
+  } else if (typeof simctl.waitForBooted === "function") {
+    simctl.waitForBooted(leaseRecord.simulatorId);
+  }
+  if (powerState === "booted") {
+    return false;
+  }
+  withLeaseMutationLock(paths, () => {
+    const state = loadBrokerState(paths, stateLoadOptions({
+      ...options,
+      skipLeaseIds: [leaseRecord.leaseId],
+    }, leaseRecord.startedAt));
+    const registryEntry = state.registry.aliases[leaseRecord.alias];
+    registryEntry.powerState = "booted";
+    registryEntry.health = "healthy";
+    registryEntry.driftReason = null;
+    registryEntry.driftCauseCode = null;
+    registryEntry.lastBootedAt = leaseRecord.startedAt;
+    registryEntry.updatedAt = leaseRecord.startedAt;
+    state.registry.updatedAt = leaseRecord.startedAt;
+    writeRegistry(paths, state.registry);
+    appendEventRecord(paths, "simulator.booted", {
+      alias: leaseRecord.alias,
       actorType: leaseRecord.actorType,
       jobId: leaseRecord.jobId,
-    },
-    state,
-    timestamp: leaseRecord.startedAt,
-  });
-  registryEntry.powerState = "booted";
-  registryEntry.health = "healthy";
-  registryEntry.driftReason = null;
-  registryEntry.lastBootedAt = leaseRecord.startedAt;
-  registryEntry.updatedAt = leaseRecord.startedAt;
-  state.registry.updatedAt = leaseRecord.startedAt;
-  writeRegistry(paths, state.registry);
-  appendEventRecord(paths, "simulator.booted", {
-    alias: leaseRecord.alias,
-    actorType: leaseRecord.actorType,
-    jobId: leaseRecord.jobId,
-    leaseId: leaseRecord.leaseId,
-    payload: {
-      action: "boot",
-      actorId: leaseRecord.actorId,
-      implicitOnAcquire: true,
-      powerState: "booted",
-    },
-    projectId: leaseRecord.projectId,
-    purposeId: leaseRecord.purposeId,
-  }, leaseRecord.startedAt);
+      leaseId: leaseRecord.leaseId,
+      payload: {
+        action: "boot",
+        actorId: leaseRecord.actorId,
+        implicitOnAcquire: true,
+        powerState: "booted",
+      },
+      projectId: leaseRecord.projectId,
+      purposeId: leaseRecord.purposeId,
+    }, leaseRecord.startedAt);
+  }, locks);
   return true;
 }
 
 export function acquireLeaseBroker(paths, options = {}) {
   const lockStartedAt = nowIso(options.now);
-  return withLeaseMutationLock(paths, () => {
+  const claimed = withLeaseMutationLock(paths, () => {
     const timestamp = nowIso(options.now);
     const selection = acquireSelection(paths, {
       ...options,
@@ -7777,67 +8171,12 @@ export function acquireLeaseBroker(paths, options = {}) {
       selection.state.registry.updatedAt = previousRegistryUpdatedAt;
       throw error;
     }
-    try {
-      maybeResetLeaseOnAcquire(paths, selection.state, leaseRecord, options);
-    } catch (error) {
-      const rollbackError = rollbackAcquireLeaseFailureSafe(
-        paths,
-        selection.state,
-        leaseRecord,
-        selection.timestamp,
-        "reset-on-acquire-failed",
-      );
-      throw new BrokerError(`Failed to reset alias ${leaseRecord.alias} before handing out the lease.`, {
-        alias: leaseRecord.alias,
-        cause: error?.message ?? String(error),
-        leaseId: leaseRecord.leaseId,
-        reasonCode: "reset-on-acquire-failed",
-        ...(rollbackError ? {
-          rollbackCause: rollbackError?.message ?? String(rollbackError),
-          rollbackFailed: true,
-        } : {}),
-        resetPolicy: leaseRecord.resetPolicy,
-        simulatorId: leaseRecord.simulatorId,
-      });
-    }
-    try {
-      maybeBootLeaseOnAcquire(paths, selection.state, leaseRecord, options);
-    } catch (error) {
-      const rollbackError = rollbackAcquireLeaseFailureSafe(
-        paths,
-        selection.state,
-        leaseRecord,
-        selection.timestamp,
-        "boot-on-acquire-failed",
-      );
-      throw new BrokerError(`Failed to boot alias ${leaseRecord.alias} before handing out the lease.`, {
-        alias: leaseRecord.alias,
-        cause: error?.message ?? String(error),
-        leaseId: leaseRecord.leaseId,
-        reasonCode: "boot-on-acquire-failed",
-        ...(rollbackError ? {
-          rollbackCause: rollbackError?.message ?? String(rollbackError),
-          rollbackFailed: true,
-        } : {}),
-        simulatorId: leaseRecord.simulatorId,
-      });
-    }
-    appendEventRecord(paths, "lease.acquired", {
-      alias: leaseRecord.alias,
-      actorType,
-      jobId: leaseRecord.jobId,
-      leaseId,
-      payload: {
-        actorId,
-        leaseKind: leaseRecord.leaseKind,
-        pinId: leaseRecord.pinId,
-      },
-      projectId: leaseRecord.projectId,
-      purposeId: leaseRecord.purposeId,
-    }, selection.timestamp);
     return {
-      lease: leaseRecord,
-      ok: true,
+      actorId,
+      actorType,
+      leaseRecord,
+      previousLeaseId: registryEntry.lastReleasedLeaseId ?? null,
+      timestamp: selection.timestamp,
     };
   }, {
     now: lockStartedAt,
@@ -7845,6 +8184,82 @@ export function acquireLeaseBroker(paths, options = {}) {
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
   });
+
+  try {
+    if (claimed.leaseRecord.resetPolicy === "erase-on-acquire") {
+      ensureUiLeaseReady(paths, claimed.leaseRecord, claimed.previousLeaseId, options);
+    } else {
+      maybeBootLeaseOnAcquire(paths, null, claimed.leaseRecord, options);
+    }
+  } catch (error) {
+    if (error instanceof BrokerError && (
+      error.payload?.reasonCode === "reset-on-acquire-failed"
+      || error.payload?.reasonCode === "boot-on-acquire-failed"
+    )) {
+      throw error;
+    }
+    const reasonCode = claimed.leaseRecord.resetPolicy === "erase-on-acquire"
+      ? "reset-on-acquire-failed"
+      : "boot-on-acquire-failed";
+    let rollbackError = null;
+    try {
+      rollbackError = withLeaseMutationLock(paths, () => {
+        const state = loadBrokerState(paths, stateLoadOptions({
+          ...options,
+          skipLeaseIds: [claimed.leaseRecord.leaseId],
+        }, claimed.timestamp));
+        return rollbackAcquireLeaseFailureSafe(paths, state, claimed.leaseRecord, claimed.timestamp, reasonCode);
+      }, {
+        now: claimed.timestamp,
+        processExists: options.processExists,
+        processSampler: options.processSampler,
+        timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+      });
+    } catch (rollbackLoadError) {
+      rollbackError = rollbackLoadError;
+    }
+    throw new BrokerError(
+      reasonCode === "reset-on-acquire-failed"
+        ? `Failed to reset alias ${claimed.leaseRecord.alias} before handing out the lease.`
+        : `Failed to boot alias ${claimed.leaseRecord.alias} before handing out the lease.`,
+      {
+        alias: claimed.leaseRecord.alias,
+        cause: error?.message ?? String(error),
+        leaseId: claimed.leaseRecord.leaseId,
+        reasonCode,
+        ...(rollbackError ? {
+          rollbackCause: rollbackError?.message ?? String(rollbackError),
+          rollbackFailed: true,
+        } : {}),
+        simulatorId: claimed.leaseRecord.simulatorId,
+      },
+    );
+  }
+
+  withLeaseMutationLock(paths, () => {
+    appendEventRecord(paths, "lease.acquired", {
+      alias: claimed.leaseRecord.alias,
+      actorType: claimed.actorType,
+      jobId: claimed.leaseRecord.jobId,
+      leaseId: claimed.leaseRecord.leaseId,
+      payload: {
+        actorId: claimed.actorId,
+        leaseKind: claimed.leaseRecord.leaseKind,
+        pinId: claimed.leaseRecord.pinId,
+      },
+      projectId: claimed.leaseRecord.projectId,
+      purposeId: claimed.leaseRecord.purposeId,
+    }, claimed.timestamp);
+  }, {
+    now: claimed.timestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  });
+  return {
+    lease: claimed.leaseRecord,
+    ok: true,
+  };
 }
 
 function loadLeaseByIdOrFile(paths, options = {}) {
@@ -8010,7 +8425,17 @@ export function releaseLeaseBroker(paths, options = {}) {
     try {
       removeLeaseArtifactFile(paths, lease);
       if (registryEntry) {
-        markAliasLeaseReleased(registryEntry, timestamp);
+        markAliasLeaseReleased(registryEntry, timestamp, lease.leaseId);
+        const hostAlias = state.hostConfig.aliases.find((candidate) => candidate.alias === lease.alias);
+        if (hostAlias?.resetPolicy === "erase-on-acquire"
+          && registryEntry.health !== "repair-needed"
+          && registryEntry.health !== "repairing") {
+          registryEntry.prepare = {
+            ownerPid: null,
+            state: "queued",
+            token: crypto.randomUUID(),
+          };
+        }
         state.registry.updatedAt = timestamp;
         writeRegistry(paths, state.registry);
       }
@@ -8057,6 +8482,156 @@ export function releaseLeaseBroker(paths, options = {}) {
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
   });
+}
+
+function prepareOneUiAlias(paths, item, options, timestamp) {
+  const simctl = resolveSimctlAdapter(options);
+  const locks = {
+    now: timestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.resetLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+  };
+  try {
+    withResetCapacity(paths, () => {
+      withAliasResetLock(paths, item.alias, () => {
+        const proceed = withLeaseMutationLock(paths, () => {
+          const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+          const entry = state.registry.aliases[item.alias];
+          if (!entry || entry.prepare?.token !== item.token || entry.activeLeaseId) {
+            return false;
+          }
+          if (entry.health === "repair-needed" || entry.health === "repairing") {
+            return false;
+          }
+          entry.prepare = {
+            ownerPid: process.pid,
+            state: "erasing",
+            token: item.token,
+          };
+          entry.updatedAt = timestamp;
+          state.registry.updatedAt = timestamp;
+          writeRegistry(paths, state.registry);
+          return true;
+        }, locks);
+        if (!proceed) {
+          return;
+        }
+        simctl.shutdownDevice(item.simulatorId);
+        simctl.eraseDevice(item.simulatorId);
+        sleepSync(options.resetSettleMilliseconds ?? DEFAULT_RESET_SETTLE_MS);
+        simctl.bootDevice(item.simulatorId);
+        const identity = readDataIdentity(simctl, item.simulatorId);
+        withLeaseMutationLock(paths, () => {
+          const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+          const entry = state.registry.aliases[item.alias];
+          if (!entry || entry.prepare?.token !== item.token) {
+            return;
+          }
+          const epoch = (item.epoch ?? 0) + 1;
+          entry.cleanProof = {
+            dataIdentity: identity ?? `unproven:${item.simulatorId}:${epoch}`,
+            epoch,
+            ready: true,
+            simulatorId: item.simulatorId,
+            successorOfLeaseId: item.successorOfLeaseId ?? null,
+          };
+          entry.cleanProofConsumedBy = null;
+          entry.cleanReadyAt = timestamp;
+          entry.prepare = null;
+          entry.powerState = "booted";
+          entry.health = entry.health === "repair-needed" ? entry.health : "healthy";
+          entry.lastBootedAt = timestamp;
+          entry.lastErasedAt = timestamp;
+          entry.lastShutdownAt = timestamp;
+          resetLeasesSinceErase(entry);
+          entry.updatedAt = timestamp;
+          state.registry.updatedAt = timestamp;
+          writeRegistry(paths, state.registry);
+          appendEventRecord(paths, "simulator.prepared", {
+            alias: item.alias,
+            actorType: "system",
+            jobId: null,
+            leaseId: null,
+            payload: {
+              epoch,
+              source: "lease-release",
+            },
+            projectId: null,
+            purposeId: null,
+          }, timestamp);
+          appendEventRecord(paths, "simulator.booted", {
+            alias: item.alias,
+            actorType: "system",
+            jobId: null,
+            leaseId: null,
+            payload: {
+              action: "boot",
+              implicitOnPrepare: true,
+              powerState: "booted",
+            },
+            projectId: null,
+            purposeId: null,
+          }, timestamp);
+        }, locks);
+      }, locks);
+    }, locks);
+  } catch {
+    withLeaseMutationLock(paths, () => {
+      const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+      const entry = state.registry.aliases[item.alias];
+      if (!entry || entry.prepare?.token !== item.token || entry.activeLeaseId) {
+        return;
+      }
+      entry.prepare = {
+        ownerPid: null,
+        state: "failed",
+        token: item.token,
+      };
+      entry.updatedAt = timestamp;
+      state.registry.updatedAt = timestamp;
+      writeRegistry(paths, state.registry);
+    }, locks);
+  }
+}
+
+export function reconcileUiPrepareBroker(paths, options = {}) {
+  const timestamp = nowIso(options.now);
+  const queued = withLeaseMutationLock(paths, () => {
+    const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+    return state.hostConfig.aliases.flatMap((hostAlias) => {
+      const entry = state.registry.aliases[hostAlias.alias];
+      if (hostAlias.resetPolicy !== "erase-on-acquire" || !entry || state.leasesByAlias.has(hostAlias.alias)) {
+        return [];
+      }
+      if (entry.health === "repair-needed" || entry.health === "repairing") {
+        return [];
+      }
+      if (!entry.prepare || !["queued", "erasing", "booting"].includes(entry.prepare.state)) {
+        return [];
+      }
+      return [{
+        alias: hostAlias.alias,
+        epoch: entry.cleanProof?.epoch ?? 0,
+        simulatorId: hostAlias.simulatorId,
+        successorOfLeaseId: entry.lastReleasedLeaseId ?? null,
+        token: entry.prepare.token,
+      }];
+    });
+  }, {
+    now: timestamp,
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+    timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+    wait: options.leaseMutationLockWait !== false,
+  });
+  for (const item of queued) {
+    prepareOneUiAlias(paths, item, options, timestamp);
+  }
+  return {
+    ok: true,
+    preparedCount: queued.length,
+  };
 }
 
 export function createPinBroker(paths, options = {}) {
@@ -8339,6 +8914,22 @@ function runLifecycleActionBroker(paths, action, options = {}) {
     registryEntry.lastErasedAt = timestamp;
     registryEntry.lastShutdownAt = timestamp;
     resetLeasesSinceErase(registryEntry);
+    if (!registryEntry.activeLeaseId) {
+      const identity = readDataIdentity(resolveSimctlAdapter(options), hostAlias.simulatorId);
+      const epoch = (registryEntry.cleanProof?.epoch ?? 0) + 1;
+      registryEntry.cleanProof = {
+        dataIdentity: identity ?? `unproven:${hostAlias.simulatorId}:${epoch}`,
+        epoch,
+        ready: false,
+        simulatorId: hostAlias.simulatorId,
+        successorOfLeaseId: registryEntry.lastReleasedLeaseId ?? null,
+      };
+      registryEntry.cleanProofConsumedBy = null;
+      registryEntry.cleanReadyAt = null;
+      registryEntry.prepare = null;
+    } else {
+      invalidateCleanProof(registryEntry);
+    }
     if (registryEntry.health === "state-drift") {
       registryEntry.health = "healthy";
       registryEntry.driftReason = null;
@@ -8363,6 +8954,7 @@ function runLifecycleActionBroker(paths, action, options = {}) {
   }
 
   if (action === "repair") {
+    const repairClearsReason = registryEntry.driftReason ?? null;
     registryEntry.health = "repairing";
     registryEntry.updatedAt = timestamp;
     state.registry.updatedAt = timestamp;
@@ -8373,6 +8965,7 @@ function runLifecycleActionBroker(paths, action, options = {}) {
       jobId: requester.jobId,
       leaseId: ownership.leaseId,
       payload: lifecycleActorPayload(action, requester, revokedLeaseSummary, {
+        driftReason: repairClearsReason,
         health: registryEntry.health,
       }),
       projectId: ownership.projectId,
@@ -8417,6 +9010,8 @@ function runLifecycleActionBroker(paths, action, options = {}) {
     registryEntry.health = "healthy";
     registryEntry.driftReason = null;
     registryEntry.driftCauseCode = null;
+    invalidateCleanProof(registryEntry);
+    registryEntry.prepare = null;
     registryEntry.lastRepairedAt = timestamp;
     registryEntry.lastShutdownAt = timestamp;
     registryEntry.powerState = "shutdown";

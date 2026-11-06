@@ -6630,14 +6630,16 @@ test("reset lock timeout preserves a live owner lock", () => {
   writeBaseProject(paths.projectFilePath);
   const resolvedPaths = brokerPaths(paths);
   initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
-  fs.mkdirSync(resolvedPaths.resetLockDir, { recursive: true });
-  writeJson(resolvedPaths.resetLockOwnerPath, {
+  const aliasLockDir = path.join(paths.stateRoot, "locks", "reset", "ui-1.lock");
+  const aliasLockOwnerPath = path.join(aliasLockDir, "owner.json");
+  fs.mkdirSync(aliasLockDir, { recursive: true });
+  writeJson(aliasLockOwnerPath, {
     pid: process.pid,
     startedAt: new Date(0).toISOString(),
   });
   const oldTimestamp = new Date(0);
-  fs.utimesSync(resolvedPaths.resetLockDir, oldTimestamp, oldTimestamp);
-  fs.utimesSync(resolvedPaths.resetLockOwnerPath, oldTimestamp, oldTimestamp);
+  fs.utimesSync(aliasLockDir, oldTimestamp, oldTimestamp);
+  fs.utimesSync(aliasLockOwnerPath, oldTimestamp, oldTimestamp);
 
   assert.throws(() => {
     acquireLeaseBroker(resolvedPaths, {
@@ -6651,8 +6653,8 @@ test("reset lock timeout preserves a live owner lock", () => {
     });
   }, (error) => error.payload?.reasonCode === "reset-on-acquire-failed");
 
-  assert.equal(fs.existsSync(resolvedPaths.resetLockOwnerPath), true);
-  assert.equal(readJson(resolvedPaths.resetLockOwnerPath).pid, process.pid);
+  assert.equal(fs.existsSync(aliasLockOwnerPath), true);
+  assert.equal(readJson(aliasLockOwnerPath).pid, process.pid);
   assert.equal(fs.readdirSync(path.join(paths.stateRoot, "leases")).length, 0);
 });
 

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- UI leases still erase before the next holder is returned. A running `brokerd`
+  may erase and boot a free UI alias after release. The next acquire skips that
+  erase only when the device's data-volume identity still matches the proof.
+  Two UI erases can run at once. Shutdown, erase, and boot no longer hold the
+  broker mutation lock.
+- Registry sync does not mark every alias `repair-needed` when `simctl list
+  runtimes` comes back empty, or while a UI prepare or lease is in progress.
+  A new `simulator.unhealthy` event records `driftReason` when an alias does
+  become `repair-needed`.
+
 ## [0.1.0-alpha.14] - 2026-11-02
 
 Alpha 14 keeps the Alpha 13 install and four-custom-asset contract. The
