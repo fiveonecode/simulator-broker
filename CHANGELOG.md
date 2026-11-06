@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Capacity reconcile skips a runtime that matches the requested iOS version
+  but cannot supply the requested device family. Equal versions follow the
+  setup runtime order.
+
 ## [0.1.0-alpha.14] - 2026-11-02
 
 Alpha 14 keeps the Alpha 13 install and four-custom-asset contract. The

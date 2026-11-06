@@ -6309,15 +6309,32 @@ function publicRequestedCapacity(requirement) {
   };
 }
 
-function selectRuntimeFromInventory(inventory, iosVersion) {
-  const runtimes = (inventory.runtimesJson?.runtimes ?? [])
+function runtimeSuppliesDeviceFamily(runtime, inventory, deviceFamily) {
+  return runtimeSupportedDeviceTypes(runtime, inventory)
+    .some((deviceType) => deviceType.productFamily === deviceFamily);
+}
+
+function selectRuntimeFromInventory(inventory, iosVersion, deviceFamily) {
+  const matches = (inventory.runtimesJson?.runtimes ?? [])
     .filter(isAvailableIosRuntime)
-    .filter((runtime) => runtimeMatchesRequestedVersion(runtime, iosVersion))
-    .sort((left, right) => compareVersions(right.version, left.version));
-  if (runtimes.length === 0) {
+    .filter((runtime) => runtimeMatchesRequestedVersion(runtime, iosVersion));
+  if (matches.length === 0) {
     return {
       blocker: {
         code: "runtime-not-found",
+      },
+      runtime: null,
+    };
+  }
+  // Family first. Setup build order would otherwise keep a higher-build
+  // runtime that does not supply the requested family.
+  const runtimes = matches
+    .filter((runtime) => runtimeSuppliesDeviceFamily(runtime, inventory, deviceFamily))
+    .sort(compareSetupRuntimes);
+  if (runtimes.length === 0) {
+    return {
+      blocker: {
+        code: "device-type-not-found",
       },
       runtime: null,
     };
@@ -6358,7 +6375,11 @@ function capacityProvisioningForRequirement(inventory, requirement) {
       runtime: null,
     };
   }
-  const runtimeResult = selectRuntimeFromInventory(inventory, requirement.iosVersion);
+  const runtimeResult = selectRuntimeFromInventory(
+    inventory,
+    requirement.iosVersion,
+    requirement.deviceFamily,
+  );
   if (runtimeResult.blocker) {
     return {
       blocker: runtimeResult.blocker,
