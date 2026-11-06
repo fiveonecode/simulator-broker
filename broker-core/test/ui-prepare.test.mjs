@@ -5,12 +5,15 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  BrokerError,
   acquireLeaseBroker,
+  eraseSimulatorBroker,
   hostStatusBroker,
   initBroker,
   readEventsBroker,
   reconcileUiPrepareBroker,
   releaseLeaseBroker,
+  repairSimulatorBroker,
   resolveBrokerPaths,
 } from "../index.mjs";
 import { createDeviceRecord, createSimctlFixture } from "./support/simctl-fixture.mjs";
@@ -174,6 +177,93 @@ test("an empty runtime list does not latch repair-needed during UI prepare", () 
   assert.equal(alias.prepareState, "erasing");
 });
 
+test("a lease opened during erase is not reclaimed as a dead owner", () => {
+  const fixture = makeFixture();
+  const survivorId = "00000000-0000-4000-8000-000000000099";
+  const adapter = new Proxy(fixture.adapter, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property !== "eraseDevice") {
+        return value;
+      }
+      return (simulatorId) => {
+        const registeredAt = new Date().toISOString();
+        writeJson(path.join(fixture.paths.stateRoot, "leases", `${survivorId}.json`), {
+          actorId: "agent-survivor",
+          actorType: "agent",
+          alias: "ui-2",
+          leaseId: survivorId,
+          ownerPid: process.pid,
+          projectId: "demo-app",
+          purposeId: "agent-ui-session",
+          runtime: { ownerPid: process.pid, ownerRegisteredAt: registeredAt },
+          simulatorId: "SIM-UI-2",
+          startedAt: registeredAt,
+        });
+        return value.call(target, simulatorId);
+      };
+    },
+  });
+  acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+    actorId: "agent-a",
+    actorType: "agent",
+    processSampler: () => [{
+      command: "node",
+      elapsed: "01:00:00",
+      pgid: process.pid,
+      pid: process.pid,
+      state: "R",
+    }],
+    purposeId: "agent-ui-session",
+    simctlAdapter: adapter,
+  }));
+  assert.equal(fs.existsSync(path.join(fixture.paths.stateRoot, "leases", `${survivorId}.json`)), true);
+  const registry = readJson(path.join(fixture.paths.stateRoot, "registry.json"));
+  assert.equal(registry.aliases["ui-2"].activeLeaseId, survivorId);
+});
+
+test("acquire does not reclaim a lease that was replaced during boot", () => {
+  const fixture = makeFixture();
+  const replacementId = "00000000-0000-4000-8000-000000000088";
+  const adapter = new Proxy(fixture.adapter, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property !== "bootDevice") {
+        return value;
+      }
+      return (simulatorId) => {
+        const result = value.call(target, simulatorId);
+        const leasesDir = path.join(fixture.paths.stateRoot, "leases");
+        const originalName = fs.readdirSync(leasesDir).find((name) => name.endsWith(".json"));
+        const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+        const registry = readJson(registryPath);
+        const original = readJson(path.join(leasesDir, originalName));
+        fs.rmSync(path.join(leasesDir, originalName));
+        writeJson(path.join(leasesDir, `${replacementId}.json`), {
+          ...original,
+          actorId: "agent-replacement",
+          leaseId: replacementId,
+        });
+        registry.aliases[original.alias].activeLeaseId = replacementId;
+        writeJson(registryPath, registry);
+        return result;
+      };
+    },
+  });
+  assert.throws(() => {
+    acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+      actorId: "agent-a",
+      actorType: "agent",
+      purposeId: "agent-ui-session",
+      simctlAdapter: adapter,
+    }));
+  }, (error) => error instanceof BrokerError && error.payload?.reasonCode === "lease-lost");
+  const registry = readJson(path.join(fixture.paths.stateRoot, "registry.json"));
+  assert.equal(registry.aliases["ui-1"].activeLeaseId, replacementId);
+  assert.equal(registry.aliases["ui-1"].health, "healthy");
+  assert.equal(fs.existsSync(path.join(fixture.paths.stateRoot, "leases", `${replacementId}.json`)), true);
+});
+
 test("a missing device still becomes repair-needed and records the reason", () => {
   const fixture = makeFixture();
   const simctlState = readJson(fixture.paths.simctl.statePath);
@@ -187,4 +277,85 @@ test("a missing device still becomes repair-needed and records the reason", () =
   const unhealthy = events.filter((event) => event.type === "simulator.unhealthy" && event.alias === "ui-1");
   assert.equal(unhealthy.length, 1);
   assert.equal(unhealthy[0].payload.driftReason, "simulator-missing");
+});
+
+test("an unresolved runtime on an idle alias is a mismatch only when an iOS runtime exists", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const registry = readJson(registryPath);
+  registry.aliases["ui-1"].health = "repairing";
+  writeJson(registryPath, registry);
+  const simctlState = readJson(fixture.paths.simctl.statePath);
+  simctlState.devices.find((device) => device.udid === "SIM-UI-2").runtimeIdentifier = "com.apple.CoreSimulator.SimRuntime.missing";
+  writeJson(fixture.paths.simctl.statePath, simctlState);
+
+  hostStatusBroker(fixture.resolvedPaths, runtimeOptions(fixture));
+  const afterIos = readJson(registryPath);
+  assert.equal(afterIos.aliases["ui-1"].health, "repair-needed");
+  assert.equal(afterIos.aliases["ui-1"].driftReason, "repair-interrupted");
+  assert.equal(afterIos.aliases["ui-2"].health, "repair-needed");
+  assert.equal(afterIos.aliases["ui-2"].driftReason, "simulator-config-mismatch");
+  const events = readEventsBroker(fixture.resolvedPaths, {}).events.filter((event) => event.type === "simulator.unhealthy");
+  assert.equal(events.some((event) => event.alias === "ui-1" && event.payload.driftReason === "repair-interrupted"), true);
+
+  const watchOnly = makeFixture();
+  const watchState = readJson(watchOnly.paths.simctl.statePath);
+  watchState.runtimes = [{
+    identifier: "com.apple.CoreSimulator.SimRuntime.watchOS-11-0",
+    isAvailable: true,
+    version: "11.0",
+  }];
+  watchState.devices = watchState.devices.filter((device) => device.udid !== "SIM-UI-1");
+  writeJson(watchOnly.paths.simctl.statePath, watchState);
+  hostStatusBroker(watchOnly.resolvedPaths, runtimeOptions(watchOnly));
+  assert.equal(readJson(path.join(watchOnly.paths.stateRoot, "registry.json")).aliases["ui-1"].health, "healthy");
+});
+
+function writeLockOwner(dir, startedAt) {
+  fs.mkdirSync(dir, { recursive: true });
+  writeJson(path.join(dir, "owner.json"), {
+    pid: process.pid,
+    startedAt,
+  });
+}
+
+test("a recycled reset-capacity owner does not keep the slot", () => {
+  const fixture = makeFixture();
+  const lease = acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+    actorId: "agent-a",
+    actorType: "agent",
+    purposeId: "agent-ui-session",
+  })).lease;
+  releaseLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, { leaseId: lease.leaseId }));
+  const startedAt = new Date(Date.now() + (24 * 60 * 60 * 1000)).toISOString();
+  for (const slot of ["1", "2"]) {
+    writeLockOwner(path.join(fixture.paths.stateRoot, "locks", "reset-capacity", slot), startedAt);
+  }
+
+  reconcileUiPrepareBroker(fixture.resolvedPaths, {
+    resetLockTimeoutMilliseconds: 400,
+    simctlAdapter: fixture.adapter,
+  });
+
+  assert.equal(fixture.calls.some((call) => call[0] === "eraseDevice"), true);
+});
+
+test("manual UI erase and repair wait on the alias reset lock", () => {
+  const fixture = makeFixture();
+  writeLockOwner(
+    path.join(fixture.paths.stateRoot, "locks", "reset", "ui-1.lock"),
+    new Date().toISOString(),
+  );
+  const locked = {
+    alias: "ui-1",
+    resetLockTimeoutMilliseconds: 400,
+  };
+
+  assert.throws(() => {
+    eraseSimulatorBroker(fixture.resolvedPaths, runtimeOptions(fixture, locked));
+  }, (error) => error instanceof BrokerError && error.payload?.reasonCode === "reset-lock-timeout");
+  assert.throws(() => {
+    repairSimulatorBroker(fixture.resolvedPaths, runtimeOptions(fixture, locked));
+  }, (error) => error instanceof BrokerError && error.payload?.reasonCode === "reset-lock-timeout");
+  assert.equal(fixture.calls.length, 0);
 });

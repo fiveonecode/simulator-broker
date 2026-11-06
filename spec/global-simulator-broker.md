@@ -147,19 +147,33 @@ Current implementation slice:
   `simulator-unavailable`, and a family or runtime mismatch with
   `simulator-config-mismatch` only when the runtime inventory contains at
   least one available iOS runtime and the alias is not mid-prepare or leased.
-  An empty runtime list leaves health unchanged. An existing
-  `slot-reclaim-failed` reason is preserved across that synchronization.
-  Synchronization never clears `repair-needed`. Entering `repair-needed`
-  appends `simulator.unhealthy` with `driftReason` and `driftCauseCode`.
-  A leftover `repairing` entry becomes `repair-needed` with
-  `repair-interrupted` on the next load. Only a successful repair returns
-  the alias to `healthy`
+  An empty runtime list, or a list with no available iOS runtime, leaves
+  health unchanged. When the inventory does contain an available iOS runtime
+  and the alias is idle, a device whose runtime version cannot be resolved is
+  `simulator-config-mismatch`. The missing-device and mismatch waivers do not
+  apply to a leftover `repairing` entry: that entry becomes `repair-needed`
+  with `repair-interrupted` on the next load, including while a runtime list
+  is empty. An existing `slot-reclaim-failed` reason is preserved across that
+  synchronization. Synchronization never clears `repair-needed`. Entering
+  `repair-needed`, including the `repairing` transition, appends
+  `simulator.unhealthy` with `driftReason` and `driftCauseCode`.
+  Only a successful repair returns the alias to `healthy`
 - reset-on-acquire coordination behind the per-alias reset lock and a
   two-slot reset-capacity limit, with rollback on reset failure. `simctl`
   shutdown, erase, boot, and `bootstatus` for that work run outside the
-  broker mutation lock. A running `brokerd` may complete the erase and boot
-  after release; acquire adopts that result only when the stored data-volume
-  identity still matches the live device and the proof names the previous lease
+  broker mutation lock. A state reload after that unlocked `simctl` work
+  observes owner liveness at the reload time, so a lease opened during the
+  work is not removed or contained while its owner process is alive. Manual
+  `boot`, `shutdown`, `erase`, and `repair` of an `erase-on-acquire` alias
+  take that alias's reset lock before `simctl`. Repair takes the capacity
+  lock before the alias lock. Reset-capacity reclaim uses the default process
+  sampler when the caller does not supply one. A running `brokerd` may
+  complete the erase and boot after release; acquire adopts that result only
+  when the stored data-volume identity still matches the live device and the
+  proof names the previous lease. Before acquire records success, the lease
+  file must still exist and `activeLeaseId` must still name that lease.
+  Otherwise acquire fails with `lease-lost` (exit `3`) and does not clear a
+  newer lease or mark the alias `repair-needed`
 - boot-on-acquire with lease rollback and `repair-needed`
   (`boot-on-acquire-failed`) when boot fails. The real `simctl` adapter treats
   a boot result whose text says the device is already `Booted` or `Booting`
@@ -192,7 +206,7 @@ Current implementation slice:
 - service-backed command requests must carry an `expectedServiceIdentity` object whose host config path, state root, socket path, and exact opaque `runtimeVersion` match the live daemon metadata immediately before command dispatch; a missing runtime version fails closed before worker admission
 - service-backed command requests may carry client request-start, queue-timeout, and execution-timeout budget fields; `brokerd` must reject a request whose queue budget has already expired, or whose recomputed dispatch-time execution budget exceeds the client-advertised execution budget, before dispatching the broker command; dispatch-time recomputation must use the request project file path when the command carries one
 - service stop requests may carry the path portion of the same `expectedServiceIdentity` object, and `brokerd` must validate it before acknowledging shutdown; cooperative stop intentionally remains compatible with an older client so explicit upgrade recovery can drain the live daemon
-- service stop closes active event streams before shutdown completes
+- service stop waits for an in-flight UI prepare to finish before closing the server or exiting, and closes active event streams before shutdown completes
 - malformed JSON from a running service is reported as service unavailability by clients instead of escaping as an uncaught parser failure
 - service startup must not publish a listenable socket or service metadata until the initial broker-owned app snapshot refresh has completed or explicitly reported a missing-host setup state; the CLI start launcher must wait within the bounded startup snapshot budget for one shared process-table sample, startup-lock owner PID lifetime sampling, and all inventory commands, validate startup-lock owner PID lifetime before accepting an old lock as live, and terminate the spawned daemon on startup timeout
 - service-backed timeout budgets must reserve one shared process-table sample per broker state load; stale-lease containment process samples discovered from lease files before command dispatch for every broker state load that can retry containment; serialized read lock waits for `host status`, `doctor`, and `lease explain`; final app snapshot lock waits for every command that publishes the shared app snapshot artifact; capacity check inventory reads; the longer of lease-acquire reset `simctl` shutdown/erase plus boot readiness and one build-slot reclaim (`simctl list`, `du`, shutdown, and erase) plus that same boot readiness; lease-release reclaim list, `du`, shutdown, erase, and reset-lock wait; idle-reconcile and service-startup reclaim for every enabled candidate, including each reset-lock wait; explicit simulator boot readiness wait; and host bootstrap runtime lookup, baseline inventory, starter-alias provisioning, replacement-retirement, and final snapshot refresh work before the transport timeout is advertised
@@ -410,7 +424,7 @@ Failure-contract defaults for v1:
 - exit code `0` means success
 - exit code `2` means invalid request, including malformed flags, unknown
   commands, invalid config, or missing broker files
-- exit code `3` means unavailable capacity or transient broker-side unavailability, including exhaustion, conflicts, missing runtimes, service unavailability, expired service command queue budgets, or bounded process-sampler timeouts
+- exit code `3` means unavailable capacity or transient broker-side unavailability, including exhaustion, conflicts, `lease-lost`, missing runtimes, service unavailability, expired service command queue budgets, or bounded process-sampler timeouts
 - exit code `4` means repair is required or a repair or delete attempt failed.
   This includes an alias that needs repair, `purpose-repair-failed`,
   `purpose-delete-failed`, and `capacity-repair-required`. HTTP status is `423`
@@ -786,7 +800,8 @@ confirmation bypass.
 Reconciliation takes the broker mutation lock, re-reads leases and inventory,
 and shuts down only registered aliases that are booted, healthy, unleased,
 unpinned, non-`manual-persistent`, and at or beyond the recorded release time
-plus grace. Stale recovery records a new release time and therefore restarts
+plus grace. A ready UI clean proof does not start a new grace period.
+Stale recovery records a new release time and therefore restarts
 grace. Unknown externally booted devices remain untouched. The real `simctl`
 adapter waits out current state `Shutting Down` until `Shutdown` or the
 command timeout, and retries shutdown once when the device is in any other

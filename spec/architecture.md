@@ -198,7 +198,10 @@ The broker must remain transparent: clients need explainable denial reasons, hol
 - `erase-on-acquire` only for UI-like roles
 - canonical lease artifact emission
 - per-alias reset locks and two reset-capacity tokens for UI erase and boot;
-  `simctl` shutdown, erase, and boot run outside the broker mutation lock
+  `simctl` shutdown, erase, and boot run outside the broker mutation lock.
+  Manual boot, shutdown, erase, and repair of an `erase-on-acquire` alias
+  take that alias's reset lock before `simctl`, and repair takes the capacity
+  lock first
 
 ## Initial implementation order
 

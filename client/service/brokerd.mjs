@@ -1296,6 +1296,9 @@ export async function startBrokerService(paths, options = {}) {
     if (activeIdleReconciliation !== null) {
       await activeIdleReconciliation;
     }
+    if (activeUiPrepare !== null) {
+      await activeUiPrepare;
+    }
     if (activeCommandWorkers.size > 0) {
       await Promise.allSettled(activeCommandWorkers.keys());
       await new Promise((resolve) => setImmediate(resolve));
