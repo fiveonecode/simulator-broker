@@ -991,9 +991,28 @@ human-only.
 | --- | --- | --- |
 | SB-CAPACITY-APPLY-001 | Apply requires `--confirm` first (`capacity-confirmation-required`), then actor type `human` or `agent` (`capacity-actor-forbidden` otherwise, including `ci`), then a non-empty actor id (`capacity-actor-required`). A stale plan is `capacity-plan-stale`. All four are exit `5` before mutation. A blocked plan fails before mutation. A second apply of a `no_changes` plan creates nothing. An agent apply creates one device per missing requirement tuple and omits the actor id from public JSON. | `broker-core/test/broker-core.test.mjs` `capacity reconcile apply creates additive capacity and is idempotent after a fresh no-changes preview`, `capacity reconcile apply lets an agent create missing capacity once`, `capacity reconcile apply rejects ci, a blank actor, and a stale plan before mutation`, `capacity reconcile apply preserves shape errors when rejection plans cannot be built`; `broker-core/test/error-contract.test.mjs`; `client/test/simbroker.test.mjs` `capacity check, preview, and confirmed apply work through the direct CLI`; `client/test/brokerd.test.mjs` service capacity parity |
 | SB-CAPACITY-APPLY-002 | The Simulators **Add simulators** button previews reconcile for a registered project, confirms only a `changes_required` plan as human actor `simulator-broker-app`, and does not apply a blocked or `no_changes` plan. No registered project sends no command. A null iOS requirement decodes. | `app/Tests/BrokerDashboardStoreTests.swift` `testAddSimulatorsStagesPreviewThenConfirmsAsHuman`, `testAddSimulatorsDoesNotApplyBlockedOrUnchangedPlans`, `testAddSimulatorsWithoutAProjectDoesNotSend`, `testCapacityPreviewEnvelopeDecodesActionsAndNullRuntime` |
+| SB-CAPACITY-RUNTIME-001 | Capacity keeps a version-matching runtime only when `runtimeSupportedDeviceTypes` contains a complete device type for the requested family: `productFamily` matches and both `identifier` and `name` are non-empty strings. A non-empty `supportedDeviceTypes` is authoritative, so an incomplete record does not fall back to the global inventory. An empty or omitted list uses that inventory, and an incomplete global record does not qualify. The other family is not required. Survivors use version descending and then the setup runtime order, so equal versions do not follow `simctl` order. No version match stays `runtime-not-found`. Every version match lacking a complete type stays `device-type-not-found` with `run_broker_doctor`, reconcile status `blocked`, and no actions, returned in the exit-0 report rather than thrown. A purpose that already has a usable simulator stays `available`. An iPad create on a same-version full runtime uses `iPad (A16)`. A higher runtime whose only requested-family records are incomplete loses to a lower runtime with a complete type. | `broker-core/test/broker-core.test.mjs` `capacity reconcile prefers a same-version runtime that supplies the requested family`, `capacity reconcile keeps device-type-not-found when every matching runtime lacks the family`, `capacity reconcile uses the global device inventory when supportedDeviceTypes is omitted`, `capacity reconcile breaks equal runtime versions with the setup order`, `capacity reconcile does not require both device families`, `capacity reconcile skips a higher runtime whose requested device types are incomplete`, `capacity reconcile reports device-type-not-found when matching device types are incomplete`, `capacity check stays available when provisioning device types are incomplete`, `capacity reconcile ignores an incomplete global device type when supportedDeviceTypes is omitted` |
 
 The broker chooses the additive alias name, display name, device type, newest
-compatible stable iOS runtime, and reset policy. Existing aliases, simulator
+compatible stable iOS runtime, and reset policy. Compatible means an available
+iOS runtime whose version matches the requirement and whose device types
+include one complete record for the requested device family. A complete record
+has that `productFamily` plus a non-empty `identifier` and a non-empty `name`.
+The check uses that runtime's `supportedDeviceTypes` when the list is
+non-empty. An empty or omitted list uses the global device-type inventory.
+An incomplete record does not qualify and does not trigger the fallback. A
+runtime with no complete record for the requested family is dropped, and the
+other family is not required. Survivors sort by version descending, then by
+the setup runtime order: build descending, identifier ascending, and
+supported-type key. The first survivor supplies the create. No version match
+blocks with `runtime-not-found` and `install_runtime`. Version matches that
+all lack a complete type block with `device-type-not-found` and
+`run_broker_doctor` in the exit-0 report. Check and reconcile do not throw
+that condition, including when the purpose already has a usable simulator.
+Guided setup still requires both iPhone and iPad. Repair and recreate keep
+their existing runtime selection.
+
+Existing aliases, simulator
 IDs, leases, pins, deterministic selection state, and reset semantics are never deleted, erased,
 repurposed, renamed, or repaired by capacity reconcile. Busy or pinned matching
 capacity is non-actionable and never creates extra capacity. Missing runtime or
@@ -1113,6 +1132,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
+| Unreleased | 2026-11-07 | Capacity runtime choice skips a version match that lacks a complete device type for the requested family and breaks equal versions with the setup runtime order. |
 | 0.20.0 | 2026-11-02 | Allowed a human or an agent to apply one confirmed capacity reconcile. `ci` and a blank actor are rejected before mutation. The app Simulators screen can confirm the same plan. |
 | 0.19.1 | 2026-11-01 | Match an `X.Y` runtime request to an installed `X.Y` or `X.Y.Z` runtime, and accept an exact `X.Y.Z` pin in host config, project requirements, and `--ios-version`. |
 | 0.19.0 | 2026-10-23 | Added alias and purpose simulator delete, persisted `driftCauseCode`, and the agent follow-up that deletes only unowned `runtime-not-found` or `device-type-not-found` matches. |
