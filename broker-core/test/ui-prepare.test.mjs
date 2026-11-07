@@ -511,6 +511,152 @@ test("a dead prepare owner does not keep the alias unusable", () => {
   assert.equal(after.aliases["ui-1"].health, "healthy");
 });
 
+test("a reused prepare owner pid does not keep the alias unusable", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const registry = readJson(registryPath);
+  registry.aliases["ui-1"].powerState = "booted";
+  registry.aliases["ui-1"].prepare = {
+    ownerPid: process.pid,
+    ownerStartedAt: "2000-01-01T00:00:00.000Z",
+    state: "erasing",
+    token: "reused-prepare",
+  };
+  writeJson(registryPath, registry);
+
+  const lease = acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+    actorId: "agent-a",
+    actorType: "agent",
+    processSampler: liveProcessSampler,
+    purposeId: "agent-ui-session",
+  })).lease;
+
+  assert.equal(lease.alias, "ui-1");
+  assert.equal(fixture.calls.some((call) => call[0] === "eraseDevice"), true);
+  assert.equal(readJson(registryPath).aliases["ui-1"].health, "healthy");
+});
+
+// The mutation lock polls every 150ms. A 400ms timeout fails on the third
+// poll. The fourth blocked mkdir is the follow-up drop, which must succeed.
+function blockNthNewLeaseLock(lockDir, ownerPath, nthNewDirectory, run) {
+  const originalMkdirSync = fs.mkdirSync;
+  let newDirectories = 0;
+  let blocking = false;
+  let blockedAttempts = 0;
+  fs.mkdirSync = function patchedMkdirSync(target, ...args) {
+    if (target !== lockDir) {
+      return originalMkdirSync.call(fs, target, ...args);
+    }
+    if (blocking) {
+      blockedAttempts += 1;
+      if (blockedAttempts >= 4) {
+        fs.rmSync(lockDir, { force: true, recursive: true });
+        blocking = false;
+        return originalMkdirSync.call(fs, target, ...args);
+      }
+      const held = new Error("EEXIST");
+      held.code = "EEXIST";
+      throw held;
+    }
+    if (!fs.existsSync(target)) {
+      newDirectories += 1;
+      if (newDirectories === nthNewDirectory) {
+        originalMkdirSync.call(fs, target);
+        writeJson(ownerPath, {
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+        });
+        blocking = true;
+        const held = new Error("EEXIST");
+        held.code = "EEXIST";
+        throw held;
+      }
+    }
+    return originalMkdirSync.call(fs, target, ...args);
+  };
+  try {
+    return run();
+  } finally {
+    fs.mkdirSync = originalMkdirSync;
+    fs.rmSync(lockDir, { force: true, recursive: true });
+  }
+}
+
+function assertDroppedLockWait(error) {
+  assert.equal(error instanceof BrokerError, true);
+  assert.equal(error.payload?.reasonCode, "alias-busy");
+  assert.equal(error.exitCode, 3);
+  assert.equal(error.payload?.leaseId, undefined);
+  assert.equal(error.payload?.rollbackFailed, undefined);
+  return true;
+}
+
+test("a publish lock timeout after simctl drops the lease without repair", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const before = readJson(registryPath).aliases["ui-1"];
+
+  assert.throws(() => {
+    blockNthNewLeaseLock(
+      fixture.resolvedPaths.leaseLockDir,
+      fixture.resolvedPaths.leaseLockOwnerPath,
+      3,
+      () => {
+        acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+          actorId: "agent-a",
+          actorType: "agent",
+          purposeId: "agent-ui-session",
+          resetLockTimeoutMilliseconds: 400,
+        }));
+      },
+    );
+  }, assertDroppedLockWait);
+
+  const after = readJson(registryPath).aliases["ui-1"];
+  assert.equal(fixture.calls.some((call) => call[0] === "eraseDevice"), true);
+  assert.equal(fixture.calls.some((call) => call[0] === "bootDevice"), true);
+  assert.equal(after.health, before.health);
+  assert.equal(after.driftReason, before.driftReason);
+  assert.deepEqual(after.cleanProof ?? null, before.cleanProof ?? null);
+  assert.equal(after.prepare ?? null, before.prepare ?? null);
+  assert.equal(after.activeLeaseId, null);
+  assert.equal(fs.readdirSync(fixture.resolvedPaths.leasesDir).length, 0);
+  assert.equal(readEventsBroker(fixture.resolvedPaths, {}).events.some((event) => event.type === "lease.acquired"), false);
+});
+
+test("a lease.acquired lock timeout drops the lease without changing health", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+
+  assert.throws(() => {
+    blockNthNewLeaseLock(
+      fixture.resolvedPaths.leaseLockDir,
+      fixture.resolvedPaths.leaseLockOwnerPath,
+      4,
+      () => {
+        acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+          actorId: "agent-a",
+          actorType: "agent",
+          purposeId: "agent-ui-session",
+          resetLockTimeoutMilliseconds: 400,
+        }));
+      },
+    );
+  }, assertDroppedLockWait);
+
+  const after = readJson(registryPath).aliases["ui-1"];
+  assert.equal(fixture.calls.some((call) => call[0] === "eraseDevice"), true);
+  assert.equal(after.health, "healthy");
+  assert.equal(after.driftReason, null);
+  assert.equal(after.cleanProof?.ready, true);
+  assert.equal(after.powerState, "booted");
+  assert.equal(after.activeLeaseId, null);
+  assert.equal(fs.readdirSync(fixture.resolvedPaths.leasesDir).length, 0);
+  const events = readEventsBroker(fixture.resolvedPaths, {}).events;
+  assert.equal(events.some((event) => event.type === "simulator.booted"), true);
+  assert.equal(events.some((event) => event.type === "lease.acquired"), false);
+});
+
 test("purpose delete counts a preparing UI alias as held", () => {
   const fixture = makeFixture();
   const registryPath = path.join(fixture.paths.stateRoot, "registry.json");

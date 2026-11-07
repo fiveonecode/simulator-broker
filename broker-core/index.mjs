@@ -86,8 +86,10 @@ const SETUP_MAX_SIMCTL_COMMANDS_UNDER_CAPACITY_LOCK = 30;
 const SETUP_CAPACITY_LOCK_TIMEOUT_MS =
   (SETUP_MAX_SIMCTL_COMMANDS_UNDER_CAPACITY_LOCK * SIMCTL_COMMAND_TIMEOUT_MS)
   + DEFAULT_LOCK_TIMEOUT_MS;
-// A live UI prepare may still be inside shutdown, erase, and bootstatus.
-export const UI_RESET_HOLDER_WAIT_MS = 3 * SIMCTL_COMMAND_TIMEOUT_MS;
+// Shutdown, erase, boot, bootstatus, and the post-boot identity list.
+export const UI_RESET_HOLDER_WAIT_MS = 5 * SIMCTL_COMMAND_TIMEOUT_MS;
+// Capacity, alias lock, decision mutation lock, boot publish, and lease.acquired.
+export const UI_ACQUIRE_LOCK_WAITS = 5;
 const CAPACITY_RESET_POLICY_BY_CAPABILITY = Object.freeze({
   "automation-resettable": "erase-on-acquire",
   "build-clean": "erase-on-acquire",
@@ -2883,6 +2885,7 @@ function normalizePrepareState(value) {
   const ownerPid = Number.isInteger(value.ownerPid) ? value.ownerPid : null;
   return {
     ownerPid,
+    ownerStartedAt: typeof value.ownerStartedAt === "string" ? value.ownerStartedAt : null,
     state: value.state,
     token: value.token,
   };
@@ -5203,11 +5206,16 @@ function failDeadPrepareOwners(paths, hostConfig, registry, processExists, proce
     if (prepareState !== "erasing" && prepareState !== "booting") {
       continue;
     }
-    const ownerPid = normalizePositiveInteger(entry.prepare.ownerPid);
-    if (ownerPid !== null && processExists(ownerPid) === true) {
-      continue;
-    }
-    if (aliasResetLockIsHeld(paths, hostAlias.alias, processExists, processSampler)) {
+    const sampler = processSampler ?? (processExists === defaultProcessExists ? defaultProcessSampler : null);
+    const ownerLive = lockOwnerProcessIsLive({
+      pid: entry.prepare.ownerPid,
+      startedAt: entry.prepare.ownerStartedAt,
+    }, {
+      observedAt: new Date(),
+      processExists,
+      processSampler: sampler,
+    });
+    if (ownerLive || aliasResetLockIsHeld(paths, hostAlias.alias, processExists, sampler)) {
       continue;
     }
     entry.prepare = {
@@ -8015,7 +8023,35 @@ function isAliasBusyError(error) {
 }
 
 function preSimctlWaitError(error) {
-  return isResetLockTimeoutError(error) || (isAliasBusyError(error) && error.payload?.afterSimctl !== true);
+  return isResetLockTimeoutError(error) || isAliasBusyError(error);
+}
+
+function releaseClaimAfterLockWait(paths, claimed, options, error) {
+  let rollbackError = null;
+  try {
+    rollbackError = withLeaseMutationLock(paths, () => {
+      const state = loadBrokerState(paths, freshLeaseStateLoadOptions(claimed.leaseRecord, options));
+      try {
+        releaseClaimedLeaseWithoutRepair(paths, state, claimed.leaseRecord, claimed.timestamp);
+        return null;
+      } catch (releaseError) {
+        return releaseError;
+      }
+    }, uiPublishLockOptions(claimed.leaseRecord, options));
+  } catch (rollbackLoadError) {
+    rollbackError = rollbackLoadError;
+  }
+  if (rollbackError) {
+    throw new BrokerError(error.message, {
+      ...(error.payload ?? {}),
+      alias: claimed.leaseRecord.alias,
+      leaseId: claimed.leaseRecord.leaseId,
+      reasonCode: error.payload?.reasonCode,
+      rollbackCause: rollbackError?.message ?? String(rollbackError),
+      rollbackFailed: true,
+    });
+  }
+  throw error;
 }
 
 function proofMatchesLease(entry, leaseRecord, previousLeaseId, identity) {
@@ -8097,7 +8133,7 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
       ?? UI_RESET_HOLDER_WAIT_MS,
   };
   let stage = "reset";
-  let simctlStarted = false;
+  let publish = null;
   try {
     withResetCapacity(paths, () => {
       withAliasResetLock(paths, leaseRecord.alias, () => {
@@ -8118,7 +8154,6 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
           return { action: "boot", epoch: entry.cleanProof.epoch };
         }, locks);
         let booted = false;
-        simctlStarted = true;
         if (decision.action === "wait") {
           stage = "boot";
           if (typeof simctl.waitForBooted === "function") {
@@ -8139,28 +8174,24 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
         }
         const identity = readDataIdentity(simctl, leaseRecord.simulatorId);
         const epoch = decision.action === "erase" ? decision.epoch + 1 : decision.epoch;
-        publishBootedLease(paths, leaseRecord, options, {
+        publish = {
           booted,
           dataIdentity: identity,
           erased: decision.action === "erase",
           epoch,
           previousLeaseId,
-        });
+        };
       }, locks);
     }, locks);
+    if (publish) {
+      publishBootedLease(paths, leaseRecord, options, publish);
+    }
   } catch (error) {
-    if (isLeaseLostError(error) || isResetLockTimeoutError(error) || (isAliasBusyError(error) && !simctlStarted) || (error instanceof BrokerError && (
+    if (isLeaseLostError(error) || isResetLockTimeoutError(error) || isAliasBusyError(error) || (error instanceof BrokerError && (
       error.payload?.reasonCode === "reset-on-acquire-failed"
       || error.payload?.reasonCode === "boot-on-acquire-failed"
     ))) {
       throw error;
-    }
-    if (isAliasBusyError(error) && simctlStarted) {
-      throw new BrokerError(error.message, {
-        ...(error.payload ?? {}),
-        afterSimctl: true,
-        reasonCode: "alias-busy",
-      });
     }
     const reasonCode = stage === "boot" ? "boot-on-acquire-failed" : "reset-on-acquire-failed";
     let rollbackError = null;
@@ -8352,29 +8383,7 @@ export function acquireLeaseBroker(paths, options = {}) {
     }
   } catch (error) {
     if (preSimctlWaitError(error)) {
-      let rollbackError = null;
-      try {
-        rollbackError = withLeaseMutationLock(paths, () => {
-          const state = loadBrokerState(paths, freshLeaseStateLoadOptions(claimed.leaseRecord, options));
-          try {
-            releaseClaimedLeaseWithoutRepair(paths, state, claimed.leaseRecord, claimed.timestamp);
-            return null;
-          } catch (releaseError) {
-            return releaseError;
-          }
-        }, uiPublishLockOptions(claimed.leaseRecord, options));
-      } catch (rollbackLoadError) {
-        rollbackError = rollbackLoadError;
-      }
-      if (rollbackError) {
-        throw new BrokerError(error.message, {
-          ...(error.payload ?? {}),
-          reasonCode: error.payload?.reasonCode,
-          rollbackCause: rollbackError?.message ?? String(rollbackError),
-          rollbackFailed: true,
-        });
-      }
-      throw error;
+      releaseClaimAfterLockWait(paths, claimed, options, error);
     }
     if (isLeaseLostError(error) || (error instanceof BrokerError && (
       error.payload?.reasonCode === "reset-on-acquire-failed"
@@ -8417,26 +8426,33 @@ export function acquireLeaseBroker(paths, options = {}) {
     );
   }
 
-  withLeaseMutationLock(paths, () => {
-    const state = loadBrokerState(paths, freshLeaseStateLoadOptions(claimed.leaseRecord, options));
-    if (!leaseStillOwnsAlias(paths, state, claimed.leaseRecord)) {
-      abandonLostLeaseFile(paths, state, claimed.leaseRecord);
-      throw leaseLostError(claimed.leaseRecord);
+  try {
+    withLeaseMutationLock(paths, () => {
+      const state = loadBrokerState(paths, freshLeaseStateLoadOptions(claimed.leaseRecord, options));
+      if (!leaseStillOwnsAlias(paths, state, claimed.leaseRecord)) {
+        abandonLostLeaseFile(paths, state, claimed.leaseRecord);
+        throw leaseLostError(claimed.leaseRecord);
+      }
+      appendEventRecord(paths, "lease.acquired", {
+        alias: claimed.leaseRecord.alias,
+        actorType: claimed.actorType,
+        jobId: claimed.leaseRecord.jobId,
+        leaseId: claimed.leaseRecord.leaseId,
+        payload: {
+          actorId: claimed.actorId,
+          leaseKind: claimed.leaseRecord.leaseKind,
+          pinId: claimed.leaseRecord.pinId,
+        },
+        projectId: claimed.leaseRecord.projectId,
+        purposeId: claimed.leaseRecord.purposeId,
+      }, claimed.timestamp);
+    }, uiPublishLockOptions(claimed.leaseRecord, options));
+  } catch (error) {
+    if (preSimctlWaitError(error)) {
+      releaseClaimAfterLockWait(paths, claimed, options, error);
     }
-    appendEventRecord(paths, "lease.acquired", {
-      alias: claimed.leaseRecord.alias,
-      actorType: claimed.actorType,
-      jobId: claimed.leaseRecord.jobId,
-      leaseId: claimed.leaseRecord.leaseId,
-      payload: {
-        actorId: claimed.actorId,
-        leaseKind: claimed.leaseRecord.leaseKind,
-        pinId: claimed.leaseRecord.pinId,
-      },
-      projectId: claimed.leaseRecord.projectId,
-      purposeId: claimed.leaseRecord.purposeId,
-    }, claimed.timestamp);
-  }, uiPublishLockOptions(claimed.leaseRecord, options));
+    throw error;
+  }
   return {
     lease: claimed.leaseRecord,
     ok: true,
@@ -8687,6 +8703,7 @@ function prepareOneUiAlias(paths, item, options, timestamp) {
           }
           entry.prepare = {
             ownerPid: process.pid,
+            ownerStartedAt: nowIso(),
             state: "erasing",
             token: item.token,
           };

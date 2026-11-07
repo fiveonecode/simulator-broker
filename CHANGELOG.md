@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alias reset lock is free. Purpose delete takes that lock and counts
   `alias-busy` as held. The service acquire budget counts four state loads
   and two data-identity device lists.
+- A timeout while publishing a booted UI lease, or while recording
+  `lease.acquired`, drops only that lease and leaves health unchanged. The
+  error includes a lease id only when that drop fails. The reset-holder wait
+  covers shutdown, erase, boot, `bootstatus`, and the identity list. The
+  boot publish runs after the alias reset lock is released. The service
+  acquire budget includes each sequential lock wait. A reused prepare-owner
+  pid does not keep an `erasing` or `booting` alias unselectable once its
+  reset lock is free.
 
 ## [0.1.0-alpha.15] - 2026-11-07
 
