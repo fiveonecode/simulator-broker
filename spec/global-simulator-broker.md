@@ -1132,7 +1132,7 @@ This repo is ready for public-source collaboration only if:
 
 | Version | Date | Summary |
 | --- | --- | --- |
-| Unreleased | 2026-11-07 | Capacity runtime choice skips a version match that lacks a complete device type for the requested family and breaks equal versions with the setup runtime order. |
+| 0.21.0 | 2026-11-07 | Capacity runtime choice skips a version match that lacks a complete device type for the requested family and breaks equal versions with the setup runtime order. |
 | 0.20.0 | 2026-11-02 | Allowed a human or an agent to apply one confirmed capacity reconcile. `ci` and a blank actor are rejected before mutation. The app Simulators screen can confirm the same plan. |
 | 0.19.1 | 2026-11-01 | Match an `X.Y` runtime request to an installed `X.Y` or `X.Y.Z` runtime, and accept an exact `X.Y.Z` pin in host config, project requirements, and `--ios-version`. |
 | 0.19.0 | 2026-10-23 | Added alias and purpose simulator delete, persisted `driftCauseCode`, and the agent follow-up that deletes only unowned `runtime-not-found` or `device-type-not-found` matches. |
