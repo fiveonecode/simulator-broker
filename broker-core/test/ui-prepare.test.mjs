@@ -8,6 +8,7 @@ import {
   BrokerError,
   acquireLeaseBroker,
   cleanupIdleBroker,
+  deletePurposeSimulatorsBroker,
   deleteSimulatorBroker,
   enableIdlePolicyBroker,
   eraseSimulatorBroker,
@@ -168,6 +169,7 @@ test("an empty runtime list does not latch repair-needed during UI prepare", () 
   releaseLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, { leaseId: lease.leaseId }));
   const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
   const registry = readJson(registryPath);
+  registry.aliases[lease.alias].prepare.ownerPid = process.pid;
   registry.aliases[lease.alias].prepare.state = "erasing";
   writeJson(registryPath, registry);
   const simctlState = readJson(fixture.paths.simctl.statePath);
@@ -433,6 +435,108 @@ test("a lease opened while prepare waits for reset capacity stays live", () => {
   assert.equal(fs.existsSync(path.join(fixture.paths.stateRoot, "leases", `${survivorId}.json`)), true);
   const registry = readJson(path.join(fixture.paths.stateRoot, "registry.json"));
   assert.equal(registry.aliases["ui-2"].activeLeaseId, survivorId);
+});
+
+test("acquire does not erase a lease that replaced it during the reset wait", () => {
+  const fixture = makeFixture();
+  holdResetCapacity(fixture.paths.stateRoot);
+  const replacementId = "00000000-0000-4000-8000-000000000077";
+  let planted = false;
+  assert.throws(() => {
+    acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+      actorId: "agent-a",
+      actorType: "agent",
+      processExists(pid) {
+        if (!planted && pid === process.pid) {
+          planted = true;
+          const leasesDir = path.join(fixture.paths.stateRoot, "leases");
+          const [originalName] = fs.readdirSync(leasesDir).filter((name) => name.endsWith(".json"));
+          const original = readJson(path.join(leasesDir, originalName));
+          fs.rmSync(path.join(leasesDir, originalName));
+          const registeredAt = new Date().toISOString();
+          writeJson(path.join(leasesDir, `${replacementId}.json`), {
+            actorId: "agent-replacement",
+            actorType: "agent",
+            alias: original.alias,
+            leaseId: replacementId,
+            ownerPid: process.pid,
+            projectId: original.projectId,
+            purposeId: original.purposeId,
+            runtime: { ownerPid: process.pid, ownerRegisteredAt: registeredAt },
+            simulatorId: original.simulatorId,
+            startedAt: registeredAt,
+          });
+          const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+          const registry = readJson(registryPath);
+          registry.aliases[original.alias].activeLeaseId = replacementId;
+          writeJson(registryPath, registry);
+          releaseResetCapacity(fixture.paths.stateRoot);
+        }
+        return pid === process.pid;
+      },
+      processSampler: liveProcessSampler,
+      purposeId: "agent-ui-session",
+    }));
+  }, (error) => error instanceof BrokerError && error.payload?.reasonCode === "lease-lost" && error.exitCode === 3);
+  assert.equal(planted, true);
+  assert.equal(fixture.calls.some((call) => call[0] === "eraseDevice" || call[0] === "shutdownDevice" || call[0] === "bootDevice"), false);
+  assert.equal(fs.existsSync(path.join(fixture.paths.stateRoot, "leases", `${replacementId}.json`)), true);
+  const registry = readJson(path.join(fixture.paths.stateRoot, "registry.json"));
+  assert.equal(registry.aliases["ui-1"].activeLeaseId, replacementId);
+  assert.equal(registry.aliases["ui-1"].health, "healthy");
+});
+
+test("a dead prepare owner does not keep the alias unusable", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const registry = readJson(registryPath);
+  registry.aliases["ui-1"].powerState = "booted";
+  registry.aliases["ui-1"].prepare = {
+    ownerPid: 999999,
+    state: "erasing",
+    token: "dead-prepare",
+  };
+  writeJson(registryPath, registry);
+
+  const lease = acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+    actorId: "agent-a",
+    actorType: "agent",
+    purposeId: "agent-ui-session",
+  })).lease;
+
+  assert.equal(lease.alias, "ui-1");
+  assert.equal(fixture.calls.some((call) => call[0] === "eraseDevice"), true);
+  const after = readJson(registryPath);
+  assert.equal(after.aliases["ui-1"].prepare?.state ?? null, null);
+  assert.equal(after.aliases["ui-1"].health, "healthy");
+});
+
+test("purpose delete counts a preparing UI alias as held", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const registry = readJson(registryPath);
+  registry.aliases["ui-1"].health = "repair-needed";
+  registry.aliases["ui-1"].driftReason = "runtime-not-found";
+  registry.aliases["ui-1"].driftCauseCode = "runtime-not-found";
+  registry.aliases["ui-1"].prepare = {
+    ownerPid: process.pid,
+    state: "erasing",
+    token: "prepare-token",
+  };
+  writeJson(registryPath, registry);
+
+  assert.throws(() => {
+    deletePurposeSimulatorsBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+      actorId: "agent-a",
+      actorType: "agent",
+      purposeId: "agent-ui-session",
+    }));
+  }, (error) => error instanceof BrokerError
+    && error.payload?.reasonCode === "human-override-required"
+    && error.payload?.failed === 0
+    && error.payload?.held === 1);
+  assert.equal(fixture.calls.length, 0);
+  assert.equal(readJson(registryPath).aliases["ui-1"].prepare.state, "erasing");
 });
 
 test("acquire skips an alias that prepare is still erasing", () => {

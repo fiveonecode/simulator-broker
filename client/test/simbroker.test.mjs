@@ -4104,7 +4104,7 @@ test("service lease acquire timeout includes reset and boot-on-acquire budgets",
     command: "acquire",
     group: "lease",
     options: {},
-  }), 1_725_250);
+  }), 2_705_250);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "acquire",
     group: "lease",
@@ -4113,7 +4113,7 @@ test("service lease acquire timeout includes reset and boot-on-acquire budgets",
       resetLockTimeoutMilliseconds: 120_000,
       resetSettleMilliseconds: 500,
     },
-  }), 1_545_500);
+  }), 2_525_500);
 });
 
 test("service idle timeouts cover serialized state, snapshots, and bounded shutdown work", () => {

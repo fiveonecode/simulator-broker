@@ -35,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that alias's reset lock and is refused while prepare is in progress.
   Confirmed idle cleanup records `simulator.unhealthy` when sync marks an
   alias `repair-needed`.
+- Acquire throws `lease-lost` before erasing a UI alias whose lease was
+  replaced during the reset wait. A mutation-lock timeout before `simctl`
+  drops only the claimed lease. Publishing a successful boot uses the
+  reset-holder wait and does not latch `repair-needed` if that wait ends.
+  A prepare left `erasing` or `booting` by a dead owner is failed when its
+  alias reset lock is free. Purpose delete takes that lock and counts
+  `alias-busy` as held. The service acquire budget counts four state loads
+  and two data-identity device lists.
 
 ## [0.1.0-alpha.15] - 2026-11-07
 

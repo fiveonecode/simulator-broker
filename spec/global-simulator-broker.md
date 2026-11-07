@@ -175,18 +175,27 @@ Current implementation slice:
   when the stored data-volume identity still matches the live device and the
   proof names the previous lease. Acquire skips an alias whose prepare state
   is `erasing` or `booting`. A `queued` prepare has not started `simctl`, so
-  that alias stays selectable. The wait for a live reset holder
-  covers one shutdown, one erase, and one `bootstatus`, each at the simctl
-  command cap, unless the caller passes a shorter reset-lock timeout. If that
-  wait ends before this acquire calls `simctl`, acquire drops only the claimed
-  lease, leaves prepare, health, and the clean proof in place, and returns
-  `reset-lock-timeout` (exit `3`). Before acquire records success, the lease
+  that alias stays selectable. An `erasing` or `booting` prepare whose owner
+  process is gone, and whose alias reset lock is free, is marked `failed` on
+  the next state load so acquire can erase that alias. The decision reload
+  throws `lease-lost` before shutdown, erase, or boot when this lease no
+  longer owns the alias. The wait for a live reset holder covers one
+  shutdown, one erase, and one `bootstatus`, each at the simctl command cap,
+  unless the caller passes a shorter reset-lock timeout. If that wait, or the
+  mutation lock, ends before this acquire calls `simctl`, acquire drops only
+  the claimed lease, leaves prepare, health, and the clean proof in place, and
+  returns `reset-lock-timeout` or `alias-busy` (exit `3`). After `simctl`
+  succeeds, publishing the boot result and `lease.acquired` uses that same
+  wait, and a timeout leaves health unchanged. Before acquire records success, the lease
   file must still exist and `activeLeaseId` must still name that lease.
   Otherwise acquire fails with `lease-lost` (exit `3`) and does not clear a
   newer lease or mark the alias `repair-needed`. Delete of an
   `erase-on-acquire` alias takes that alias's reset lock after the capacity
   lock and is refused with `alias-busy` while prepare is `queued`, `erasing`,
-  or `booting`
+  or `booting`. Purpose delete takes that same lock for each
+  `erase-on-acquire` alias and counts `alias-busy` as held. Service-backed
+  acquire reserves four broker state loads and two data-identity device lists
+  in addition to shutdown, erase, boot, and `bootstatus`
 - boot-on-acquire with lease rollback and `repair-needed`
   (`boot-on-acquire-failed`) when boot fails. The real `simctl` adapter treats
   a boot result whose text says the device is already `Booted` or `Booting`
