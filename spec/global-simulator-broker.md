@@ -161,9 +161,11 @@ Current implementation slice:
 - reset-on-acquire coordination behind the per-alias reset lock and a
   two-slot reset-capacity limit, with rollback on reset failure. `simctl`
   shutdown, erase, boot, and `bootstatus` for that work run outside the
-  broker mutation lock. A state reload after that unlocked `simctl` work
-  observes owner liveness at the reload time, so a lease opened during the
-  work is not removed or contained while its owner process is alive. Manual
+  broker mutation lock. A state reload after that unlocked `simctl` work,
+  after a reset-capacity or alias reset-lock wait, or after the claim
+  mutation lock is released, observes owner liveness at the reload time.
+  A lease opened during that wait is not removed or contained while its
+  owner process is alive. Manual
   `boot`, `shutdown`, `erase`, and `repair` of an `erase-on-acquire` alias
   take that alias's reset lock before `simctl`. Repair takes the capacity
   lock before the alias lock. Reset-capacity reclaim uses the default process

@@ -7867,7 +7867,7 @@ function readDataIdentity(simctl, simulatorId) {
   }
 }
 
-function postSimctlStateLoadOptions(leaseRecord, options) {
+function freshLeaseStateLoadOptions(leaseRecord, options) {
   return stateLoadOptions({
     ...options,
     skipLeaseIds: [leaseRecord.leaseId],
@@ -7925,7 +7925,7 @@ function publishBootedLease(paths, leaseRecord, options, {
   previousLeaseId,
 }) {
   return withLeaseMutationLock(paths, () => {
-    const state = loadBrokerState(paths, postSimctlStateLoadOptions(leaseRecord, options));
+    const state = loadBrokerState(paths, freshLeaseStateLoadOptions(leaseRecord, options));
     if (!leaseStillOwnsAlias(paths, state, leaseRecord)) {
       abandonLostLeaseFile(paths, state, leaseRecord);
       throw leaseLostError(leaseRecord);
@@ -7984,10 +7984,7 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
     withResetCapacity(paths, () => {
       withAliasResetLock(paths, leaseRecord.alias, () => {
         const decision = withLeaseMutationLock(paths, () => {
-          const state = loadBrokerState(paths, stateLoadOptions({
-      ...options,
-      skipLeaseIds: [leaseRecord.leaseId],
-    }, leaseRecord.startedAt));
+          const state = loadBrokerState(paths, freshLeaseStateLoadOptions(leaseRecord, options));
           const entry = state.registry.aliases[leaseRecord.alias];
           const identity = readDataIdentity(simctl, leaseRecord.simulatorId);
           if (!proofMatchesLease(entry, leaseRecord, previousLeaseId, identity)) {
@@ -8039,7 +8036,7 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
     let rollbackError = null;
     try {
       rollbackError = withLeaseMutationLock(paths, () => {
-        const state = loadBrokerState(paths, postSimctlStateLoadOptions(leaseRecord, options));
+        const state = loadBrokerState(paths, freshLeaseStateLoadOptions(leaseRecord, options));
         return rollbackAcquireLeaseFailureSafe(paths, state, leaseRecord, leaseRecord.startedAt, reasonCode);
       }, acquireLockOptions(leaseRecord, options));
     } catch (rollbackLoadError) {
@@ -8069,10 +8066,7 @@ function maybeBootLeaseOnAcquire(paths, _state, leaseRecord, options = {}) {
   const simctl = resolveSimctlAdapter(options);
   const locks = acquireLockOptions(leaseRecord, options);
   const powerState = withLeaseMutationLock(paths, () => {
-    const state = loadBrokerState(paths, stateLoadOptions({
-      ...options,
-      skipLeaseIds: [leaseRecord.leaseId],
-    }, leaseRecord.startedAt));
+    const state = loadBrokerState(paths, freshLeaseStateLoadOptions(leaseRecord, options));
     return state.registry.aliases[leaseRecord.alias]?.powerState ?? "shutdown";
   }, locks);
   if (powerState !== "booted") {
@@ -8084,7 +8078,7 @@ function maybeBootLeaseOnAcquire(paths, _state, leaseRecord, options = {}) {
     return false;
   }
   withLeaseMutationLock(paths, () => {
-    const state = loadBrokerState(paths, postSimctlStateLoadOptions(leaseRecord, options));
+    const state = loadBrokerState(paths, freshLeaseStateLoadOptions(leaseRecord, options));
     if (!leaseStillOwnsAlias(paths, state, leaseRecord)) {
       abandonLostLeaseFile(paths, state, leaseRecord);
       throw leaseLostError(leaseRecord);
@@ -8239,7 +8233,7 @@ export function acquireLeaseBroker(paths, options = {}) {
     let rollbackError = null;
     try {
       rollbackError = withLeaseMutationLock(paths, () => {
-        const state = loadBrokerState(paths, postSimctlStateLoadOptions(claimed.leaseRecord, options));
+        const state = loadBrokerState(paths, freshLeaseStateLoadOptions(claimed.leaseRecord, options));
         return rollbackAcquireLeaseFailureSafe(paths, state, claimed.leaseRecord, claimed.timestamp, reasonCode);
       }, {
         now: claimed.timestamp,
@@ -8269,7 +8263,7 @@ export function acquireLeaseBroker(paths, options = {}) {
   }
 
   withLeaseMutationLock(paths, () => {
-    const state = loadBrokerState(paths, postSimctlStateLoadOptions(claimed.leaseRecord, options));
+    const state = loadBrokerState(paths, freshLeaseStateLoadOptions(claimed.leaseRecord, options));
     if (!leaseStillOwnsAlias(paths, state, claimed.leaseRecord)) {
       abandonLostLeaseFile(paths, state, claimed.leaseRecord);
       throw leaseLostError(claimed.leaseRecord);
@@ -8533,7 +8527,7 @@ function prepareOneUiAlias(paths, item, options, timestamp) {
     withResetCapacity(paths, () => {
       withAliasResetLock(paths, item.alias, () => {
         const proceed = withLeaseMutationLock(paths, () => {
-          const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+          const state = loadBrokerState(paths, stateLoadOptions(options, nowIso()));
           const entry = state.registry.aliases[item.alias];
           if (!entry || entry.prepare?.token !== item.token || entry.activeLeaseId) {
             return false;
@@ -8635,7 +8629,7 @@ function prepareOneUiAlias(paths, item, options, timestamp) {
 export function reconcileUiPrepareBroker(paths, options = {}) {
   const timestamp = nowIso(options.now);
   const queued = withLeaseMutationLock(paths, () => {
-    const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+    const state = loadBrokerState(paths, stateLoadOptions(options, nowIso()));
     return state.hostConfig.aliases.flatMap((hostAlias) => {
       const entry = state.registry.aliases[hostAlias.alias];
       if (hostAlias.resetPolicy !== "erase-on-acquire" || !entry || state.leasesByAlias.has(hostAlias.alias)) {

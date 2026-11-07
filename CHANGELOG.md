@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runtimes` comes back empty, or while a UI prepare or lease is in progress.
   A new `simulator.unhealthy` event records `driftReason` when an alias does
   become `repair-needed`.
-- State reloads after an unlocked erase use a fresh observation time, so a
-  lease opened during that erase is not treated as a dead owner. Acquire
+- State reloads after an unlocked erase, and after a reset-lock wait, use a
+  fresh observation time, so a lease opened during that wait is not treated
+  as a dead owner. Acquire
   fails with `lease-lost` instead of returning a lease that was released
   during boot, and it leaves a newer lease in place. Manual UI boot,
   shutdown, erase, and repair take the same per-alias reset lock. Repair

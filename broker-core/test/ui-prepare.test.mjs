@@ -327,7 +327,8 @@ test("a recycled reset-capacity owner does not keep the slot", () => {
     purposeId: "agent-ui-session",
   })).lease;
   releaseLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, { leaseId: lease.leaseId }));
-  const startedAt = new Date(Date.now() + (24 * 60 * 60 * 1000)).toISOString();
+  fixture.calls.length = 0;
+  const startedAt = "2000-01-01T00:00:00.000Z";
   for (const slot of ["1", "2"]) {
     writeLockOwner(path.join(fixture.paths.stateRoot, "locks", "reset-capacity", slot), startedAt);
   }
@@ -337,7 +338,98 @@ test("a recycled reset-capacity owner does not keep the slot", () => {
     simctlAdapter: fixture.adapter,
   });
 
-  assert.equal(fixture.calls.some((call) => call[0] === "eraseDevice"), true);
+  assert.deepEqual(fixture.calls.filter((call) => call[0] === "eraseDevice"), [["eraseDevice", "SIM-UI-1"]]);
+});
+
+function holdResetCapacity(stateRoot) {
+  const startedAt = new Date().toISOString();
+  for (const slot of ["1", "2"]) {
+    writeLockOwner(path.join(stateRoot, "locks", "reset-capacity", slot), startedAt);
+  }
+}
+
+function releaseResetCapacity(stateRoot) {
+  fs.rmSync(path.join(stateRoot, "locks", "reset-capacity"), { force: true, recursive: true });
+}
+
+function writeSurvivorLease(stateRoot, survivorId) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+  const registeredAt = new Date().toISOString();
+  writeJson(path.join(stateRoot, "leases", `${survivorId}.json`), {
+    actorId: "agent-survivor",
+    actorType: "agent",
+    alias: "ui-2",
+    leaseId: survivorId,
+    ownerPid: process.pid,
+    projectId: "demo-app",
+    purposeId: "agent-ui-session",
+    runtime: { ownerPid: process.pid, ownerRegisteredAt: registeredAt },
+    simulatorId: "SIM-UI-2",
+    startedAt: registeredAt,
+  });
+}
+
+function liveProcessSampler() {
+  return [{
+    command: "node",
+    elapsed: "01:00:00",
+    pgid: process.pid,
+    pid: process.pid,
+    state: "R",
+  }];
+}
+
+test("a lease opened while acquire waits for reset capacity stays live", () => {
+  const fixture = makeFixture();
+  holdResetCapacity(fixture.paths.stateRoot);
+  const survivorId = "00000000-0000-4000-8000-000000000097";
+  let planted = false;
+  acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+    actorId: "agent-a",
+    actorType: "agent",
+    processExists(pid) {
+      if (!planted && pid === process.pid) {
+        planted = true;
+        writeSurvivorLease(fixture.paths.stateRoot, survivorId);
+        releaseResetCapacity(fixture.paths.stateRoot);
+      }
+      return pid === process.pid;
+    },
+    processSampler: liveProcessSampler,
+    purposeId: "agent-ui-session",
+  }));
+  assert.equal(planted, true);
+  assert.equal(fs.existsSync(path.join(fixture.paths.stateRoot, "leases", `${survivorId}.json`)), true);
+  const registry = readJson(path.join(fixture.paths.stateRoot, "registry.json"));
+  assert.equal(registry.aliases["ui-2"].activeLeaseId, survivorId);
+});
+
+test("a lease opened while prepare waits for reset capacity stays live", () => {
+  const fixture = makeFixture();
+  const lease = acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+    actorId: "agent-a",
+    actorType: "agent",
+    purposeId: "agent-ui-session",
+  })).lease;
+  releaseLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, { leaseId: lease.leaseId }));
+  holdResetCapacity(fixture.paths.stateRoot);
+  const survivorId = "00000000-0000-4000-8000-000000000096";
+  let planted = false;
+  reconcileUiPrepareBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+    processExists(pid) {
+      if (!planted && pid === process.pid) {
+        planted = true;
+        writeSurvivorLease(fixture.paths.stateRoot, survivorId);
+        releaseResetCapacity(fixture.paths.stateRoot);
+      }
+      return pid === process.pid;
+    },
+    processSampler: liveProcessSampler,
+  }));
+  assert.equal(planted, true);
+  assert.equal(fs.existsSync(path.join(fixture.paths.stateRoot, "leases", `${survivorId}.json`)), true);
+  const registry = readJson(path.join(fixture.paths.stateRoot, "registry.json"));
+  assert.equal(registry.aliases["ui-2"].activeLeaseId, survivorId);
 });
 
 test("manual UI erase and repair wait on the alias reset lock", () => {
