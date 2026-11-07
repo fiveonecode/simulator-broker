@@ -9,7 +9,7 @@ import {
   STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS,
   leaseHasContainmentProcessMetadata,
 } from "../../broker-core/containment.mjs";
-import { BrokerError } from "../../broker-core/index.mjs";
+import { BrokerError, UI_ACQUIRE_LOCK_WAITS, UI_RESET_HOLDER_WAIT_MS } from "../../broker-core/index.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS } from "../../broker-core/simctl.mjs";
 import { classifyReclaimSlot, resolveSlotReclaimPolicy } from "../../broker-core/slot-reclaim.mjs";
 
@@ -31,6 +31,8 @@ const LEASE_ACQUIRE_RESET_ERASE_SIMCTL_COMMANDS = 2;
 const LEASE_ACQUIRE_BOOT_SIMCTL_COMMANDS = 2;
 const LEASE_ACQUIRE_RESET_SIMCTL_COMMANDS = LEASE_ACQUIRE_RESET_ERASE_SIMCTL_COMMANDS
   + LEASE_ACQUIRE_BOOT_SIMCTL_COMMANDS;
+const LEASE_ACQUIRE_STATE_LOADS = 4;
+const LEASE_ACQUIRE_DATA_IDENTITY_LISTS = 2;
 // Reclaim shutdown/erase replaces reset-on-acquire shutdown/erase, then boot still runs.
 const LEASE_ACQUIRE_RECLAIM_SIMCTL_COMMANDS = SLOT_RECLAIM_SHARED_LIST_COMMANDS
   + SLOT_RECLAIM_COMMANDS_PER_ALIAS
@@ -320,7 +322,7 @@ function leaseAcquireResetSimctlBudgetMs(request, options = {}) {
   const commandCount = enabledSlotReclaimCandidateCount(options.paths) > 0
     ? LEASE_ACQUIRE_RECLAIM_SIMCTL_COMMANDS
     : LEASE_ACQUIRE_RESET_SIMCTL_COMMANDS;
-  return commandCount * SIMCTL_COMMAND_TIMEOUT_MS;
+  return (commandCount + LEASE_ACQUIRE_DATA_IDENTITY_LISTS) * SIMCTL_COMMAND_TIMEOUT_MS;
 }
 
 function leaseReleaseSlotReclaimBudgetMs(request, options = {}) {
@@ -491,11 +493,11 @@ export function serviceCommandExecutionTimeoutMs(request, options = {}) {
       DEFAULT_COMMAND_TIMEOUT_MS,
       DEFAULT_COMMAND_TIMEOUT_MS
         + leaseLockTimeoutMs(request)
-        + positiveDurationMs(request?.options?.resetLockTimeoutMilliseconds, DEFAULT_LOCK_TIMEOUT_MS)
+        + (UI_ACQUIRE_LOCK_WAITS * positiveDurationMs(request?.options?.resetLockTimeoutMilliseconds, UI_RESET_HOLDER_WAIT_MS))
         + positiveDurationMs(request?.options?.resetSettleMilliseconds, DEFAULT_RESET_SETTLE_MS)
         + leaseAcquireResetSimctlBudgetMs(request, options)
         + snapshotLockBudgetMs
-        + stateLoadBudgetForRequestMs,
+        + brokerStateLoadBudgetMs(request, LEASE_ACQUIRE_STATE_LOADS, options),
     );
   }
   if (request?.group === "lease" && request?.command === "contain") {

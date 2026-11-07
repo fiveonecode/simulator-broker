@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- UI leases still erase before the next holder is returned. A running `brokerd`
+  may erase and boot a free UI alias after release. The next acquire skips that
+  erase only when the device's data-volume identity still matches the proof.
+  Two UI erases can run at once. Shutdown, erase, and boot no longer hold the
+  broker mutation lock.
+- Registry sync does not mark every alias `repair-needed` when `simctl list
+  runtimes` comes back empty, or while a UI prepare or lease is in progress.
+  A new `simulator.unhealthy` event records `driftReason` when an alias does
+  become `repair-needed`.
+- State reloads after an unlocked erase, and after a reset-lock wait, use a
+  fresh observation time, so a lease opened during that wait is not treated
+  as a dead owner. Acquire
+  fails with `lease-lost` instead of returning a lease that was released
+  during boot, and it leaves a newer lease in place. Manual UI boot,
+  shutdown, erase, and repair take the same per-alias reset lock. Repair
+  takes the capacity lock before that alias lock. Service shutdown waits for
+  a background UI prepare to finish. A reset-capacity slot whose owner pid
+  was reused does not stay live when the caller does not pass a process
+  sampler.
+- Acquire skips a UI alias that is erasing or booting. A reset-lock
+  timeout before `simctl` drops only the claimed lease and returns
+  `reset-lock-timeout` instead of latching `repair-needed`. The default wait
+  covers shutdown, erase, and `bootstatus`. Delete of a UI alias waits on
+  that alias's reset lock and is refused while prepare is in progress.
+  Confirmed idle cleanup records `simulator.unhealthy` when sync marks an
+  alias `repair-needed`.
+- Acquire throws `lease-lost` before erasing a UI alias whose lease was
+  replaced during the reset wait. A mutation-lock timeout before `simctl`
+  drops only the claimed lease. Publishing a successful boot uses the
+  reset-holder wait and does not latch `repair-needed` if that wait ends.
+  A prepare left `erasing` or `booting` by a dead owner is failed when its
+  alias reset lock is free. Purpose delete takes that lock and counts
+  `alias-busy` as held. The service acquire budget counts four state loads
+  and two data-identity device lists.
+- A timeout while publishing a booted UI lease, or while recording
+  `lease.acquired`, drops only that lease and leaves health unchanged. The
+  error includes a lease id only when that drop fails. The reset-holder wait
+  covers shutdown, erase, boot, `bootstatus`, and the identity list. The
+  boot publish runs after the alias reset lock is released. The service
+  acquire budget includes each sequential lock wait. A reused prepare-owner
+  pid does not keep an `erasing` or `booting` alias unselectable once its
+  reset lock is free.
+
 ## [0.1.0-alpha.15] - 2026-11-07
 
 Alpha 15 keeps the Alpha 14 install and four-custom-asset contract. Capacity
