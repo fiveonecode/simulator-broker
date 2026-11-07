@@ -4104,7 +4104,7 @@ test("service lease acquire timeout includes reset and boot-on-acquire budgets",
     command: "acquire",
     group: "lease",
     options: {},
-  }), 1_425_250);
+  }), 1_725_250);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "acquire",
     group: "lease",

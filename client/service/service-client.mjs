@@ -9,7 +9,7 @@ import {
   STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS,
   leaseHasContainmentProcessMetadata,
 } from "../../broker-core/containment.mjs";
-import { BrokerError } from "../../broker-core/index.mjs";
+import { BrokerError, UI_RESET_HOLDER_WAIT_MS } from "../../broker-core/index.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS } from "../../broker-core/simctl.mjs";
 import { classifyReclaimSlot, resolveSlotReclaimPolicy } from "../../broker-core/slot-reclaim.mjs";
 
@@ -491,7 +491,7 @@ export function serviceCommandExecutionTimeoutMs(request, options = {}) {
       DEFAULT_COMMAND_TIMEOUT_MS,
       DEFAULT_COMMAND_TIMEOUT_MS
         + leaseLockTimeoutMs(request)
-        + positiveDurationMs(request?.options?.resetLockTimeoutMilliseconds, DEFAULT_LOCK_TIMEOUT_MS)
+        + positiveDurationMs(request?.options?.resetLockTimeoutMilliseconds, UI_RESET_HOLDER_WAIT_MS)
         + positiveDurationMs(request?.options?.resetSettleMilliseconds, DEFAULT_RESET_SETTLE_MS)
         + leaseAcquireResetSimctlBudgetMs(request, options)
         + snapshotLockBudgetMs

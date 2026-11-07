@@ -155,8 +155,9 @@ Current implementation slice:
   with `repair-interrupted` on the next load, including while a runtime list
   is empty. An existing `slot-reclaim-failed` reason is preserved across that
   synchronization. Synchronization never clears `repair-needed`. Entering
-  `repair-needed`, including the `repairing` transition, appends
-  `simulator.unhealthy` with `driftReason` and `driftCauseCode`.
+  `repair-needed`, including the `repairing` transition and a confirmed idle
+  cleanup sync, appends `simulator.unhealthy` with `driftReason` and
+  `driftCauseCode`.
   Only a successful repair returns the alias to `healthy`
 - reset-on-acquire coordination behind the per-alias reset lock and a
   two-slot reset-capacity limit, with rollback on reset failure. `simctl`
@@ -172,10 +173,20 @@ Current implementation slice:
   sampler when the caller does not supply one. A running `brokerd` may
   complete the erase and boot after release; acquire adopts that result only
   when the stored data-volume identity still matches the live device and the
-  proof names the previous lease. Before acquire records success, the lease
+  proof names the previous lease. Acquire skips an alias whose prepare state
+  is `erasing` or `booting`. A `queued` prepare has not started `simctl`, so
+  that alias stays selectable. The wait for a live reset holder
+  covers one shutdown, one erase, and one `bootstatus`, each at the simctl
+  command cap, unless the caller passes a shorter reset-lock timeout. If that
+  wait ends before this acquire calls `simctl`, acquire drops only the claimed
+  lease, leaves prepare, health, and the clean proof in place, and returns
+  `reset-lock-timeout` (exit `3`). Before acquire records success, the lease
   file must still exist and `activeLeaseId` must still name that lease.
   Otherwise acquire fails with `lease-lost` (exit `3`) and does not clear a
-  newer lease or mark the alias `repair-needed`
+  newer lease or mark the alias `repair-needed`. Delete of an
+  `erase-on-acquire` alias takes that alias's reset lock after the capacity
+  lock and is refused with `alias-busy` while prepare is `queued`, `erasing`,
+  or `booting`
 - boot-on-acquire with lease rollback and `repair-needed`
   (`boot-on-acquire-failed`) when boot fails. The real `simctl` adapter treats
   a boot result whose text says the device is already `Booted` or `Booting`

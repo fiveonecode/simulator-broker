@@ -7032,11 +7032,17 @@ test("reset lock timeout preserves a live owner lock", () => {
       resetLockTimeoutMilliseconds: 1,
       simctlAdapter: paths.simctl.adapter,
     });
-  }, (error) => error.payload?.reasonCode === "reset-on-acquire-failed");
+  }, (error) => error.payload?.reasonCode === "reset-lock-timeout" && error.exitCode === 3);
 
   assert.equal(fs.existsSync(aliasLockOwnerPath), true);
   assert.equal(readJson(aliasLockOwnerPath).pid, process.pid);
   assert.equal(fs.readdirSync(path.join(paths.stateRoot, "leases")).length, 0);
+  const registry = readJson(resolvedPaths.registryPath);
+  assert.equal(registry.aliases["ui-1"].health, "healthy");
+  assert.equal(registry.aliases["ui-1"].activeLeaseId, null);
+  assert.equal(registry.aliases["ui-1"].driftReason ?? null, null);
+  assert.equal(registry.aliases["ui-1"].prepare ?? null, null);
+  assert.equal(registry.aliases["ui-1"].cleanProof ?? null, null);
 });
 
 test("project init scaffolds a starter project file and records it for later app snapshots", () => {

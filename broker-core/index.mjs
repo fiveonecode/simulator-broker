@@ -86,6 +86,8 @@ const SETUP_MAX_SIMCTL_COMMANDS_UNDER_CAPACITY_LOCK = 30;
 const SETUP_CAPACITY_LOCK_TIMEOUT_MS =
   (SETUP_MAX_SIMCTL_COMMANDS_UNDER_CAPACITY_LOCK * SIMCTL_COMMAND_TIMEOUT_MS)
   + DEFAULT_LOCK_TIMEOUT_MS;
+// A live UI prepare may still be inside shutdown, erase, and bootstatus.
+export const UI_RESET_HOLDER_WAIT_MS = 3 * SIMCTL_COMMAND_TIMEOUT_MS;
 const CAPACITY_RESET_POLICY_BY_CAPABILITY = Object.freeze({
   "automation-resettable": "erase-on-acquire",
   "build-clean": "erase-on-acquire",
@@ -3491,6 +3493,11 @@ function buildCandidateAnalysis({ hostConfig, registry, leasesByAlias, pinsByAli
         health: registryEntry.health,
       }));
     }
+    if (registryEntry.prepare?.state === "erasing" || registryEntry.prepare?.state === "booting") {
+      reasons.push(serializeCause("prepare-in-progress", {
+        prepareState: registryEntry.prepare.state,
+      }));
+    }
 
     return {
       alias: hostAlias.alias,
@@ -6367,7 +6374,12 @@ export function cleanupIdleBroker(paths, options = {}) {
       ...state,
       registry: normalizeRegistry(readJsonIfExists(paths.registryPath), state.hostConfig, timestamp),
     };
+    const healthBeforeSync = new Map(persistState.hostConfig.aliases.map((hostAlias) => [
+      hostAlias.alias,
+      persistState.registry.aliases[hostAlias.alias]?.health ?? null,
+    ]));
     syncRegistryWithSimctl(persistState.hostConfig, persistState.registry, stateLoadOptions(options, timestamp));
+    recordFreshUnhealthy(paths, persistState.hostConfig, persistState.registry, healthBeforeSync, timestamp);
     const result = performIdleShutdowns(paths, persistState, plan.candidates, {
       ...options,
       actorId,
@@ -7838,6 +7850,19 @@ function rollbackAcquireLeaseFailureSafe(paths, state, leaseRecord, timestamp, r
   }
 }
 
+function releaseClaimedLeaseWithoutRepair(paths, state, leaseRecord, timestamp) {
+  const registryEntry = state.registry.aliases[leaseRecord.alias];
+  if (registryEntry?.activeLeaseId === leaseRecord.leaseId) {
+    registryEntry.activeLeaseId = null;
+    registryEntry.updatedAt = timestamp;
+    state.registry.updatedAt = timestamp;
+    writeRegistry(paths, state.registry);
+  }
+  if (fs.existsSync(getLeaseFilePath(paths, leaseRecord.leaseId))) {
+    removeLeaseRecordFiles(paths, leaseRecord);
+  }
+}
+
 function maybeResetLeaseOnAcquire(paths, state, leaseRecord, options = {}) {
   if (leaseRecord.resetPolicy !== "erase-on-acquire") {
     return;
@@ -7924,6 +7949,10 @@ function isLeaseLostError(error) {
   return error instanceof BrokerError && error.payload?.reasonCode === "lease-lost";
 }
 
+function isResetLockTimeoutError(error) {
+  return error instanceof BrokerError && error.payload?.reasonCode === "reset-lock-timeout";
+}
+
 function proofMatchesLease(entry, leaseRecord, previousLeaseId, identity) {
   const proof = entry?.cleanProof;
   if (!proof || !identity || proof.dataIdentity !== identity || proof.simulatorId !== leaseRecord.simulatorId) {
@@ -7998,7 +8027,9 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
   const simctl = resolveSimctlAdapter(options);
   const locks = {
     ...acquireLockOptions(leaseRecord, options),
-    timeoutMs: options.resetLockTimeoutMilliseconds ?? options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+    timeoutMs: options.resetLockTimeoutMilliseconds
+      ?? options.leaseLockTimeoutMilliseconds
+      ?? UI_RESET_HOLDER_WAIT_MS,
   };
   let stage = "reset";
   try {
@@ -8047,7 +8078,7 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
       }, locks);
     }, locks);
   } catch (error) {
-    if (isLeaseLostError(error) || (error instanceof BrokerError && (
+    if (isLeaseLostError(error) || isResetLockTimeoutError(error) || (error instanceof BrokerError && (
       error.payload?.reasonCode === "reset-on-acquire-failed"
       || error.payload?.reasonCode === "boot-on-acquire-failed"
     ))) {
@@ -8242,6 +8273,36 @@ export function acquireLeaseBroker(paths, options = {}) {
       maybeBootLeaseOnAcquire(paths, null, claimed.leaseRecord, options);
     }
   } catch (error) {
+    if (isResetLockTimeoutError(error)) {
+      let rollbackError = null;
+      try {
+        rollbackError = withLeaseMutationLock(paths, () => {
+          const state = loadBrokerState(paths, freshLeaseStateLoadOptions(claimed.leaseRecord, options));
+          try {
+            releaseClaimedLeaseWithoutRepair(paths, state, claimed.leaseRecord, claimed.timestamp);
+            return null;
+          } catch (releaseError) {
+            return releaseError;
+          }
+        }, {
+          now: claimed.timestamp,
+          processExists: options.processExists,
+          processSampler: options.processSampler,
+          timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
+        });
+      } catch (rollbackLoadError) {
+        rollbackError = rollbackLoadError;
+      }
+      if (rollbackError) {
+        throw new BrokerError(error.message, {
+          ...(error.payload ?? {}),
+          reasonCode: "reset-lock-timeout",
+          rollbackCause: rollbackError?.message ?? String(rollbackError),
+          rollbackFailed: true,
+        });
+      }
+      throw error;
+    }
     if (isLeaseLostError(error) || (error instanceof BrokerError && (
       error.payload?.reasonCode === "reset-on-acquire-failed"
       || error.payload?.reasonCode === "boot-on-acquire-failed"
@@ -9432,6 +9493,13 @@ function deleteAliasUnderHeldLocks(paths, state, options, timestamp) {
     };
   }
   const registryEntry = state.registry.aliases[hostAlias.alias];
+  if (prepareInProgress(registryEntry)) {
+    throw new BrokerError(`Alias ${hostAlias.alias} is being prepared and cannot be deleted.`, {
+      alias: hostAlias.alias,
+      prepareState: registryEntry.prepare?.state ?? null,
+      reasonCode: "alias-busy",
+    });
+  }
   if (registryEntry?.health === "repairing") {
     throw new BrokerError(`Alias ${hostAlias.alias} is already repairing.`, {
       alias: hostAlias.alias,
@@ -9497,21 +9565,34 @@ export function deleteSimulatorBroker(paths, options = {}) {
   const actor = resolveDeleteActor(options);
   const alias = requireString(options.alias, "alias");
   const lockTimestamp = nowIso(options.now);
-  const detail = withCapacityLock(paths, () => withLeaseMutationLock(paths, () => {
-    const timestamp = nowIso(options.now);
-    const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
-    return deleteAliasUnderHeldLocks(paths, state, {
-      ...options,
-      actorId: actor.actorId,
-      actorType: actor.actorType,
-      alias,
-    }, timestamp);
-  }, {
+  const mutationLockOptions = {
     now: lockTimestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,
     timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
-  }), {
+  };
+  const detail = withCapacityLock(paths, () => {
+    const preparing = withLeaseMutationLock(paths, () => {
+      const state = loadBrokerState(paths, stateLoadOptions(options, nowIso(options.now)));
+      return prepareInProgress(state.registry.aliases[alias]);
+    }, mutationLockOptions);
+    if (preparing) {
+      throw new BrokerError(`Alias ${alias} is being prepared and cannot be deleted.`, {
+        alias,
+        reasonCode: "alias-busy",
+      });
+    }
+    return withEraseOnAcquireResetLock(paths, { ...options, alias }, lockTimestamp, () => withLeaseMutationLock(paths, () => {
+      const timestamp = nowIso(options.now);
+      const state = loadBrokerState(paths, stateLoadOptions(options, timestamp));
+      return deleteAliasUnderHeldLocks(paths, state, {
+        ...options,
+        actorId: actor.actorId,
+        actorType: actor.actorType,
+        alias,
+      }, timestamp);
+    }, mutationLockOptions));
+  }, {
     now: lockTimestamp,
     processExists: options.processExists,
     processSampler: options.processSampler,

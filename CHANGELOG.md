@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a background UI prepare to finish. A reset-capacity slot whose owner pid
   was reused does not stay live when the caller does not pass a process
   sampler.
+- Acquire skips a UI alias that is erasing or booting. A reset-lock
+  timeout before `simctl` drops only the claimed lease and returns
+  `reset-lock-timeout` instead of latching `repair-needed`. The default wait
+  covers shutdown, erase, and `bootstatus`. Delete of a UI alias waits on
+  that alias's reset lock and is refused while prepare is in progress.
+  Confirmed idle cleanup records `simulator.unhealthy` when sync marks an
+  alias `repair-needed`.
 
 ## [0.1.0-alpha.15] - 2026-11-07
 

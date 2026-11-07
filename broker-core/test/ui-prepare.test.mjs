@@ -7,6 +7,9 @@ import path from "node:path";
 import {
   BrokerError,
   acquireLeaseBroker,
+  cleanupIdleBroker,
+  deleteSimulatorBroker,
+  enableIdlePolicyBroker,
   eraseSimulatorBroker,
   hostStatusBroker,
   initBroker,
@@ -430,6 +433,75 @@ test("a lease opened while prepare waits for reset capacity stays live", () => {
   assert.equal(fs.existsSync(path.join(fixture.paths.stateRoot, "leases", `${survivorId}.json`)), true);
   const registry = readJson(path.join(fixture.paths.stateRoot, "registry.json"));
   assert.equal(registry.aliases["ui-2"].activeLeaseId, survivorId);
+});
+
+test("acquire skips an alias that prepare is still erasing", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const registry = readJson(registryPath);
+  registry.aliases["ui-1"].powerState = "booted";
+  registry.aliases["ui-1"].prepare = {
+    ownerPid: process.pid,
+    state: "erasing",
+    token: "prepare-token",
+  };
+  writeJson(registryPath, registry);
+
+  const lease = acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+    actorId: "agent-a",
+    actorType: "agent",
+    purposeId: "agent-ui-session",
+  })).lease;
+
+  assert.equal(lease.alias, "ui-2");
+  const after = readJson(registryPath);
+  assert.equal(after.aliases["ui-1"].prepare.state, "erasing");
+  assert.equal(after.aliases["ui-1"].health, "healthy");
+  assert.equal(after.aliases["ui-1"].activeLeaseId, null);
+});
+
+test("delete is refused while UI prepare is erasing", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const registry = readJson(registryPath);
+  registry.aliases["ui-1"].prepare = {
+    ownerPid: process.pid,
+    state: "erasing",
+    token: "prepare-token",
+  };
+  writeJson(registryPath, registry);
+
+  assert.throws(() => {
+    deleteSimulatorBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+      alias: "ui-1",
+    }));
+  }, (error) => error instanceof BrokerError && error.payload?.reasonCode === "alias-busy" && error.exitCode === 3);
+  assert.equal(fixture.calls.length, 0);
+  assert.equal(readJson(registryPath).aliases["ui-1"].prepare.state, "erasing");
+});
+
+test("confirmed idle cleanup records simulator.unhealthy when sync finds a missing device", () => {
+  const fixture = makeFixture();
+  enableIdlePolicyBroker(fixture.resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    graceSeconds: 60,
+  });
+  const simctlState = readJson(fixture.paths.simctl.statePath);
+  simctlState.devices = simctlState.devices.filter((device) => device.udid !== "SIM-UI-1");
+  writeJson(fixture.paths.simctl.statePath, simctlState);
+  const preview = cleanupIdleBroker(fixture.resolvedPaths, runtimeOptions(fixture));
+  cleanupIdleBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+    actorId: "operator",
+    actorType: "human",
+    apply: true,
+    confirmPlanId: preview.planId,
+  }));
+  const registry = readJson(path.join(fixture.paths.stateRoot, "registry.json"));
+  assert.equal(registry.aliases["ui-1"].health, "repair-needed");
+  assert.equal(registry.aliases["ui-1"].driftReason, "simulator-missing");
+  const events = readEventsBroker(fixture.resolvedPaths, {}).events.filter((event) => event.type === "simulator.unhealthy");
+  assert.equal(events.some((event) => event.alias === "ui-1" && event.payload.driftReason === "simulator-missing"), true);
 });
 
 test("manual UI erase and repair wait on the alias reset lock", () => {
