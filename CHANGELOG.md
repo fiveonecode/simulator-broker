@@ -29,6 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was reused does not stay live when the caller does not pass a process
   sampler.
 
+## [0.1.0-alpha.15] - 2026-11-07
+
+Alpha 15 keeps the Alpha 14 install and four-custom-asset contract. Capacity
+reconcile keeps a runtime only when it has a complete device type for the
+requested family.
+
+### Fixed
+
+- Capacity reconcile skips a runtime that matches the requested iOS version
+  but has no complete device type for the requested family. A record that
+  omits a non-empty identifier or name does not qualify. Equal versions follow
+  the setup runtime order. The blocked result stays in the exit-0 report.
+
 ## [0.1.0-alpha.14] - 2026-11-02
 
 Alpha 14 keeps the Alpha 13 install and four-custom-asset contract. The
