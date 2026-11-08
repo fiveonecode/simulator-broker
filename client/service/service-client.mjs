@@ -9,7 +9,7 @@ import {
   STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS,
   leaseHasContainmentProcessMetadata,
 } from "../../broker-core/containment.mjs";
-import { BrokerError, UI_ACQUIRE_LOCK_WAITS, UI_RESET_HOLDER_WAIT_MS } from "../../broker-core/index.mjs";
+import { BrokerError, UI_ACQUIRE_LOCK_WAITS, UI_RESET_HOLDER_WAIT_MS, uiPrepareAliasBudgetMs } from "../../broker-core/index.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS } from "../../broker-core/simctl.mjs";
 import { classifyReclaimSlot, resolveSlotReclaimPolicy } from "../../broker-core/slot-reclaim.mjs";
 
@@ -147,6 +147,12 @@ function hostBootstrapRetirementCountFromPaths(paths) {
 function hostAliasCountFromPaths(paths, fallback = HOST_BOOTSTRAP_ALIAS_COUNT) {
   const hostConfig = readJsonIfPresent(paths?.hostConfigPath);
   return Array.isArray(hostConfig?.aliases) ? hostConfig.aliases.length : fallback;
+}
+
+function eraseOnAcquireAliasCountFromPaths(paths) {
+  const hostConfig = readJsonIfPresent(paths?.hostConfigPath);
+  const aliases = Array.isArray(hostConfig?.aliases) ? hostConfig.aliases : [];
+  return aliases.filter((alias) => alias?.resetPolicy === "erase-on-acquire").length;
 }
 
 function enabledSlotReclaimCandidateCount(paths) {
@@ -590,7 +596,9 @@ export function serviceStopTimeoutMs(paths, response = {}) {
     command: "reconcile",
     group: "idle",
     options: {},
-  }, { paths }) + (response?.activeCommandDrainTimeoutMilliseconds ?? 0);
+  }, { paths })
+    + (response?.activeCommandDrainTimeoutMilliseconds ?? 0)
+    + (eraseOnAcquireAliasCountFromPaths(paths) * uiPrepareAliasBudgetMs());
 }
 
 export function serviceStartupTimeoutMs(options = {}) {

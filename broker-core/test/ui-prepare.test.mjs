@@ -172,6 +172,7 @@ test("an empty runtime list does not latch repair-needed during UI prepare", () 
   registry.aliases[lease.alias].prepare.ownerPid = process.pid;
   registry.aliases[lease.alias].prepare.state = "erasing";
   writeJson(registryPath, registry);
+  holdAliasResetLock(fixture, lease.alias);
   const simctlState = readJson(fixture.paths.simctl.statePath);
   simctlState.runtimes = [];
   writeJson(fixture.paths.simctl.statePath, simctlState);
@@ -322,6 +323,13 @@ function writeLockOwner(dir, startedAt) {
     pid: process.pid,
     startedAt,
   });
+}
+
+function holdAliasResetLock(fixture, alias) {
+  writeLockOwner(
+    path.join(fixture.paths.stateRoot, "locks", "reset", `${alias}.lock`),
+    new Date().toISOString(),
+  );
 }
 
 test("a recycled reset-capacity owner does not keep the slot", () => {
@@ -536,6 +544,66 @@ test("a reused prepare owner pid does not keep the alias unusable", () => {
   assert.equal(readJson(registryPath).aliases["ui-1"].health, "healthy");
 });
 
+test("a live prepare pid does not keep the alias unusable after the reset lock is free", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const registry = readJson(registryPath);
+  registry.aliases["ui-1"].powerState = "booted";
+  registry.aliases["ui-1"].prepare = {
+    ownerPid: process.pid,
+    ownerStartedAt: new Date().toISOString(),
+    state: "erasing",
+    token: "live-prepare",
+  };
+  writeJson(registryPath, registry);
+
+  const lease = acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+    actorId: "agent-a",
+    actorType: "agent",
+    purposeId: "agent-ui-session",
+  })).lease;
+
+  assert.equal(lease.alias, "ui-1");
+  assert.equal(fixture.calls.some((call) => call[0] === "eraseDevice"), true);
+  const after = readJson(registryPath);
+  assert.equal(after.aliases["ui-1"].prepare ?? null, null);
+  assert.equal(after.aliases["ui-1"].health, "healthy");
+});
+
+test("an inventory failure before shutdown drops the lease without repair", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const before = readJson(registryPath).aliases["ui-1"];
+  const originalListDeviceTypes = fixture.adapter.listDeviceTypes.bind(fixture.adapter);
+  let thrown = false;
+  fixture.adapter.listDeviceTypes = () => {
+    const leaseExists = fs.readdirSync(fixture.resolvedPaths.leasesDir).some((name) => name.endsWith(".json"));
+    if (leaseExists && !thrown) {
+      thrown = true;
+      throw new Error("simctl list devicetypes timed out after 120000ms");
+    }
+    return originalListDeviceTypes();
+  };
+
+  assert.throws(() => {
+    acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+      actorId: "agent-a",
+      actorType: "agent",
+      purposeId: "agent-ui-session",
+    }));
+  }, (error) => error instanceof Error && /timed out/.test(error.message) && error.beforeDeviceMutation === true);
+
+  assert.equal(thrown, true);
+  assert.equal(fixture.calls.some((call) => call[0] === "shutdownDevice" || call[0] === "eraseDevice" || call[0] === "bootDevice"), false);
+  const after = readJson(registryPath).aliases["ui-1"];
+  assert.equal(after.health, before.health);
+  assert.equal(after.driftReason ?? null, before.driftReason ?? null);
+  assert.deepEqual(after.cleanProof ?? null, before.cleanProof ?? null);
+  assert.equal(after.prepare ?? null, before.prepare ?? null);
+  assert.equal(after.activeLeaseId, null);
+  assert.equal(fs.readdirSync(fixture.resolvedPaths.leasesDir).length, 0);
+});
+
 // The mutation lock polls every 150ms. A 400ms timeout fails on the third
 // poll. The fourth blocked mkdir is the follow-up drop, which must succeed.
 function blockNthNewLeaseLock(lockDir, ownerPath, nthNewDirectory, run) {
@@ -670,6 +738,7 @@ test("purpose delete counts a preparing UI alias as held", () => {
     token: "prepare-token",
   };
   writeJson(registryPath, registry);
+  holdAliasResetLock(fixture, "ui-1");
 
   assert.throws(() => {
     deletePurposeSimulatorsBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
@@ -696,6 +765,7 @@ test("acquire skips an alias that prepare is still erasing", () => {
     token: "prepare-token",
   };
   writeJson(registryPath, registry);
+  holdAliasResetLock(fixture, "ui-1");
 
   const lease = acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
     actorId: "agent-a",
@@ -720,6 +790,7 @@ test("delete is refused while UI prepare is erasing", () => {
     token: "prepare-token",
   };
   writeJson(registryPath, registry);
+  holdAliasResetLock(fixture, "ui-1");
 
   assert.throws(() => {
     deleteSimulatorBroker(fixture.resolvedPaths, runtimeOptions(fixture, {

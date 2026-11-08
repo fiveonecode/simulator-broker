@@ -24,7 +24,7 @@ import {
   PROCESS_SAMPLER_TIMEOUT_MS,
   STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS,
 } from "../../broker-core/containment.mjs";
-import { HOST_BOOTSTRAP_DEVICE_WARNING, readEventsBroker, resolveBrokerPaths } from "../../broker-core/index.mjs";
+import { HOST_BOOTSTRAP_DEVICE_WARNING, readEventsBroker, resolveBrokerPaths, uiPrepareAliasBudgetMs } from "../../broker-core/index.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS } from "../../broker-core/simctl.mjs";
 import { createDeviceRecord, createSimctlFixture } from "../../broker-core/test/support/simctl-fixture.mjs";
 
@@ -4104,7 +4104,7 @@ test("service lease acquire timeout includes reset and boot-on-acquire budgets",
     command: "acquire",
     group: "lease",
     options: {},
-  }), 5_345_250);
+  }), 8_345_250);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "acquire",
     group: "lease",
@@ -4156,7 +4156,9 @@ test("service stop timeout adds serialized command drain and idle reconciliation
 
   assert.equal(
     serviceStopTimeoutMs(paths, { activeCommandDrainTimeoutMilliseconds }),
-    idleReconciliationBudgetMilliseconds + activeCommandDrainTimeoutMilliseconds,
+    idleReconciliationBudgetMilliseconds
+      + activeCommandDrainTimeoutMilliseconds
+      + (2 * uiPrepareAliasBudgetMs()),
   );
 });
 

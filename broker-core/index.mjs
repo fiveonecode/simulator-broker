@@ -11,6 +11,7 @@ import {
   isSupportedContainmentReason,
   leaseHasContainmentProcessMetadata,
   mergeLeaseRuntimeMetadata,
+  PROCESS_SAMPLER_TIMEOUT_MS,
 } from "./containment.mjs";
 import { resolveBrokerExitCode } from "./error-contract.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS, createDeviceIndex, resolveSimctlAdapter } from "./simctl.mjs";
@@ -86,10 +87,40 @@ const SETUP_MAX_SIMCTL_COMMANDS_UNDER_CAPACITY_LOCK = 30;
 const SETUP_CAPACITY_LOCK_TIMEOUT_MS =
   (SETUP_MAX_SIMCTL_COMMANDS_UNDER_CAPACITY_LOCK * SIMCTL_COMMAND_TIMEOUT_MS)
   + DEFAULT_LOCK_TIMEOUT_MS;
-// Shutdown, erase, boot, bootstatus, and the post-boot identity list.
-export const UI_RESET_HOLDER_WAIT_MS = 5 * SIMCTL_COMMAND_TIMEOUT_MS;
+// Every simctl command an acquire holds inside the alias reset lock.
+export const UI_RESET_DECISION_INVENTORY_COMMANDS = 3;
+export const UI_RESET_PRE_SIMCTL_IDENTITY_LISTS = 1;
+export const UI_RESET_SHUTDOWN_COMMANDS = 2;
+export const UI_RESET_ERASE_COMMANDS = 1;
+export const UI_RESET_BOOT_COMMANDS = 2;
+export const UI_RESET_POST_BOOT_IDENTITY_LISTS = 1;
+export const UI_RESET_HOLDER_SIMCTL_COMMANDS = UI_RESET_DECISION_INVENTORY_COMMANDS
+  + UI_RESET_PRE_SIMCTL_IDENTITY_LISTS
+  + UI_RESET_SHUTDOWN_COMMANDS
+  + UI_RESET_ERASE_COMMANDS
+  + UI_RESET_BOOT_COMMANDS
+  + UI_RESET_POST_BOOT_IDENTITY_LISTS;
+export const UI_RESET_HOLDER_WAIT_MS = UI_RESET_HOLDER_SIMCTL_COMMANDS * SIMCTL_COMMAND_TIMEOUT_MS;
 // Capacity, alias lock, decision mutation lock, boot publish, and lease.acquired.
 export const UI_ACQUIRE_LOCK_WAITS = 5;
+export const UI_PREPARE_STATE_LOADS_PER_ALIAS = 2;
+export const UI_PREPARE_LOCK_WAITS_PER_ALIAS = 4;
+export const UI_PREPARE_SIMCTL_COMMANDS_PER_ALIAS = (UI_PREPARE_STATE_LOADS_PER_ALIAS * UI_RESET_DECISION_INVENTORY_COMMANDS)
+  + UI_RESET_SHUTDOWN_COMMANDS
+  + UI_RESET_ERASE_COMMANDS
+  + UI_RESET_BOOT_COMMANDS
+  + UI_RESET_POST_BOOT_IDENTITY_LISTS;
+
+export function uiPrepareAliasBudgetMs({
+  lockTimeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
+  processSamplerTimeoutMs = PROCESS_SAMPLER_TIMEOUT_MS,
+  settleMs = DEFAULT_RESET_SETTLE_MS,
+} = {}) {
+  return (UI_PREPARE_LOCK_WAITS_PER_ALIAS * lockTimeoutMs)
+    + (UI_PREPARE_STATE_LOADS_PER_ALIAS * processSamplerTimeoutMs)
+    + (UI_PREPARE_SIMCTL_COMMANDS_PER_ALIAS * SIMCTL_COMMAND_TIMEOUT_MS)
+    + settleMs;
+}
 const CAPACITY_RESET_POLICY_BY_CAPABILITY = Object.freeze({
   "automation-resettable": "erase-on-acquire",
   "build-clean": "erase-on-acquire",
@@ -5207,15 +5238,7 @@ function failDeadPrepareOwners(paths, hostConfig, registry, processExists, proce
       continue;
     }
     const sampler = processSampler ?? (processExists === defaultProcessExists ? defaultProcessSampler : null);
-    const ownerLive = lockOwnerProcessIsLive({
-      pid: entry.prepare.ownerPid,
-      startedAt: entry.prepare.ownerStartedAt,
-    }, {
-      observedAt: new Date(),
-      processExists,
-      processSampler: sampler,
-    });
-    if (ownerLive || aliasResetLockIsHeld(paths, hostAlias.alias, processExists, sampler)) {
+    if (aliasResetLockIsHeld(paths, hostAlias.alias, processExists, sampler)) {
       continue;
     }
     entry.prepare = {
@@ -8026,6 +8049,20 @@ function preSimctlWaitError(error) {
   return isResetLockTimeoutError(error) || isAliasBusyError(error);
 }
 
+function markBeforeDeviceMutation(error) {
+  if (error && typeof error === "object") {
+    error.beforeDeviceMutation = true;
+    return error;
+  }
+  const wrapped = new Error(String(error));
+  wrapped.beforeDeviceMutation = true;
+  return wrapped;
+}
+
+function isBeforeDeviceMutationError(error) {
+  return error?.beforeDeviceMutation === true;
+}
+
 function releaseClaimAfterLockWait(paths, claimed, options, error) {
   let rollbackError = null;
   try {
@@ -8133,6 +8170,7 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
       ?? UI_RESET_HOLDER_WAIT_MS,
   };
   let stage = "reset";
+  let deviceCommandStarted = false;
   let publish = null;
   try {
     withResetCapacity(paths, () => {
@@ -8157,14 +8195,17 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
         if (decision.action === "wait") {
           stage = "boot";
           if (typeof simctl.waitForBooted === "function") {
+            deviceCommandStarted = true;
             simctl.waitForBooted(leaseRecord.simulatorId);
           }
         } else if (decision.action === "boot") {
           stage = "boot";
+          deviceCommandStarted = true;
           simctl.bootDevice(leaseRecord.simulatorId);
           booted = true;
         } else {
           stage = "reset";
+          deviceCommandStarted = true;
           simctl.shutdownDevice(leaseRecord.simulatorId);
           simctl.eraseDevice(leaseRecord.simulatorId);
           sleepSync(options.resetSettleMilliseconds ?? DEFAULT_RESET_SETTLE_MS);
@@ -8192,6 +8233,9 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
       || error.payload?.reasonCode === "boot-on-acquire-failed"
     ))) {
       throw error;
+    }
+    if (!deviceCommandStarted) {
+      throw markBeforeDeviceMutation(error);
     }
     const reasonCode = stage === "boot" ? "boot-on-acquire-failed" : "reset-on-acquire-failed";
     let rollbackError = null;
@@ -8226,14 +8270,25 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
 function maybeBootLeaseOnAcquire(paths, _state, leaseRecord, options = {}) {
   const simctl = resolveSimctlAdapter(options);
   const locks = acquireLockOptions(leaseRecord, options);
-  const powerState = withLeaseMutationLock(paths, () => {
-    const state = loadBrokerState(paths, freshLeaseStateLoadOptions(leaseRecord, options));
-    return state.registry.aliases[leaseRecord.alias]?.powerState ?? "shutdown";
-  }, locks);
-  if (powerState !== "booted") {
-    simctl.bootDevice(leaseRecord.simulatorId);
-  } else if (typeof simctl.waitForBooted === "function") {
-    simctl.waitForBooted(leaseRecord.simulatorId);
+  let deviceCommandStarted = false;
+  let powerState;
+  try {
+    powerState = withLeaseMutationLock(paths, () => {
+      const state = loadBrokerState(paths, freshLeaseStateLoadOptions(leaseRecord, options));
+      return state.registry.aliases[leaseRecord.alias]?.powerState ?? "shutdown";
+    }, locks);
+    if (powerState !== "booted") {
+      deviceCommandStarted = true;
+      simctl.bootDevice(leaseRecord.simulatorId);
+    } else if (typeof simctl.waitForBooted === "function") {
+      deviceCommandStarted = true;
+      simctl.waitForBooted(leaseRecord.simulatorId);
+    }
+  } catch (error) {
+    if (!deviceCommandStarted) {
+      throw markBeforeDeviceMutation(error);
+    }
+    throw error;
   }
   if (powerState === "booted") {
     return false;
@@ -8382,7 +8437,7 @@ export function acquireLeaseBroker(paths, options = {}) {
       maybeBootLeaseOnAcquire(paths, null, claimed.leaseRecord, options);
     }
   } catch (error) {
-    if (preSimctlWaitError(error)) {
+    if (preSimctlWaitError(error) || isBeforeDeviceMutationError(error)) {
       releaseClaimAfterLockWait(paths, claimed, options, error);
     }
     if (isLeaseLostError(error) || (error instanceof BrokerError && (

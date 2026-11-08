@@ -51,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   acquire budget includes each sequential lock wait. A reused prepare-owner
   pid does not keep an `erasing` or `booting` alias unselectable once its
   reset lock is free.
+- The alias-lock wait and the service acquire and stop budgets share one
+  list of the `simctl` commands inside that lock, including the decision
+  inventory, both identity lists, and shutdown's `Shutting Down` wait.
+  A decision-reload failure before shutdown, erase, or boot drops only the
+  claimed lease. A failure after those calls have started still marks the
+  alias `repair-needed`. An `erasing` or `booting` prepare whose alias reset
+  lock is free is marked `failed` on the next state load even when its
+  recorded pid is still alive.
 
 ## [0.1.0-alpha.15] - 2026-11-07
 
