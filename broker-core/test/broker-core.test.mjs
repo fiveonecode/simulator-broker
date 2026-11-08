@@ -7586,6 +7586,39 @@ test("stale lease recovery restarts grace and reuses the reclaimed warm alias", 
   assert.ok(events.some((event) => event.type === "lease.reclaimed" && event.leaseId === staleLease.leaseId));
 });
 
+test("manual boot-on-acquire holds the mutation lock during simctl", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  let sawLock = false;
+  const adapter = {
+    ...paths.simctl.adapter,
+    bootDevice(simulatorId) {
+      sawLock = fs.existsSync(resolvedPaths.leaseLockDir);
+      return paths.simctl.adapter.bootDevice(simulatorId);
+    },
+    waitForBooted(simulatorId) {
+      sawLock = fs.existsSync(resolvedPaths.leaseLockDir);
+      return paths.simctl.adapter.waitForBooted(simulatorId);
+    },
+  };
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "manual-testing",
+    simctlAdapter: adapter,
+  }).lease;
+
+  assert.equal(lease.alias, "manual-1");
+  assert.equal(sawLock, true);
+  assert.equal(fs.existsSync(resolvedPaths.leaseLockDir), false);
+});
+
 test("acquire marks an alias repair-needed and rolls back when boot fails", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);

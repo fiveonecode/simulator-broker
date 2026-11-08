@@ -59,6 +59,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alias `repair-needed`. An `erasing` or `booting` prepare whose alias reset
   lock is free is marked `failed` on the next state load even when its
   recorded pid is still alive.
+- Registry sync latches a `queued` prepare when its device is missing,
+  unavailable, or mismatched. Build and manual boot-on-acquire hold the
+  mutation lock across boot. The alias-lock wait adds one nested
+  mutation-lock wait and no longer follows the lease-lock timeout. Purpose
+  delete counts `reset-lock-timeout` as held and waits that alias-lock budget.
 
 ## [0.1.0-alpha.15] - 2026-11-07
 

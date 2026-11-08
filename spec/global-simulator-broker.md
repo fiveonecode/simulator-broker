@@ -175,7 +175,12 @@ Current implementation slice:
   when the stored data-volume identity still matches the live device and the
   proof names the previous lease. Acquire skips an alias whose prepare state
   is `erasing` or `booting`. A `queued` prepare has not started `simctl`, so
-  that alias stays selectable. Prepare records the owner start time. An
+  that alias stays selectable while its device is present. Registry sync skips
+  the missing-device and mismatch latch only for `erasing` and `booting`. A
+  `queued` prepare is latched `repair-needed` when the runtime list is usable
+  and the device is missing, unavailable, or mismatched, and its power state
+  becomes `shutdown` when the device is absent. Prepare records the owner start
+  time. An
   `erasing` or `booting` prepare whose alias reset lock is free or stale is
   marked `failed` on the next state load, including when the recorded pid is
   still alive, so acquire can erase that alias. The decision reload throws
@@ -185,7 +190,10 @@ Current implementation slice:
   lock: the decision inventory (device types, devices, and runtimes), the
   pre-simctl identity list, shutdown, the extra `Shutting Down` wait, erase,
   boot, `bootstatus`, and the post-boot identity list, each at the simctl
-  command cap, unless the caller passes a shorter reset-lock timeout.
+  command cap, plus one nested mutation-lock wait of the same length. A
+  caller shortens that wait only by passing a reset-lock timeout. The
+  lease-lock timeout stays on the claim mutation lock. Build and manual
+  boot-on-acquire hold the mutation lock across `boot` and `bootstatus`.
   Publishing the boot result waits on the mutation lock after that alias lock
   is released. If a reset-lock or mutation-lock wait ends before `simctl`, or
   while publishing the boot result or `lease.acquired`, or if the decision
@@ -202,11 +210,13 @@ Current implementation slice:
   `erase-on-acquire` alias takes that alias's reset lock after the capacity
   lock and is refused with `alias-busy` while prepare is `queued`, `erasing`,
   or `booting`. Purpose delete takes that same lock for each
-  `erase-on-acquire` alias and counts `alias-busy` as held. Service-backed
-  acquire reserves four broker state loads, two data-identity device lists,
-  and five sequential reset-holder waits. Each reset-holder wait uses the
-  alias-lock simctl budget above, in addition to this acquire's own shutdown,
-  erase, boot, and `bootstatus`
+  `erase-on-acquire` alias, waits the alias-lock budget unless the caller
+  passes a shorter reset-lock timeout, and counts both `alias-busy` and
+  `reset-lock-timeout` as held. Service-backed acquire reserves four broker
+  state loads, two data-identity device lists, and seven reset-holder waits:
+  capacity and the alias lock each include the nested mutation-lock wait, and
+  the decision, publish, and `lease.acquired` waits are one holder each, in
+  addition to this acquire's own shutdown, erase, boot, and `bootstatus`
 - boot-on-acquire with lease rollback and `repair-needed`
   (`boot-on-acquire-failed`) when boot fails. The real `simctl` adapter treats
   a boot result whose text says the device is already `Booted` or `Booting`
@@ -661,9 +671,13 @@ simbroker simulators delete \
 ```
 
 `--actor-type` and `--actor-id` are required. The command takes the capacity
-lock and then the lease lock once. Those locks are not reentrant, so purpose
+lock, plans matches under one lease lock, then drops that lease lock. For
+each planned `erase-on-acquire` alias it takes that alias's reset lock and
+then acquires the lease lock again. Other aliases acquire the lease lock
+again without the reset lock. Those locks are not reentrant, so purpose
 delete must call the shared inner alias function and must not call the public
-alias entrypoint or refresh the snapshot inside the lease lock.
+alias entrypoint or refresh the snapshot inside the lease lock. A
+`reset-lock-timeout` on an alias counts as held, the same as `alias-busy`.
 
 It visits structural matches in alias order. It deletes a match only when
 health is `repair-needed`, `driftCauseCode` is `runtime-not-found` or
@@ -774,7 +788,7 @@ same authority a human apply has.
 | SB-SIM-DELETE-002 | A device that is already absent skips `simctl` and still removes host-config and registry records. Purpose reasons include `simulator-missing` for that success. | `broker-core/test/broker-core.test.mjs` `alias delete removes records when the device is already gone`, `purpose delete reports a missing device and continues after one failure` |
 | SB-SIM-DELETE-003 | A shutdown or delete throw leaves the alias, sets `repair-needed`, stores `driftReason` and a known `driftCauseCode`, appends `simulator.delete.failed`, writes no `pendingRetirements`, and rethrows. A non-broker error is `simulator-action-failed`. The command uses `deleteAliasSimulator`. | `broker-core/test/broker-core.test.mjs` `alias delete keeps the alias when simctl delete fails` |
 | SB-SIM-DELETE-004 | A lease is `lease-conflict`, a pin is `pin-conflict`, and a still-`repairing` loaded entry is `alias-busy`. Each is exit `3` and HTTP `409`. Any pin holds. Persisted `repairing` is recovered and then deleted. | `broker-core/test/broker-core.test.mjs` `alias delete refuses a lease or pin and accepts healthy, drifted, and recovered repairing aliases`; `broker-core/test/error-contract.test.mjs` exit `3` and HTTP `409` for `lease-conflict`, `pin-conflict`, and `alias-busy` |
-| SB-SIM-DELETE-005 | Purpose delete removes only unleased, unpinned `repair-needed` matches whose cause is `runtime-not-found` or `device-type-not-found`, in alias order, under one lock pair. Other health values, other causes, leases, and pins stay. `repairing` is ignored. One failure does not skip later matches. The public alias entrypoint is not called. | `broker-core/test/broker-core.test.mjs` `purpose delete removes only unowned missing-runtime matches`, `purpose delete reports a missing device and continues after one failure` |
+| SB-SIM-DELETE-005 | Purpose delete removes only unleased, unpinned `repair-needed` matches whose cause is `runtime-not-found` or `device-type-not-found`, in alias order. It plans under the capacity lock and one lease lock, then re-acquires the lease lock per alias, with that alias's reset lock outside the lease lock for `erase-on-acquire`. `alias-busy` and `reset-lock-timeout` count as held. Other health values, other causes, leases, and pins stay. `repairing` is ignored. One failure does not skip later matches. The public alias entrypoint is not called. | `broker-core/test/broker-core.test.mjs` `purpose delete removes only unowned missing-runtime matches`, `purpose delete reports a missing device and continues after one failure`; `broker-core/test/ui-prepare.test.mjs` `purpose delete counts a reset-lock timeout as held` |
 | SB-SIM-DELETE-006 | Purpose JSON is schema version `1` with counts, status, and sorted reasons only. `deleted` and `nothing_to_delete` exit `0`. Any failure throws `purpose-delete-failed`. Held-only throws `human-override-required` with the same summary. | `broker-core/test/broker-core.test.mjs` `purpose delete removes only unowned missing-runtime matches`, `purpose delete stops for a human when every eligible match is held`, `purpose delete reports nothing to delete and rejects override selectors` |
 | SB-SIM-DELETE-007 | `purpose-delete-failed` is exit `4` and HTTP `423`. Held-only purpose delete is exit `5` and HTTP `412`. Mixed selectors, `--force-override`, and a bad actor type are exit `2` and HTTP `400`. | `broker-core/test/error-contract.test.mjs`; `client/test/simbroker.test.mjs` `purpose delete accepts agent and ci actors and rejects mixed selectors`; `broker-core/test/broker-core.test.mjs` `alias delete rejects force override and a purpose selector`, `purpose delete reports nothing to delete and rejects override selectors` |
 | SB-SIM-DELETE-008 | `driftCauseCode` survives registry normalization and is cleared only when a row returns to `healthy` or repair succeeds. Repair failure records a known reason code. Purpose repair publishes `runtime-not-found` or `device-type-not-found` beside `repair-failed` and still exits `4`. | `broker-core/test/broker-core.test.mjs` `purpose repair publishes runtime-not-found beside repair-failed`, `alias delete keeps the alias when simctl delete fails` |

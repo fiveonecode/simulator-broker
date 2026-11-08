@@ -101,8 +101,26 @@ export const UI_RESET_HOLDER_SIMCTL_COMMANDS = UI_RESET_DECISION_INVENTORY_COMMA
   + UI_RESET_BOOT_COMMANDS
   + UI_RESET_POST_BOOT_IDENTITY_LISTS;
 export const UI_RESET_HOLDER_WAIT_MS = UI_RESET_HOLDER_SIMCTL_COMMANDS * SIMCTL_COMMAND_TIMEOUT_MS;
-// Capacity, alias lock, decision mutation lock, boot publish, and lease.acquired.
-export const UI_ACQUIRE_LOCK_WAITS = 5;
+// Capacity and the alias lock each include one nested mutation-lock wait.
+export const UI_ACQUIRE_NESTED_LOCK_WAITS = 2;
+// Decision, boot publish, and lease.acquired.
+export const UI_ACQUIRE_MUTATION_LOCK_WAITS = 3;
+
+export function uiResetHolderWaitMs(options = {}) {
+  return options.resetLockTimeoutMilliseconds ?? UI_RESET_HOLDER_WAIT_MS;
+}
+
+export function uiAliasLockWaitMs(options = {}) {
+  const holderWait = uiResetHolderWaitMs(options);
+  return holderWait + holderWait;
+}
+
+export function uiAcquireLockBudgetMs(resetLockTimeoutMilliseconds) {
+  const parsed = Number(resetLockTimeoutMilliseconds);
+  const holderWait = Number.isFinite(parsed) && parsed > 0 ? parsed : UI_RESET_HOLDER_WAIT_MS;
+  return (UI_ACQUIRE_NESTED_LOCK_WAITS * (holderWait + holderWait))
+    + (UI_ACQUIRE_MUTATION_LOCK_WAITS * holderWait);
+}
 export const UI_PREPARE_STATE_LOADS_PER_ALIAS = 2;
 export const UI_PREPARE_LOCK_WAITS_PER_ALIAS = 4;
 export const UI_PREPARE_SIMCTL_COMMANDS_PER_ALIAS = (UI_PREPARE_STATE_LOADS_PER_ALIAS * UI_RESET_DECISION_INVENTORY_COMMANDS)
@@ -2604,7 +2622,10 @@ function runtimeInventoryUsable(inventory) {
 }
 
 function syncSkipsTransientHealth(registryEntry) {
-  return prepareInProgress(registryEntry) || typeof registryEntry?.activeLeaseId === "string";
+  const prepareState = registryEntry?.prepare?.state;
+  return prepareState === "erasing"
+    || prepareState === "booting"
+    || typeof registryEntry?.activeLeaseId === "string";
 }
 
 function syncRegistryWithSimctl(hostConfig, registry, options = {}) {
@@ -7983,9 +8004,7 @@ function uiPublishLockOptions(leaseRecord, options = {}) {
   }
   return {
     ...base,
-    timeoutMs: options.resetLockTimeoutMilliseconds
-      ?? options.leaseLockTimeoutMilliseconds
-      ?? UI_RESET_HOLDER_WAIT_MS,
+    timeoutMs: uiResetHolderWaitMs(options),
   };
 }
 
@@ -8163,11 +8182,18 @@ function publishBootedLease(paths, leaseRecord, options, {
 
 function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
   const simctl = resolveSimctlAdapter(options);
-  const locks = {
-    ...acquireLockOptions(leaseRecord, options),
-    timeoutMs: options.resetLockTimeoutMilliseconds
-      ?? options.leaseLockTimeoutMilliseconds
-      ?? UI_RESET_HOLDER_WAIT_MS,
+  const lockBase = {
+    now: leaseRecord?.startedAt ?? nowIso(options.now),
+    processExists: options.processExists,
+    processSampler: options.processSampler,
+  };
+  const aliasLocks = {
+    ...lockBase,
+    timeoutMs: uiAliasLockWaitMs(options),
+  };
+  const decisionLocks = {
+    ...lockBase,
+    timeoutMs: uiResetHolderWaitMs(options),
   };
   let stage = "reset";
   let deviceCommandStarted = false;
@@ -8190,7 +8216,7 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
             return { action: "wait", epoch: entry.cleanProof.epoch };
           }
           return { action: "boot", epoch: entry.cleanProof.epoch };
-        }, locks);
+        }, decisionLocks);
         let booted = false;
         if (decision.action === "wait") {
           stage = "boot";
@@ -8222,8 +8248,8 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
           epoch,
           previousLeaseId,
         };
-      }, locks);
-    }, locks);
+      }, aliasLocks);
+    }, aliasLocks);
     if (publish) {
       publishBootedLease(paths, leaseRecord, options, publish);
     }
@@ -8271,59 +8297,60 @@ function maybeBootLeaseOnAcquire(paths, _state, leaseRecord, options = {}) {
   const simctl = resolveSimctlAdapter(options);
   const locks = acquireLockOptions(leaseRecord, options);
   let deviceCommandStarted = false;
-  let powerState;
   try {
-    powerState = withLeaseMutationLock(paths, () => {
+    return withLeaseMutationLock(paths, () => {
       const state = loadBrokerState(paths, freshLeaseStateLoadOptions(leaseRecord, options));
-      return state.registry.aliases[leaseRecord.alias]?.powerState ?? "shutdown";
+      if (!leaseStillOwnsAlias(paths, state, leaseRecord)) {
+        abandonLostLeaseFile(paths, state, leaseRecord);
+        throw leaseLostError(leaseRecord);
+      }
+      const powerState = state.registry.aliases[leaseRecord.alias]?.powerState ?? "shutdown";
+      if (powerState !== "booted") {
+        deviceCommandStarted = true;
+        simctl.bootDevice(leaseRecord.simulatorId);
+      } else if (typeof simctl.waitForBooted === "function") {
+        deviceCommandStarted = true;
+        simctl.waitForBooted(leaseRecord.simulatorId);
+      }
+      if (powerState === "booted") {
+        return false;
+      }
+      const published = loadBrokerState(paths, freshLeaseStateLoadOptions(leaseRecord, options));
+      if (!leaseStillOwnsAlias(paths, published, leaseRecord)) {
+        abandonLostLeaseFile(paths, published, leaseRecord);
+        throw leaseLostError(leaseRecord);
+      }
+      const registryEntry = published.registry.aliases[leaseRecord.alias];
+      registryEntry.powerState = "booted";
+      registryEntry.health = "healthy";
+      registryEntry.driftReason = null;
+      registryEntry.driftCauseCode = null;
+      registryEntry.lastBootedAt = leaseRecord.startedAt;
+      registryEntry.updatedAt = leaseRecord.startedAt;
+      published.registry.updatedAt = leaseRecord.startedAt;
+      writeRegistry(paths, published.registry);
+      appendEventRecord(paths, "simulator.booted", {
+        alias: leaseRecord.alias,
+        actorType: leaseRecord.actorType,
+        jobId: leaseRecord.jobId,
+        leaseId: leaseRecord.leaseId,
+        payload: {
+          action: "boot",
+          actorId: leaseRecord.actorId,
+          implicitOnAcquire: true,
+          powerState: "booted",
+        },
+        projectId: leaseRecord.projectId,
+        purposeId: leaseRecord.purposeId,
+      }, leaseRecord.startedAt);
+      return true;
     }, locks);
-    if (powerState !== "booted") {
-      deviceCommandStarted = true;
-      simctl.bootDevice(leaseRecord.simulatorId);
-    } else if (typeof simctl.waitForBooted === "function") {
-      deviceCommandStarted = true;
-      simctl.waitForBooted(leaseRecord.simulatorId);
-    }
   } catch (error) {
     if (!deviceCommandStarted) {
       throw markBeforeDeviceMutation(error);
     }
     throw error;
   }
-  if (powerState === "booted") {
-    return false;
-  }
-  withLeaseMutationLock(paths, () => {
-    const state = loadBrokerState(paths, freshLeaseStateLoadOptions(leaseRecord, options));
-    if (!leaseStillOwnsAlias(paths, state, leaseRecord)) {
-      abandonLostLeaseFile(paths, state, leaseRecord);
-      throw leaseLostError(leaseRecord);
-    }
-    const registryEntry = state.registry.aliases[leaseRecord.alias];
-    registryEntry.powerState = "booted";
-    registryEntry.health = "healthy";
-    registryEntry.driftReason = null;
-    registryEntry.driftCauseCode = null;
-    registryEntry.lastBootedAt = leaseRecord.startedAt;
-    registryEntry.updatedAt = leaseRecord.startedAt;
-    state.registry.updatedAt = leaseRecord.startedAt;
-    writeRegistry(paths, state.registry);
-    appendEventRecord(paths, "simulator.booted", {
-      alias: leaseRecord.alias,
-      actorType: leaseRecord.actorType,
-      jobId: leaseRecord.jobId,
-      leaseId: leaseRecord.leaseId,
-      payload: {
-        action: "boot",
-        actorId: leaseRecord.actorId,
-        implicitOnAcquire: true,
-        powerState: "booted",
-      },
-      projectId: leaseRecord.projectId,
-      purposeId: leaseRecord.purposeId,
-    }, leaseRecord.startedAt);
-  }, locks);
-  return true;
 }
 
 export function acquireLeaseBroker(paths, options = {}) {
@@ -9840,7 +9867,11 @@ export function deletePurposeSimulatorsBroker(paths, options = {}) {
       }, mutationLockOptions);
       try {
         const detail = item.ui
-          ? withEraseOnAcquireResetLock(paths, { ...options, alias: item.alias }, lockTimestamp, runDelete)
+          ? withEraseOnAcquireResetLock(paths, {
+            ...options,
+            alias: item.alias,
+            resetLockTimeoutMilliseconds: options.resetLockTimeoutMilliseconds ?? uiAliasLockWaitMs(),
+          }, lockTimestamp, runDelete)
           : runDelete();
         counts.deleted += 1;
         reasons.add(item.causeCode);
@@ -9848,7 +9879,7 @@ export function deletePurposeSimulatorsBroker(paths, options = {}) {
           reasons.add("simulator-missing");
         }
       } catch (error) {
-        if (isAliasBusyError(error)) {
+        if (isAliasBusyError(error) || isResetLockTimeoutError(error)) {
           counts.held += 1;
           reasons.add(item.causeCode);
           continue;

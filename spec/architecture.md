@@ -200,7 +200,9 @@ The broker must remain transparent: clients need explainable denial reasons, hol
 - per-alias reset locks and two reset-capacity tokens for UI erase and boot;
   `simctl` shutdown, erase, and boot for reset-on-acquire run outside the
   broker mutation lock. The alias-lock wait covers every `simctl` command
-  inside that lock, including the decision inventory and both identity lists.
+  inside that lock, including the decision inventory and both identity lists,
+  plus one nested mutation-lock wait. Build and manual boot-on-acquire hold
+  the mutation lock across boot.
   The boot result is published on the mutation lock after the alias reset lock
   is released. Manual boot, shutdown, erase, and repair of an
   `erase-on-acquire` alias take that alias's reset lock before `simctl`,

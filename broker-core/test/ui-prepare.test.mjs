@@ -754,6 +754,59 @@ test("purpose delete counts a preparing UI alias as held", () => {
   assert.equal(readJson(registryPath).aliases["ui-1"].prepare.state, "erasing");
 });
 
+test("a queued prepare does not hide a missing device", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const registry = readJson(registryPath);
+  registry.aliases["ui-1"].powerState = "booted";
+  registry.aliases["ui-1"].prepare = {
+    ownerPid: null,
+    state: "queued",
+    token: "queued-missing",
+  };
+  writeJson(registryPath, registry);
+  const simctlState = readJson(fixture.paths.simctl.statePath);
+  simctlState.devices = simctlState.devices.filter((device) => device.udid !== "SIM-UI-1");
+  writeJson(fixture.paths.simctl.statePath, simctlState);
+
+  const lease = acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+    actorId: "agent-a",
+    actorType: "agent",
+    purposeId: "agent-ui-session",
+  })).lease;
+
+  assert.equal(lease.alias, "ui-2");
+  const after = readJson(registryPath).aliases["ui-1"];
+  assert.equal(after.health, "repair-needed");
+  assert.equal(after.driftReason, "simulator-missing");
+  assert.equal(after.powerState, "shutdown");
+  assert.equal(after.prepare.state, "queued");
+});
+
+test("purpose delete counts a reset-lock timeout as held", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const registry = readJson(registryPath);
+  registry.aliases["ui-1"].health = "repair-needed";
+  registry.aliases["ui-1"].driftReason = "runtime-not-found";
+  registry.aliases["ui-1"].driftCauseCode = "runtime-not-found";
+  writeJson(registryPath, registry);
+  holdAliasResetLock(fixture, "ui-1");
+
+  assert.throws(() => {
+    deletePurposeSimulatorsBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+      actorId: "agent-a",
+      actorType: "agent",
+      purposeId: "agent-ui-session",
+      resetLockTimeoutMilliseconds: 400,
+    }));
+  }, (error) => error instanceof BrokerError
+    && error.payload?.reasonCode === "human-override-required"
+    && error.payload?.failed === 0
+    && error.payload?.held === 1);
+  assert.equal(fixture.calls.length, 0);
+});
+
 test("acquire skips an alias that prepare is still erasing", () => {
   const fixture = makeFixture();
   const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
