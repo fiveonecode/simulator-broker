@@ -334,6 +334,21 @@ export function createSystemSimctlAdapter({
     eraseDevice(simulatorId) {
       runCommand(["erase", simulatorId]);
     },
+    readDeviceDataIdentity(simulatorId) {
+      const listed = JSON.parse(runCommand(["list", "--json", "devices"], {
+        maxBuffer: SIMCTL_INVENTORY_MAX_BUFFER_BYTES,
+      }));
+      const dataPath = findDeviceDataPath(listed, simulatorId);
+      if (!dataPath) {
+        return null;
+      }
+      try {
+        const stats = fs.statSync(dataPath);
+        return `${stats.dev}:${stats.ino}`;
+      } catch {
+        return null;
+      }
+    },
     listDeviceTypes() {
       return JSON.parse(runCommand(["list", "--json", "devicetypes"], {
         maxBuffer: SIMCTL_INVENTORY_MAX_BUFFER_BYTES,
@@ -441,10 +456,16 @@ export function createFixtureSimctlAdapter({ createDelayMs = 0, statePath }) {
     eraseDevice(simulatorId) {
       mutateState((state) => {
         const device = findDeviceOrThrow(state, simulatorId);
+        device.dataGeneration = (Number.isInteger(device.dataGeneration) ? device.dataGeneration : 0) + 1;
         device.diskBytes = 0;
         device.lastBootedAt = null;
         device.state = "Shutdown";
       });
+    },
+    readDeviceDataIdentity(simulatorId) {
+      const device = findDeviceOrThrow(readFixtureState(resolvedStatePath), simulatorId);
+      const generation = Number.isInteger(device.dataGeneration) ? device.dataGeneration : 0;
+      return `fixture:${simulatorId}:${generation}`;
     },
     measureDeviceDiskBytes(simulatorId) {
       const device = findDeviceOrThrow(readFixtureState(resolvedStatePath), simulatorId);

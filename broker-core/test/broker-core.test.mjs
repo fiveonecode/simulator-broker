@@ -7011,14 +7011,16 @@ test("reset lock timeout preserves a live owner lock", () => {
   writeBaseProject(paths.projectFilePath);
   const resolvedPaths = brokerPaths(paths);
   initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
-  fs.mkdirSync(resolvedPaths.resetLockDir, { recursive: true });
-  writeJson(resolvedPaths.resetLockOwnerPath, {
+  const aliasLockDir = path.join(paths.stateRoot, "locks", "reset", "ui-1.lock");
+  const aliasLockOwnerPath = path.join(aliasLockDir, "owner.json");
+  fs.mkdirSync(aliasLockDir, { recursive: true });
+  writeJson(aliasLockOwnerPath, {
     pid: process.pid,
     startedAt: new Date(0).toISOString(),
   });
   const oldTimestamp = new Date(0);
-  fs.utimesSync(resolvedPaths.resetLockDir, oldTimestamp, oldTimestamp);
-  fs.utimesSync(resolvedPaths.resetLockOwnerPath, oldTimestamp, oldTimestamp);
+  fs.utimesSync(aliasLockDir, oldTimestamp, oldTimestamp);
+  fs.utimesSync(aliasLockOwnerPath, oldTimestamp, oldTimestamp);
 
   assert.throws(() => {
     acquireLeaseBroker(resolvedPaths, {
@@ -7030,11 +7032,17 @@ test("reset lock timeout preserves a live owner lock", () => {
       resetLockTimeoutMilliseconds: 1,
       simctlAdapter: paths.simctl.adapter,
     });
-  }, (error) => error.payload?.reasonCode === "reset-on-acquire-failed");
+  }, (error) => error.payload?.reasonCode === "reset-lock-timeout" && error.exitCode === 3);
 
-  assert.equal(fs.existsSync(resolvedPaths.resetLockOwnerPath), true);
-  assert.equal(readJson(resolvedPaths.resetLockOwnerPath).pid, process.pid);
+  assert.equal(fs.existsSync(aliasLockOwnerPath), true);
+  assert.equal(readJson(aliasLockOwnerPath).pid, process.pid);
   assert.equal(fs.readdirSync(path.join(paths.stateRoot, "leases")).length, 0);
+  const registry = readJson(resolvedPaths.registryPath);
+  assert.equal(registry.aliases["ui-1"].health, "healthy");
+  assert.equal(registry.aliases["ui-1"].activeLeaseId, null);
+  assert.equal(registry.aliases["ui-1"].driftReason ?? null, null);
+  assert.equal(registry.aliases["ui-1"].prepare ?? null, null);
+  assert.equal(registry.aliases["ui-1"].cleanProof ?? null, null);
 });
 
 test("project init scaffolds a starter project file and records it for later app snapshots", () => {
@@ -7576,6 +7584,39 @@ test("stale lease recovery restarts grace and reuses the reclaimed warm alias", 
   assert.equal(fs.existsSync(staleLeaseArtifactPath), false);
   const events = readEventsBroker(resolvedPaths).events;
   assert.ok(events.some((event) => event.type === "lease.reclaimed" && event.leaseId === staleLease.leaseId));
+});
+
+test("manual boot-on-acquire holds the mutation lock during simctl", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  let sawLock = false;
+  const adapter = {
+    ...paths.simctl.adapter,
+    bootDevice(simulatorId) {
+      sawLock = fs.existsSync(resolvedPaths.leaseLockDir);
+      return paths.simctl.adapter.bootDevice(simulatorId);
+    },
+    waitForBooted(simulatorId) {
+      sawLock = fs.existsSync(resolvedPaths.leaseLockDir);
+      return paths.simctl.adapter.waitForBooted(simulatorId);
+    },
+  };
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "manual-testing",
+    simctlAdapter: adapter,
+  }).lease;
+
+  assert.equal(lease.alias, "manual-1");
+  assert.equal(sawLock, true);
+  assert.equal(fs.existsSync(resolvedPaths.leaseLockDir), false);
 });
 
 test("acquire marks an alias repair-needed and rolls back when boot fails", () => {
