@@ -64,6 +64,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mutation lock across boot. The alias-lock wait adds one nested
   mutation-lock wait and no longer follows the lease-lock timeout. Purpose
   delete counts `reset-lock-timeout` as held and waits that alias-lock budget.
+- Service acquire counts the post-acquire app snapshot as a fifth state load
+  and counts shutdown's `Shutting Down` wait in the no-reclaim device budget.
+  An enabled reclaim candidate still uses the longer device budget.
 
 ## [0.1.0-alpha.15] - 2026-11-07
 

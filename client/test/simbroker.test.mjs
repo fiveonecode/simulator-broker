@@ -4104,7 +4104,7 @@ test("service lease acquire timeout includes reset and boot-on-acquire budgets",
     command: "acquire",
     group: "lease",
     options: {},
-  }), 10_745_250);
+  }), 11_235_250);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "acquire",
     group: "lease",
@@ -4113,7 +4113,7 @@ test("service lease acquire timeout includes reset and boot-on-acquire budgets",
       resetLockTimeoutMilliseconds: 120_000,
       resetSettleMilliseconds: 500,
     },
-  }), 3_245_500);
+  }), 3_735_500);
 });
 
 test("service idle timeouts cover serialized state, snapshots, and bounded shutdown work", () => {
@@ -4433,10 +4433,12 @@ test("service timeouts reserve slot reclaim list, du, shutdown, and erase", () =
   const oneReclaimBudgetMs = (4 * SIMCTL_COMMAND_TIMEOUT_MS) + 60_000 + 250;
   const twoReclaimBudgetMs = (7 * SIMCTL_COMMAND_TIMEOUT_MS) + (2 * (60_000 + 250));
 
+  // No-reclaim erase already counts shutdown and the Shutting Down wait.
+  // Reclaim replaces that pair with list, du, and one shutdown, so it stays one cap longer.
   assert.equal(
     serviceCommandExecutionTimeoutMs(acquire, { paths: onePaths })
       - serviceCommandExecutionTimeoutMs(acquire, { paths: baselinePaths }),
-    2 * SIMCTL_COMMAND_TIMEOUT_MS,
+    SIMCTL_COMMAND_TIMEOUT_MS,
   );
   assert.equal(
     serviceCommandExecutionTimeoutMs(acquire, { paths: twoPaths }),

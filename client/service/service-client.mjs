@@ -9,7 +9,7 @@ import {
   STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS,
   leaseHasContainmentProcessMetadata,
 } from "../../broker-core/containment.mjs";
-import { BrokerError, uiAcquireLockBudgetMs, uiPrepareAliasBudgetMs } from "../../broker-core/index.mjs";
+import { BrokerError, UI_RESET_SHUTDOWN_COMMANDS, uiAcquireLockBudgetMs, uiPrepareAliasBudgetMs } from "../../broker-core/index.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS } from "../../broker-core/simctl.mjs";
 import { classifyReclaimSlot, resolveSlotReclaimPolicy } from "../../broker-core/slot-reclaim.mjs";
 
@@ -27,11 +27,14 @@ const SERVICE_STARTUP_STATE_LOADS = 2;
 const SERVICE_STARTUP_LEASE_LOCK_WAITS = 2;
 const SLOT_RECLAIM_SHARED_LIST_COMMANDS = 1;
 const SLOT_RECLAIM_COMMANDS_PER_ALIAS = 3;
-const LEASE_ACQUIRE_RESET_ERASE_SIMCTL_COMMANDS = 2;
+const LEASE_ACQUIRE_ERASE_COMMANDS = 1;
+// Shutdown, the Shutting Down wait, and erase. Reclaim stays the longer device budget.
+const LEASE_ACQUIRE_RESET_ERASE_SIMCTL_COMMANDS = UI_RESET_SHUTDOWN_COMMANDS + LEASE_ACQUIRE_ERASE_COMMANDS;
 const LEASE_ACQUIRE_BOOT_SIMCTL_COMMANDS = 2;
 const LEASE_ACQUIRE_RESET_SIMCTL_COMMANDS = LEASE_ACQUIRE_RESET_ERASE_SIMCTL_COMMANDS
   + LEASE_ACQUIRE_BOOT_SIMCTL_COMMANDS;
-const LEASE_ACQUIRE_STATE_LOADS = 4;
+// Claim, decision, publish, lease.acquired, and the post-acquire app snapshot.
+const LEASE_ACQUIRE_STATE_LOADS = 5;
 const LEASE_ACQUIRE_DATA_IDENTITY_LISTS = 2;
 // Reclaim shutdown/erase replaces reset-on-acquire shutdown/erase, then boot still runs.
 const LEASE_ACQUIRE_RECLAIM_SIMCTL_COMMANDS = SLOT_RECLAIM_SHARED_LIST_COMMANDS

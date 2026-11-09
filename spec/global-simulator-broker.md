@@ -212,11 +212,14 @@ Current implementation slice:
   or `booting`. Purpose delete takes that same lock for each
   `erase-on-acquire` alias, waits the alias-lock budget unless the caller
   passes a shorter reset-lock timeout, and counts both `alias-busy` and
-  `reset-lock-timeout` as held. Service-backed acquire reserves four broker
-  state loads, two data-identity device lists, and seven reset-holder waits:
-  capacity and the alias lock each include the nested mutation-lock wait, and
-  the decision, publish, and `lease.acquired` waits are one holder each, in
-  addition to this acquire's own shutdown, erase, boot, and `bootstatus`
+  `reset-lock-timeout` as held. Service-backed acquire reserves five broker
+  state loads, including the post-acquire app snapshot, two data-identity
+  device lists, and seven reset-holder waits: capacity and the alias lock
+  each include the nested mutation-lock wait, and the decision, publish, and
+  `lease.acquired` waits are one holder each, in addition to this acquire's
+  own shutdown, the `Shutting Down` wait, erase, boot, and `bootstatus`.
+  A host with an enabled reclaim candidate uses that longer device budget
+  instead.
 - boot-on-acquire with lease rollback and `repair-needed`
   (`boot-on-acquire-failed`) when boot fails. The real `simctl` adapter treats
   a boot result whose text says the device is already `Booted` or `Booting`
@@ -252,7 +255,7 @@ Current implementation slice:
 - service stop waits for an in-flight UI prepare to finish before closing the server or exiting, and closes active event streams before shutdown completes. The stop budget adds, for every `erase-on-acquire` alias, that prepare worker's two state loads, shutdown plus the `Shutting Down` wait, erase, boot, `bootstatus`, one identity list, the reset settle, and the capacity, alias, and two mutation-lock waits
 - malformed JSON from a running service is reported as service unavailability by clients instead of escaping as an uncaught parser failure
 - service startup must not publish a listenable socket or service metadata until the initial broker-owned app snapshot refresh has completed or explicitly reported a missing-host setup state; the CLI start launcher must wait within the bounded startup snapshot budget for one shared process-table sample, startup-lock owner PID lifetime sampling, and all inventory commands, validate startup-lock owner PID lifetime before accepting an old lock as live, and terminate the spawned daemon on startup timeout
-- service-backed timeout budgets must reserve one shared process-table sample per broker state load; stale-lease containment process samples discovered from lease files before command dispatch for every broker state load that can retry containment; serialized read lock waits for `host status`, `doctor`, and `lease explain`; final app snapshot lock waits for every command that publishes the shared app snapshot artifact; capacity check inventory reads; the longer of lease-acquire reset `simctl` shutdown/erase plus boot readiness and one build-slot reclaim (`simctl list`, `du`, shutdown, and erase) plus that same boot readiness; lease-release reclaim list, `du`, shutdown, erase, and reset-lock wait; idle-reconcile and service-startup reclaim for every enabled candidate, including each reset-lock wait; explicit simulator boot readiness wait; and host bootstrap runtime lookup, baseline inventory, starter-alias provisioning, replacement-retirement, and final snapshot refresh work before the transport timeout is advertised
+- service-backed timeout budgets must reserve one shared process-table sample per broker state load; stale-lease containment process samples discovered from lease files before command dispatch for every broker state load that can retry containment; serialized read lock waits for `host status`, `doctor`, and `lease explain`; final app snapshot lock waits for every command that publishes the shared app snapshot artifact; capacity check inventory reads; the longer of lease-acquire reset `simctl` (shutdown, the `Shutting Down` wait, and erase, plus boot readiness) and one build-slot reclaim (`simctl list`, `du`, shutdown, and erase) plus that same boot readiness; the post-acquire app snapshot state load on every lease acquire; lease-release reclaim list, `du`, shutdown, erase, and reset-lock wait; idle-reconcile and service-startup reclaim for every enabled candidate, including each reset-lock wait; explicit simulator boot readiness wait; and host bootstrap runtime lookup, baseline inventory, starter-alias provisioning, replacement-retirement, and final snapshot refresh work before the transport timeout is advertised
 - broker-mediated lifecycle-control requests for `boot`, `shutdown`, `erase`, `repair`, and `delete`
 - `simulators delete` execution time includes the capacity lock, the lease lock, snapshot publication, one state load, and two `simctl` commands (shutdown, then delete) per host alias. A missing or non-array `aliases` list uses the six-alias starter fallback. An empty list uses zero. Repair keeps its own static ten-command budget plus pending retirements and is not redefined by the delete count
 - command transport consumed by the macOS app for broker-backed operator actions
