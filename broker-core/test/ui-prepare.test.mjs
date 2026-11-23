@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -568,6 +569,71 @@ test("a live prepare pid does not keep the alias unusable after the reset lock i
   const after = readJson(registryPath);
   assert.equal(after.aliases["ui-1"].prepare ?? null, null);
   assert.equal(after.aliases["ui-1"].health, "healthy");
+});
+
+test("a post-simctl repair waits out a busy mutation lock", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const lockDir = fixture.resolvedPaths.leaseLockDir;
+  let releaseChild = null;
+  fixture.adapter.bootDevice = () => {
+    writeLockOwner(lockDir, new Date().toISOString());
+    releaseChild = spawn(process.execPath, ["-e", `
+      const fs = require("node:fs");
+      setTimeout(() => fs.rmSync(${JSON.stringify(lockDir)}, { recursive: true, force: true }), 200);
+    `], { stdio: "ignore" });
+    throw new Error("boot failed after erase");
+  };
+
+  try {
+    assert.throws(() => {
+      acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+        actorId: "agent-a",
+        actorType: "agent",
+        purposeId: "agent-ui-session",
+        resetLockTimeoutMilliseconds: 800,
+      }));
+    }, (error) => error instanceof BrokerError
+      && error.payload?.reasonCode === "boot-on-acquire-failed"
+      && error.payload?.rollbackFailed !== true
+      && error.exitCode === 4);
+  } finally {
+    releaseChild?.kill();
+  }
+
+  const repaired = readJson(registryPath).aliases["ui-1"];
+  assert.equal(repaired.health, "repair-needed");
+  assert.equal(repaired.driftReason, "boot-on-acquire-failed");
+  assert.equal(repaired.activeLeaseId, null);
+  assert.equal(fs.readdirSync(fixture.resolvedPaths.leasesDir).length, 0);
+});
+
+test("a missed post-simctl repair write does not leave the lease checked out", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  fixture.adapter.bootDevice = () => {
+    writeLockOwner(fixture.resolvedPaths.leaseLockDir, new Date().toISOString());
+    throw new Error("boot failed after erase");
+  };
+
+  assert.throws(() => {
+    acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+      actorId: "agent-a",
+      actorType: "agent",
+      purposeId: "agent-ui-session",
+      resetLockTimeoutMilliseconds: 400,
+    }));
+  }, (error) => error instanceof BrokerError
+    && error.payload?.reasonCode === "boot-on-acquire-failed"
+    && error.payload?.rollbackFailed === true
+    && error.exitCode === 4);
+  assert.equal(fs.readdirSync(fixture.resolvedPaths.leasesDir).length, 0);
+
+  fs.rmSync(fixture.resolvedPaths.leaseLockDir, { recursive: true, force: true });
+  hostStatusBroker(fixture.resolvedPaths, runtimeOptions(fixture));
+  const after = readJson(registryPath).aliases["ui-1"];
+  assert.equal(after.activeLeaseId, null);
+  assert.equal(after.health === "healthy" && after.activeLeaseId !== null, false);
 });
 
 test("an inventory failure before shutdown drops the lease without repair", () => {

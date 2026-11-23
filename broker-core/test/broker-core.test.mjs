@@ -7676,9 +7676,10 @@ test("acquire reports boot failure when rollback registry persistence also fails
   }, (error) =>
     error instanceof BrokerError
       && error.payload?.reasonCode === "boot-on-acquire-failed"
-      && error.payload?.rollbackFailed === true);
+      && error.payload?.rollbackFailed === true
+      && typeof error.payload?.leaseId === "string");
 
-  assert.equal(fs.readdirSync(resolvedPaths.leasesDir).length, 1);
+  assert.equal(fs.readdirSync(resolvedPaths.leasesDir).length, 0);
   fs.rmSync(resolvedPaths.registryPath, { force: true, recursive: true });
 });
 

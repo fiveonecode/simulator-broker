@@ -67,6 +67,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Service acquire counts the post-acquire app snapshot as a fifth state load
   and counts shutdown's `Shutting Down` wait in the no-reclaim device budget.
   An enabled reclaim candidate still uses the longer device budget.
+- A failed UI acquire after shutdown, erase, or boot waits the reset-holder
+  budget to mark the alias `repair-needed`. If that write still fails, the
+  lease file is removed. Purpose delete's service budget includes one
+  alias-lock wait per `erase-on-acquire` alias. Single-alias delete keeps
+  the 60-second reset-lock timeout.
 
 ## [0.1.0-alpha.15] - 2026-11-07
 

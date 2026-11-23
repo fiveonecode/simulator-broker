@@ -7946,6 +7946,36 @@ function rollbackAcquireLeaseFailureSafe(paths, state, leaseRecord, timestamp, r
   }
 }
 
+function repairAcquiredLeaseAfterSimctl(paths, leaseRecord, options, reasonCode) {
+  const locks = uiPublishLockOptions(leaseRecord, options);
+  const writeRepair = (wait) => withLeaseMutationLock(paths, () => {
+    const state = loadBrokerState(paths, freshLeaseStateLoadOptions(leaseRecord, options));
+    return rollbackAcquireLeaseFailureSafe(paths, state, leaseRecord, leaseRecord.startedAt, reasonCode);
+  }, {
+    ...locks,
+    wait,
+  });
+  let rollbackError = null;
+  try {
+    rollbackError = writeRepair(true);
+  } catch (lockError) {
+    rollbackError = lockError;
+  }
+  if (!rollbackError) {
+    return null;
+  }
+  try {
+    removeLeaseRecordFiles(paths, leaseRecord);
+  } catch (removeError) {
+    return removeError;
+  }
+  try {
+    return writeRepair(false);
+  } catch {
+    return rollbackError;
+  }
+}
+
 function releaseClaimedLeaseWithoutRepair(paths, state, leaseRecord, timestamp) {
   const registryEntry = state.registry.aliases[leaseRecord.alias];
   if (registryEntry?.activeLeaseId === leaseRecord.leaseId) {
@@ -8264,15 +8294,7 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
       throw markBeforeDeviceMutation(error);
     }
     const reasonCode = stage === "boot" ? "boot-on-acquire-failed" : "reset-on-acquire-failed";
-    let rollbackError = null;
-    try {
-      rollbackError = withLeaseMutationLock(paths, () => {
-        const state = loadBrokerState(paths, freshLeaseStateLoadOptions(leaseRecord, options));
-        return rollbackAcquireLeaseFailureSafe(paths, state, leaseRecord, leaseRecord.startedAt, reasonCode);
-      }, acquireLockOptions(leaseRecord, options));
-    } catch (rollbackLoadError) {
-      rollbackError = rollbackLoadError;
-    }
+    const rollbackError = repairAcquiredLeaseAfterSimctl(paths, leaseRecord, options, reasonCode);
     throw new BrokerError(
       reasonCode === "reset-on-acquire-failed"
         ? `Failed to reset alias ${leaseRecord.alias} before handing out the lease.`

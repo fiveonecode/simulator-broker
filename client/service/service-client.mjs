@@ -9,7 +9,7 @@ import {
   STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS,
   leaseHasContainmentProcessMetadata,
 } from "../../broker-core/containment.mjs";
-import { BrokerError, UI_RESET_SHUTDOWN_COMMANDS, uiAcquireLockBudgetMs, uiPrepareAliasBudgetMs } from "../../broker-core/index.mjs";
+import { BrokerError, UI_RESET_SHUTDOWN_COMMANDS, uiAcquireLockBudgetMs, uiAliasLockWaitMs, uiPrepareAliasBudgetMs } from "../../broker-core/index.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS } from "../../broker-core/simctl.mjs";
 import { classifyReclaimSlot, resolveSlotReclaimPolicy } from "../../broker-core/slot-reclaim.mjs";
 
@@ -373,6 +373,19 @@ function idleReconcileSlotReclaimBudgetMs(request, options = {}) {
   return slotReclaimBudgetMs(request, enabledSlotReclaimCandidateCount(options.paths));
 }
 
+function purposeDeleteAliasLockBudgetMs(request, options = {}) {
+  if (request?.group !== "simulators" || request?.command !== "delete") {
+    return 0;
+  }
+  const purposeId = request?.options?.purposeId;
+  if (typeof purposeId !== "string" || purposeId.trim() === "") {
+    return 0;
+  }
+  return eraseOnAcquireAliasCountFromPaths(options.paths) * uiAliasLockWaitMs({
+    resetLockTimeoutMilliseconds: request?.options?.resetLockTimeoutMilliseconds,
+  });
+}
+
 function simulatorLifecycleSimctlBudgetMs(request, options = {}) {
   if (request?.group !== "simulators") {
     return 0;
@@ -545,7 +558,8 @@ export function serviceCommandExecutionTimeoutMs(request, options = {}) {
       + leaseLockTimeoutMs(request)
       + snapshotLockBudgetMs
       + stateLoadBudgetForRequestMs
-      + simulatorLifecycleSimctlBudgetMs(request, options);
+      + simulatorLifecycleSimctlBudgetMs(request, options)
+      + purposeDeleteAliasLockBudgetMs(request, options);
   }
   if (request?.group === "simulators") {
     return DEFAULT_COMMAND_TIMEOUT_MS

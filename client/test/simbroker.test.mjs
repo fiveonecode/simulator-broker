@@ -24,7 +24,7 @@ import {
   PROCESS_SAMPLER_TIMEOUT_MS,
   STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS,
 } from "../../broker-core/containment.mjs";
-import { HOST_BOOTSTRAP_DEVICE_WARNING, readEventsBroker, resolveBrokerPaths, uiPrepareAliasBudgetMs } from "../../broker-core/index.mjs";
+import { HOST_BOOTSTRAP_DEVICE_WARNING, readEventsBroker, resolveBrokerPaths, uiAliasLockWaitMs, uiPrepareAliasBudgetMs } from "../../broker-core/index.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS } from "../../broker-core/simctl.mjs";
 import { createDeviceRecord, createSimctlFixture } from "../../broker-core/test/support/simctl-fixture.mjs";
 
@@ -4286,6 +4286,18 @@ test("service mutation timeouts cover broker lock waits", () => {
   }, {
     paths: deletePaths,
   }), 885_000 + 60_000 + (2 * 2 * SIMCTL_COMMAND_TIMEOUT_MS));
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "delete",
+    group: "simulators",
+    options: { purposeId: "agent-ui-session" },
+  }, {
+    paths: deletePaths,
+  }), 885_000 + 60_000 + (2 * 2 * SIMCTL_COMMAND_TIMEOUT_MS) + (2 * uiAliasLockWaitMs()));
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "delete",
+    group: "simulators",
+    options: { purposeId: "agent-ui-session" },
+  }), 2_385_000);
 });
 
 test("service command transfer timeout reserves queue budget before dispatch", () => {
