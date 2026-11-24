@@ -7649,7 +7649,7 @@ test("acquire marks an alias repair-needed and rolls back when boot fails", () =
   assert.equal(registry.aliases["ui-1"].driftReason, "boot-on-acquire-failed");
 });
 
-test("acquire reports boot failure when rollback registry persistence also fails", () => {
+test("a post-boot publish failure removes the lease when registry persistence fails", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
   writeBaseProject(paths.projectFilePath);
@@ -7675,7 +7675,8 @@ test("acquire reports boot failure when rollback registry persistence also fails
     });
   }, (error) =>
     error instanceof BrokerError
-      && error.payload?.reasonCode === "boot-on-acquire-failed"
+      && /EISDIR/.test(error.message)
+      && error.payload?.reasonCode !== "boot-on-acquire-failed"
       && error.payload?.rollbackFailed === true
       && typeof error.payload?.leaseId === "string");
 

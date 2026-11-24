@@ -8131,6 +8131,20 @@ function isBeforeDeviceMutationError(error) {
   return error?.beforeDeviceMutation === true;
 }
 
+function markDropClaimedLease(error) {
+  if (error && typeof error === "object") {
+    error.dropClaimedLease = true;
+    return error;
+  }
+  const wrapped = new Error(String(error));
+  wrapped.dropClaimedLease = true;
+  return wrapped;
+}
+
+function isDropClaimedLeaseError(error) {
+  return error?.dropClaimedLease === true;
+}
+
 function releaseClaimAfterLockWait(paths, claimed, options, error) {
   let rollbackError = null;
   try {
@@ -8147,14 +8161,26 @@ function releaseClaimAfterLockWait(paths, claimed, options, error) {
     rollbackError = rollbackLoadError;
   }
   if (rollbackError) {
+    let removeError = null;
+    try {
+      removeLeaseRecordFiles(paths, claimed.leaseRecord);
+    } catch (removeFailure) {
+      removeError = removeFailure;
+    }
+    const rollbackCause = rollbackError?.message ?? String(rollbackError);
     throw new BrokerError(error.message, {
       ...(error.payload ?? {}),
       alias: claimed.leaseRecord.alias,
       leaseId: claimed.leaseRecord.leaseId,
       reasonCode: error.payload?.reasonCode,
-      rollbackCause: rollbackError?.message ?? String(rollbackError),
+      rollbackCause: removeError
+        ? `${rollbackCause}; ${removeError?.message ?? String(removeError)}`
+        : rollbackCause,
       rollbackFailed: true,
     });
+  }
+  if (error && typeof error === "object") {
+    delete error.dropClaimedLease;
   }
   throw error;
 }
@@ -8246,6 +8272,7 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
   };
   let stage = "reset";
   let deviceCommandStarted = false;
+  let publishingBoot = false;
   let publish = null;
   try {
     withResetCapacity(paths, () => {
@@ -8300,6 +8327,7 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
       }, aliasLocks);
     }, aliasLocks);
     if (publish) {
+      publishingBoot = true;
       publishBootedLease(paths, leaseRecord, options, publish);
     }
   } catch (error) {
@@ -8308,6 +8336,9 @@ function ensureUiLeaseReady(paths, leaseRecord, previousLeaseId, options = {}) {
       || error.payload?.reasonCode === "boot-on-acquire-failed"
     ))) {
       throw error;
+    }
+    if (publishingBoot) {
+      throw markDropClaimedLease(error);
     }
     if (!deviceCommandStarted) {
       throw markBeforeDeviceMutation(error);
@@ -8505,7 +8536,7 @@ export function acquireLeaseBroker(paths, options = {}) {
       maybeBootLeaseOnAcquire(paths, null, claimed.leaseRecord, options);
     }
   } catch (error) {
-    if (preSimctlWaitError(error) || isBeforeDeviceMutationError(error)) {
+    if (preSimctlWaitError(error) || isBeforeDeviceMutationError(error) || isDropClaimedLeaseError(error)) {
       releaseClaimAfterLockWait(paths, claimed, options, error);
     }
     if (isLeaseLostError(error) || (error instanceof BrokerError && (

@@ -202,11 +202,13 @@ Current implementation slice:
   while publishing the boot result or `lease.acquired`, or if the decision
   reload fails before shutdown, erase, or boot, acquire drops only the claimed
   lease, leaves prepare, health, and the clean proof in place, and returns
-  without a lease id. Any other error from the post-boot reload or the
-  `lease.acquired` append, except `lease-lost`, drops that lease the same way.
+  without a lease id. Any other error from the post-boot reload, the
+  boot-result write, or the `lease.acquired` append, except `lease-lost`,
+  drops that lease the same way.
   A lock wait returns `reset-lock-timeout` or `alias-busy`
   (exit `3`). When that drop fails, the same error keeps the lease id and sets
-  `rollbackFailed`. A failure after shutdown, erase, or boot has started still
+  `rollbackFailed`, and the lease file is removed. A throw from shutdown,
+  erase, boot, or `bootstatus` still
   marks the alias `repair-needed`. That repair write waits the same
   reset-holder budget as publishing the boot, and the lease file is still
   present for that write. If it fails, one immediate retry runs before the

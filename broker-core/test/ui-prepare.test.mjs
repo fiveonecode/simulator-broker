@@ -791,6 +791,105 @@ test("a lease.acquired lock timeout drops the lease without changing health", ()
   assert.equal(events.some((event) => event.type === "lease.acquired"), false);
 });
 
+test("a post-boot publish inventory failure drops the lease without repair", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const before = readJson(registryPath).aliases["ui-1"];
+  const originalListDeviceTypes = fixture.adapter.listDeviceTypes.bind(fixture.adapter);
+  let thrown = false;
+  fixture.adapter.listDeviceTypes = () => {
+    const booted = fixture.calls.some((call) => call[0] === "bootDevice" && call[1] === "SIM-UI-1");
+    if (!thrown && booted) {
+      thrown = true;
+      throw new Error("simctl list devicetypes timed out after 120000ms");
+    }
+    return originalListDeviceTypes();
+  };
+
+  assert.throws(() => {
+    acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+      actorId: "agent-a",
+      actorType: "agent",
+      purposeId: "agent-ui-session",
+    }));
+  }, (error) => error instanceof Error
+    && /timed out/.test(error.message)
+    && error.payload?.leaseId === undefined
+    && error.beforeDeviceMutation !== true
+    && error.dropClaimedLease !== true);
+
+  assert.equal(thrown, true);
+  assert.equal(fixture.calls.some((call) => call[0] === "eraseDevice" && call[1] === "SIM-UI-1"), true);
+  assert.equal(fixture.calls.some((call) => call[0] === "bootDevice" && call[1] === "SIM-UI-1"), true);
+  const after = readJson(registryPath).aliases["ui-1"];
+  assert.equal(after.health, before.health);
+  assert.equal(after.driftReason ?? null, before.driftReason ?? null);
+  assert.deepEqual(after.cleanProof ?? null, before.cleanProof ?? null);
+  assert.equal(after.prepare ?? null, before.prepare ?? null);
+  assert.equal(after.powerState, "booted");
+  assert.equal(after.activeLeaseId, null);
+  assert.equal(fs.readdirSync(fixture.resolvedPaths.leasesDir).length, 0);
+  assert.equal(readEventsBroker(fixture.resolvedPaths, {}).events.some((event) => event.type === "lease.acquired"), false);
+});
+
+test("a skip-erase publish inventory failure drops the lease without repair", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const first = acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+    actorId: "agent-a",
+    actorType: "agent",
+    purposeId: "agent-ui-session",
+  })).lease;
+  releaseLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, { leaseId: first.leaseId }));
+  reconcileUiPrepareBroker(fixture.resolvedPaths, runtimeOptions(fixture));
+  const before = readJson(registryPath).aliases[first.alias];
+  assert.equal(before.cleanProof.ready, true);
+  assert.equal(before.powerState, "booted");
+  assert.equal(before.cleanProofConsumedBy ?? null, null);
+  fixture.calls.length = 0;
+
+  const originalListDeviceTypes = fixture.adapter.listDeviceTypes.bind(fixture.adapter);
+  let thrown = false;
+  fixture.adapter.listDeviceTypes = () => {
+    const entry = readJson(registryPath).aliases[first.alias];
+    const waited = fixture.calls.some((call) => call[0] === "waitForBooted" && call[1] === before.cleanProof.simulatorId);
+    if (!thrown && waited && entry?.activeLeaseId && !entry.cleanProofConsumedBy) {
+      thrown = true;
+      throw new Error("simctl list devicetypes timed out after 120000ms");
+    }
+    return originalListDeviceTypes();
+  };
+
+  assert.throws(() => {
+    acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+      actorId: "agent-b",
+      actorType: "agent",
+      purposeId: "agent-ui-session",
+    }));
+  }, (error) => error instanceof Error
+    && /timed out/.test(error.message)
+    && error.payload?.leaseId === undefined
+    && error.beforeDeviceMutation !== true
+    && error.dropClaimedLease !== true);
+
+  assert.equal(thrown, true);
+  assert.equal(fixture.calls.some((call) => call[0] === "eraseDevice"), false);
+  assert.equal(fixture.calls.some((call) => call[0] === "bootDevice"), false);
+  assert.equal(fixture.calls.some((call) => call[0] === "waitForBooted"), true);
+  const after = readJson(registryPath).aliases[first.alias];
+  assert.equal(after.health, before.health);
+  assert.equal(after.driftReason ?? null, before.driftReason ?? null);
+  assert.equal(after.cleanProof.ready, true);
+  assert.equal(after.cleanProof.dataIdentity, before.cleanProof.dataIdentity);
+  assert.equal(after.cleanProofConsumedBy ?? null, null);
+  assert.equal(after.powerState, "booted");
+  assert.equal(after.prepare ?? null, null);
+  assert.equal(after.activeLeaseId, null);
+  assert.equal(fs.readdirSync(fixture.resolvedPaths.leasesDir).length, 0);
+  const events = readEventsBroker(fixture.resolvedPaths, {}).events;
+  assert.equal(events.some((event) => event.type === "lease.acquired" && event.actorType === "agent" && event.payload?.actorId === "agent-b"), false);
+});
+
 test("a lease.acquired inventory failure drops the lease without changing health", () => {
   const fixture = makeFixture();
   const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
