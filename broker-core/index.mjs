@@ -4224,14 +4224,32 @@ function recordFreshUnhealthy(paths, hostConfig, registry, healthBeforeSync, tim
   }
 }
 
+function aliasResetLockDirectoryName(alias) {
+  const encoded = encodeURIComponent(alias);
+  if (encoded.length > 0 && encoded.length <= 200) {
+    return `${encoded}.lock`;
+  }
+  return `sha256-${crypto.createHash("sha256").update(alias, "utf8").digest("hex")}.lock`;
+}
+
 function aliasResetLockPaths(paths, alias) {
-  if (typeof alias !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(alias)) {
+  if (typeof alias !== "string" || alias.trim() === "") {
     throw new BrokerError("Invalid alias for the simulator reset lock.", {
       alias: alias ?? null,
       reasonCode: "invalid-config",
     });
   }
-  const dir = path.join(paths.locksDir, "reset", `${alias}.lock`);
+  let directoryName;
+  try {
+    directoryName = aliasResetLockDirectoryName(alias);
+  } catch (error) {
+    throw new BrokerError("Invalid alias for the simulator reset lock.", {
+      alias,
+      cause: error?.message ?? String(error),
+      reasonCode: "invalid-config",
+    });
+  }
+  const dir = path.join(paths.locksDir, "reset", directoryName);
   return {
     dir,
     ownerPath: path.join(dir, "owner.json"),
@@ -7955,13 +7973,18 @@ function repairAcquiredLeaseAfterSimctl(paths, leaseRecord, options, reasonCode)
     ...locks,
     wait,
   });
-  let rollbackError = null;
-  try {
-    rollbackError = writeRepair(true);
-  } catch (lockError) {
-    rollbackError = lockError;
+  const attemptRepair = (wait) => {
+    try {
+      return writeRepair(wait);
+    } catch (error) {
+      return error;
+    }
+  };
+  if (!attemptRepair(true)) {
+    return null;
   }
-  if (!rollbackError) {
+  const retryError = attemptRepair(false);
+  if (!retryError) {
     return null;
   }
   try {
@@ -7969,11 +7992,7 @@ function repairAcquiredLeaseAfterSimctl(paths, leaseRecord, options, reasonCode)
   } catch (removeError) {
     return removeError;
   }
-  try {
-    return writeRepair(false);
-  } catch {
-    return rollbackError;
-  }
+  return retryError;
 }
 
 function releaseClaimedLeaseWithoutRepair(paths, state, leaseRecord, timestamp) {
@@ -8552,7 +8571,7 @@ export function acquireLeaseBroker(paths, options = {}) {
       }, claimed.timestamp);
     }, uiPublishLockOptions(claimed.leaseRecord, options));
   } catch (error) {
-    if (preSimctlWaitError(error)) {
+    if (!isLeaseLostError(error)) {
       releaseClaimAfterLockWait(paths, claimed, options, error);
     }
     throw error;
@@ -8793,6 +8812,7 @@ function prepareOneUiAlias(paths, item, options, timestamp) {
     processSampler: options.processSampler,
     timeoutMs: options.resetLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
   };
+  let deviceCommandStarted = false;
   try {
     withResetCapacity(paths, () => {
       withAliasResetLock(paths, item.alias, () => {
@@ -8819,6 +8839,7 @@ function prepareOneUiAlias(paths, item, options, timestamp) {
         if (!proceed) {
           return;
         }
+        deviceCommandStarted = true;
         simctl.shutdownDevice(item.simulatorId);
         simctl.eraseDevice(item.simulatorId);
         sleepSync(options.resetSettleMilliseconds ?? DEFAULT_RESET_SETTLE_MS);
@@ -8879,6 +8900,9 @@ function prepareOneUiAlias(paths, item, options, timestamp) {
       }, locks);
     }, locks);
   } catch {
+    if (!deviceCommandStarted) {
+      return;
+    }
     withLeaseMutationLock(paths, () => {
       const state = loadBrokerState(paths, stateLoadOptions(options, nowIso()));
       const entry = state.registry.aliases[item.alias];

@@ -266,9 +266,10 @@ final class BrokerServiceClientTests: XCTestCase {
     let delete = BrokerCommandRequest(command: "delete", group: "simulators", options: [:])
       .timeoutBudget(paths: fixture.paths)
 
+    let prepareCheckSeconds = 370 + 60
     XCTAssertEqual(
       delete.executionTimeoutSeconds,
-      repair.executionTimeoutSeconds - (10 * 120) + (2 * 2 * 120)
+      repair.executionTimeoutSeconds - (10 * 120) + (2 * 2 * 120) + prepareCheckSeconds
     )
     XCTAssertEqual(delete.transferTimeoutSeconds, delete.executionTimeoutSeconds + 60)
 
@@ -278,7 +279,10 @@ final class BrokerServiceClientTests: XCTestCase {
     ], to: fixture.paths.hostConfigURL)
     let emptyDelete = BrokerCommandRequest(command: "delete", group: "simulators", options: [:])
       .timeoutBudget(paths: fixture.paths)
-    XCTAssertEqual(emptyDelete.executionTimeoutSeconds, repair.executionTimeoutSeconds - (10 * 120))
+    XCTAssertEqual(
+      emptyDelete.executionTimeoutSeconds,
+      repair.executionTimeoutSeconds - (10 * 120) + prepareCheckSeconds
+    )
   }
 
   func testHostBootstrapTimeoutBudgetUsesCurrentHostConfig() throws {

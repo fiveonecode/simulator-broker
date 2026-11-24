@@ -198,6 +198,10 @@ struct BrokerCommandRequest: Sendable {
         + snapshotLockBudget
         + stateLoadBudget
         + simulatorLifecycleSimctlBudgetSeconds(paths: paths)
+        + deletePrepareCheckBudgetSeconds(paths: paths)
+        + singleAliasEraseOnAcquireResetLockBudgetSeconds(paths: paths)
+        + purposeDeleteAliasLockBudgetSeconds(paths: paths)
+        + purposeDeleteAliasReloadBudgetSeconds(paths: paths)
     }
     if group == "simulators" {
       return Self.defaultCommandTimeoutSeconds
@@ -494,6 +498,77 @@ struct BrokerCommandRequest: Sendable {
     return hostConfig.pendingRetirements?.count ?? 0
   }
 
+  private var isPurposeDelete: Bool {
+    guard group == "simulators", command == "delete" else {
+      return false
+    }
+    guard let purposeId = options["purposeId"]?.stringValue?
+      .trimmingCharacters(in: .whitespacesAndNewlines) else {
+      return false
+    }
+    return !purposeId.isEmpty
+  }
+
+  private func configuredHostAliases(paths: BrokerRuntimePaths?) -> [BrokerHostConfigTimeoutAlias]? {
+    guard let paths,
+          let data = try? Data(contentsOf: paths.hostConfigURL),
+          let hostConfig = try? JSONDecoder().decode(BrokerHostConfigTimeoutSummary.self, from: data),
+          let aliases = hostConfig.aliases else {
+      return nil
+    }
+    return aliases
+  }
+
+  private func deletePrepareCheckBudgetSeconds(paths: BrokerRuntimePaths?) -> Int {
+    guard group == "simulators", command == "delete", !isPurposeDelete else {
+      return 0
+    }
+    return leaseLockTimeoutSeconds + brokerStateLoadBudgetSeconds(for: 1, paths: paths)
+  }
+
+  private func singleAliasEraseOnAcquireResetLockBudgetSeconds(paths: BrokerRuntimePaths?) -> Int {
+    guard group == "simulators", command == "delete", !isPurposeDelete else {
+      return 0
+    }
+    guard let alias = options["alias"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !alias.isEmpty,
+          configuredHostAliases(paths: paths)?.contains(where: {
+            $0.alias == alias && $0.resetPolicy == "erase-on-acquire"
+          }) == true else {
+      return 0
+    }
+    return timeoutSeconds(
+      option: "resetLockTimeoutMilliseconds",
+      fallbackMilliseconds: Self.defaultLockTimeoutMilliseconds
+    )
+  }
+
+  private func purposeDeleteAliasLockBudgetSeconds(paths: BrokerRuntimePaths?) -> Int {
+    guard isPurposeDelete else {
+      return 0
+    }
+    let eraseOnAcquireCount = configuredHostAliases(paths: paths)?
+      .filter { $0.resetPolicy == "erase-on-acquire" }
+      .count ?? 0
+    guard eraseOnAcquireCount > 0 else {
+      return 0
+    }
+    let holderMilliseconds = options["resetLockTimeoutMilliseconds"]?.intValue
+      ?? (10 * Self.simctlCommandTimeoutSeconds * 1000)
+    let waitMilliseconds = holderMilliseconds * 2
+    guard waitMilliseconds > 0 else {
+      return 0
+    }
+    return eraseOnAcquireCount * Int(ceil(Double(waitMilliseconds) / 1000.0))
+  }
+
+  private func purposeDeleteAliasReloadBudgetSeconds(paths: BrokerRuntimePaths?) -> Int {
+    guard isPurposeDelete, let aliasCount = configuredHostAliases(paths: paths)?.count, aliasCount > 0 else {
+      return 0
+    }
+    return aliasCount * (leaseLockTimeoutSeconds + brokerStateLoadBudgetSeconds(for: 1, paths: paths))
+  }
+
   private func simulatorLifecycleSimctlBudgetSeconds(paths: BrokerRuntimePaths? = nil) -> Int {
     guard group == "simulators" else {
       return 0
@@ -569,6 +644,8 @@ struct BrokerLeaseTimeoutSummary: Decodable {
 }
 
 private struct BrokerHostConfigTimeoutAlias: Decodable {
+  let alias: String?
+  let resetPolicy: String?
   let simulatorId: String?
 }
 

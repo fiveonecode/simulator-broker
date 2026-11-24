@@ -4270,29 +4270,56 @@ test("service mutation timeouts cover broker lock waits", () => {
   }, {
     pendingRetirementCount: 3,
   }), 2_865_000);
+  const deletePrepareCheckMs = (3 * SIMCTL_COMMAND_TIMEOUT_MS) + PROCESS_SAMPLER_TIMEOUT_MS + 60_000;
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "delete",
     group: "simulators",
     options: {},
-  }), 2_385_000);
+  }), 2_385_000 + deletePrepareCheckMs);
   const deletePaths = resolveBrokerPaths({
     hostConfigPath: fixture.hostConfigPath,
     stateRoot: fixture.stateRoot,
   });
+  const twoAliasDeleteMs = 885_000 + 60_000 + (2 * 2 * SIMCTL_COMMAND_TIMEOUT_MS);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "delete",
     group: "simulators",
     options: {},
   }, {
     paths: deletePaths,
-  }), 885_000 + 60_000 + (2 * 2 * SIMCTL_COMMAND_TIMEOUT_MS));
+  }), twoAliasDeleteMs + deletePrepareCheckMs);
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "delete",
+    group: "simulators",
+    options: { alias: "ui-1" },
+  }, {
+    paths: deletePaths,
+  }), twoAliasDeleteMs + deletePrepareCheckMs + 60_000);
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "delete",
+    group: "simulators",
+    options: {
+      alias: "ui-1",
+      resetLockTimeoutMilliseconds: 15_000,
+    },
+  }, {
+    paths: deletePaths,
+  }), twoAliasDeleteMs + deletePrepareCheckMs + 15_000);
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "delete",
+    group: "simulators",
+    options: { alias: "not-configured" },
+  }, {
+    paths: deletePaths,
+  }), twoAliasDeleteMs + deletePrepareCheckMs);
+  const purposeAliasReloadMs = 2 * ((3 * SIMCTL_COMMAND_TIMEOUT_MS) + PROCESS_SAMPLER_TIMEOUT_MS + 60_000);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "delete",
     group: "simulators",
     options: { purposeId: "agent-ui-session" },
   }, {
     paths: deletePaths,
-  }), 885_000 + 60_000 + (2 * 2 * SIMCTL_COMMAND_TIMEOUT_MS) + (2 * uiAliasLockWaitMs()));
+  }), twoAliasDeleteMs + (2 * uiAliasLockWaitMs()) + purposeAliasReloadMs);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "delete",
     group: "simulators",

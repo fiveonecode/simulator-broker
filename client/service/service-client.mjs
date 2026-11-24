@@ -373,17 +373,60 @@ function idleReconcileSlotReclaimBudgetMs(request, options = {}) {
   return slotReclaimBudgetMs(request, enabledSlotReclaimCandidateCount(options.paths));
 }
 
+function purposeDeleteRequest(request) {
+  return request?.group === "simulators"
+    && request?.command === "delete"
+    && typeof request?.options?.purposeId === "string"
+    && request.options.purposeId.trim() !== "";
+}
+
+function configuredHostAliases(paths) {
+  const hostConfig = readJsonIfPresent(paths?.hostConfigPath);
+  return Array.isArray(hostConfig?.aliases) ? hostConfig.aliases : null;
+}
+
 function purposeDeleteAliasLockBudgetMs(request, options = {}) {
-  if (request?.group !== "simulators" || request?.command !== "delete") {
-    return 0;
-  }
-  const purposeId = request?.options?.purposeId;
-  if (typeof purposeId !== "string" || purposeId.trim() === "") {
+  if (!purposeDeleteRequest(request)) {
     return 0;
   }
   return eraseOnAcquireAliasCountFromPaths(options.paths) * uiAliasLockWaitMs({
     resetLockTimeoutMilliseconds: request?.options?.resetLockTimeoutMilliseconds,
   });
+}
+
+function deletePrepareCheckBudgetMs(request, options = {}) {
+  if (request?.group !== "simulators" || request?.command !== "delete" || purposeDeleteRequest(request)) {
+    return 0;
+  }
+  return leaseLockTimeoutMs(request) + brokerStateLoadBudgetMs(request, 1, options);
+}
+
+function singleAliasEraseOnAcquireResetLockBudgetMs(request, options = {}) {
+  if (request?.group !== "simulators" || request?.command !== "delete" || purposeDeleteRequest(request)) {
+    return 0;
+  }
+  const alias = request?.options?.alias;
+  if (typeof alias !== "string" || alias.trim() === "") {
+    return 0;
+  }
+  const match = configuredHostAliases(options.paths)?.find((candidate) => candidate?.alias === alias.trim());
+  if (match?.resetPolicy !== "erase-on-acquire") {
+    return 0;
+  }
+  return positiveDurationMs(request?.options?.resetLockTimeoutMilliseconds, DEFAULT_LOCK_TIMEOUT_MS);
+}
+
+function purposeDeleteAliasReloadBudgetMs(request, options = {}) {
+  if (!purposeDeleteRequest(request)) {
+    return 0;
+  }
+  const aliasCount = configuredHostAliases(options.paths)?.length ?? 0;
+  if (aliasCount === 0) {
+    return 0;
+  }
+  return aliasCount * (
+    leaseLockTimeoutMs(request) + brokerStateLoadBudgetMs(request, 1, options)
+  );
 }
 
 function simulatorLifecycleSimctlBudgetMs(request, options = {}) {
@@ -559,7 +602,10 @@ export function serviceCommandExecutionTimeoutMs(request, options = {}) {
       + snapshotLockBudgetMs
       + stateLoadBudgetForRequestMs
       + simulatorLifecycleSimctlBudgetMs(request, options)
-      + purposeDeleteAliasLockBudgetMs(request, options);
+      + purposeDeleteAliasLockBudgetMs(request, options)
+      + deletePrepareCheckBudgetMs(request, options)
+      + singleAliasEraseOnAcquireResetLockBudgetMs(request, options)
+      + purposeDeleteAliasReloadBudgetMs(request, options);
   }
   if (request?.group === "simulators") {
     return DEFAULT_COMMAND_TIMEOUT_MS
