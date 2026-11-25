@@ -115,15 +115,42 @@ struct BrokerCommandRequest: Sendable {
   private static let hostBootstrapReplacementStateLoads = 1
   private static let hostBootstrapRetirementStateLoads = 1
   private static let hostBootstrapSimctlCommandsPerAlias = 5
-  private static let leaseAcquireSimctlCommands = 4
+  private static let leaseAcquireBootSimctlCommands = 2
+  private static let leaseAcquireDataIdentityLists = 2
+  private static let leaseAcquireEraseCommands = 1
+  private static let leaseAcquireStateLoads = 5
   private static let processSamplerInvocationsPerStateLoad = 1
   private static let processSamplerTimeoutSeconds = 10
   private static let simctlInventoryCommandsPerStateLoad = 3
   private static let capacitySimctlCommandsPerAction = 4
   private static let simctlCommandTimeoutSeconds = 120
+  private static let slotReclaimCommandsPerAlias = 3
+  private static let slotReclaimSharedListCommands = 1
   private static let staleContainmentProcessSamplerInvocations = 8
   private static let stateLoadBudgetSeconds = (simctlInventoryCommandsPerStateLoad * simctlCommandTimeoutSeconds)
     + (processSamplerInvocationsPerStateLoad * processSamplerTimeoutSeconds)
+  private static let uiAcquireMutationLockWaits = 3
+  private static let uiAcquireNestedLockWaits = 2
+  private static let uiResetBootCommands = 2
+  private static let uiResetDecisionInventoryCommands = 3
+  private static let uiResetEraseCommands = 1
+  private static let uiResetPostBootIdentityLists = 1
+  private static let uiResetPreSimctlIdentityLists = 1
+  private static let uiResetShutdownCommands = 2
+  private static let uiResetHolderSimctlCommands = uiResetDecisionInventoryCommands
+    + uiResetPreSimctlIdentityLists
+    + uiResetShutdownCommands
+    + uiResetEraseCommands
+    + uiResetBootCommands
+    + uiResetPostBootIdentityLists
+  private static let uiResetHolderWaitMilliseconds = uiResetHolderSimctlCommands * simctlCommandTimeoutSeconds * 1000
+  // Shutdown, the Shutting Down wait, and erase. Reclaim stays the longer device budget.
+  private static let leaseAcquireResetSimctlCommands = uiResetShutdownCommands
+    + leaseAcquireEraseCommands
+    + leaseAcquireBootSimctlCommands
+  private static let leaseAcquireReclaimSimctlCommands = slotReclaimSharedListCommands
+    + slotReclaimCommandsPerAlias
+    + leaseAcquireBootSimctlCommands
 
   let command: String
   let group: String
@@ -156,13 +183,7 @@ struct BrokerCommandRequest: Sendable {
         + hostInitBootstrapBudgetSeconds(paths: paths)
     }
     if group == "lease", command == "acquire" {
-      return Self.defaultCommandTimeoutSeconds
-        + leaseLockTimeoutSeconds
-        + timeoutSeconds(option: "resetLockTimeoutMilliseconds", fallbackMilliseconds: Self.defaultLockTimeoutMilliseconds)
-        + timeoutSeconds(option: "resetSettleMilliseconds", fallbackMilliseconds: Self.defaultResetSettleMilliseconds)
-        + leaseAcquireResetSimctlBudgetSeconds
-        + snapshotLockBudget
-        + stateLoadBudget
+      return leaseAcquireExecutionTimeoutSeconds(paths: paths)
     }
     if group == "lease", command == "contain" {
       let diagnosticTimeout = options["captureDiagnostics"]?.boolValue == true
@@ -325,6 +346,10 @@ struct BrokerCommandRequest: Sendable {
   }
 
   private func staleContainmentBudgetSeconds(paths: BrokerRuntimePaths?, stateLoadCount: Int = 1) -> Int {
+    ceilingSeconds(milliseconds: staleContainmentBudgetMilliseconds(paths: paths, stateLoadCount: stateLoadCount))
+  }
+
+  private func staleContainmentBudgetMilliseconds(paths: BrokerRuntimePaths?, stateLoadCount: Int) -> Int {
     guard mayRunStaleContainment else {
       return 0
     }
@@ -340,12 +365,11 @@ struct BrokerCommandRequest: Sendable {
       option: "termWaitMs",
       fallbackMilliseconds: Self.defaultContainmentTermWaitMilliseconds
     )
-    let budgetMilliseconds = loadCount * staleLeaseCount * (
+    return loadCount * staleLeaseCount * (
       (Self.staleContainmentProcessSamplerInvocations * Self.processSamplerTimeoutSeconds * 1000)
         + termWaitMilliseconds
         + Self.defaultContainmentPostKillWaitMilliseconds
     )
-    return Int(ceil(Double(budgetMilliseconds) / 1000.0))
   }
 
   private func staleContainmentLeaseCount(paths: BrokerRuntimePaths?) -> Int {
@@ -426,10 +450,88 @@ struct BrokerCommandRequest: Sendable {
     writesFinalSnapshot ? leaseLockTimeoutSeconds : 0
   }
 
-  private var leaseAcquireResetSimctlBudgetSeconds: Int {
-    group == "lease" && command == "acquire"
-      ? Self.leaseAcquireSimctlCommands * Self.simctlCommandTimeoutSeconds
-      : 0
+  private func leaseAcquireExecutionTimeoutSeconds(paths: BrokerRuntimePaths?) -> Int {
+    let leaseLockMilliseconds = positiveDurationMilliseconds(
+      option: "leaseLockTimeoutMilliseconds",
+      fallbackMilliseconds: Self.defaultLockTimeoutMilliseconds
+    )
+    let snapshotLockMilliseconds = writesFinalSnapshot ? leaseLockMilliseconds : 0
+    let budgetMilliseconds = (Self.defaultCommandTimeoutSeconds * 1000)
+      + leaseLockMilliseconds
+      + uiAcquireLockBudgetMilliseconds
+      + positiveDurationMilliseconds(
+        option: "resetSettleMilliseconds",
+        fallbackMilliseconds: Self.defaultResetSettleMilliseconds
+      )
+      + leaseAcquireResetSimctlBudgetMilliseconds(paths: paths)
+      + snapshotLockMilliseconds
+      + brokerStateLoadBudgetMilliseconds(for: Self.leaseAcquireStateLoads, paths: paths)
+    return ceilingSeconds(milliseconds: budgetMilliseconds)
+  }
+
+  private var uiAcquireLockBudgetMilliseconds: Int {
+    let holderWait = positiveDurationMilliseconds(
+      option: "resetLockTimeoutMilliseconds",
+      fallbackMilliseconds: Self.uiResetHolderWaitMilliseconds
+    )
+    return (Self.uiAcquireNestedLockWaits * (holderWait + holderWait))
+      + (Self.uiAcquireMutationLockWaits * holderWait)
+  }
+
+  private func leaseAcquireResetSimctlBudgetMilliseconds(paths: BrokerRuntimePaths?) -> Int {
+    let deviceCommands = enabledReclaimCandidateCount(paths: paths) > 0
+      ? Self.leaseAcquireReclaimSimctlCommands
+      : Self.leaseAcquireResetSimctlCommands
+    return (deviceCommands + Self.leaseAcquireDataIdentityLists) * Self.simctlCommandTimeoutSeconds * 1000
+  }
+
+  private func brokerStateLoadBudgetMilliseconds(for stateLoadCount: Int, paths: BrokerRuntimePaths?) -> Int {
+    let loadCount = max(0, stateLoadCount)
+    let perLoadMilliseconds = Self.stateLoadBudgetSeconds * 1000
+    return (loadCount * perLoadMilliseconds)
+      + staleContainmentBudgetMilliseconds(paths: paths, stateLoadCount: loadCount)
+  }
+
+  private func enabledReclaimCandidateCount(paths: BrokerRuntimePaths?) -> Int {
+    guard let paths,
+          let data = try? Data(contentsOf: paths.hostConfigURL),
+          let hostConfig = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      return 0
+    }
+    let policy = hostConfig["slotReclaim"] as? [String: Any]
+    guard (policy?["enabled"] as? Bool) ?? true else {
+      return 0
+    }
+    let buildEnabled = ((policy?["build"] as? [String: Any])?["enabled"] as? Bool) ?? true
+    let manualEnabled = ((policy?["manual"] as? [String: Any])?["enabled"] as? Bool) ?? false
+    guard let aliases = hostConfig["aliases"] as? [Any] else {
+      return 0
+    }
+    var count = 0
+    for rawAlias in aliases {
+      guard let alias = rawAlias as? [String: Any],
+            let className = reclaimClassName(for: alias) else {
+        continue
+      }
+      if (className == "build" && buildEnabled) || (className == "manual" && manualEnabled) {
+        count += 1
+      }
+    }
+    return count
+  }
+
+  private func reclaimClassName(for alias: [String: Any]) -> String? {
+    if alias["resetPolicy"] as? String == "erase-on-acquire" {
+      return nil
+    }
+    let capabilities = (alias["capabilities"] as? [Any] ?? []).compactMap { $0 as? String }
+    if capabilities.contains("manual-persistent") {
+      return "manual"
+    }
+    if capabilities.contains("build-fast") {
+      return "build"
+    }
+    return nil
   }
 
   private var leaseLockTimeoutSeconds: Int {
@@ -608,7 +710,17 @@ struct BrokerCommandRequest: Sendable {
   }
 
   private func timeoutSeconds(option: String, fallbackMilliseconds: Int = 0) -> Int {
-    let milliseconds = timeoutMilliseconds(option: option, fallbackMilliseconds: fallbackMilliseconds)
+    ceilingSeconds(milliseconds: timeoutMilliseconds(option: option, fallbackMilliseconds: fallbackMilliseconds))
+  }
+
+  private func positiveDurationMilliseconds(option: String, fallbackMilliseconds: Int) -> Int {
+    guard let value = options[option]?.intValue, value > 0 else {
+      return fallbackMilliseconds
+    }
+    return value
+  }
+
+  private func ceilingSeconds(milliseconds: Int) -> Int {
     guard milliseconds > 0 else {
       return 0
     }

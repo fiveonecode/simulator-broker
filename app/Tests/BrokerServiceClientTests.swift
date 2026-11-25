@@ -127,7 +127,11 @@ final class BrokerServiceClientTests: XCTestCase {
       ).executionTimeoutSeconds,
       7100
     )
-    XCTAssertEqual(BrokerCommandRequest(command: "acquire", group: "lease", options: [:]).executionTimeoutSeconds, 1431)
+    XCTAssertEqual(BrokerCommandRequest(command: "acquire", group: "lease", options: [:]).executionTimeoutSeconds, 11_241)
+    XCTAssertGreaterThanOrEqual(
+      BrokerCommandRequest(command: "acquire", group: "lease", options: [:]).executionTimeoutSeconds * 1000,
+      11_235_250
+    )
     XCTAssertEqual(BrokerCommandRequest(command: "release", group: "lease", options: [:]).executionTimeoutSeconds, 890)
     XCTAssertEqual(BrokerCommandRequest(command: "release", group: "lease", options: [:]).transferTimeoutSeconds, 950)
     XCTAssertEqual(BrokerCommandRequest(command: "create", group: "pin", options: [:]).executionTimeoutSeconds, 890)
@@ -235,6 +239,127 @@ final class BrokerServiceClientTests: XCTestCase {
 
     XCTAssertEqual(budget.executionTimeoutSeconds, 1051)
     XCTAssertEqual(budget.transferTimeoutSeconds, 1111)
+
+    let acquire = BrokerCommandRequest(command: "acquire", group: "lease", options: [:])
+      .timeoutBudget(paths: fixture.paths)
+    XCTAssertEqual(acquire.executionTimeoutSeconds, 11_642)
+    XCTAssertGreaterThanOrEqual(acquire.executionTimeoutSeconds * 1000, 11_235_250)
+  }
+
+  func testLeaseAcquireTimeoutUsesResetHolderWaitsAndReclaimDeviceBudget() throws {
+    let scaled = BrokerCommandRequest(
+      command: "acquire",
+      group: "lease",
+      options: [
+        "leaseLockTimeoutMilliseconds": .int(90_000),
+        "resetLockTimeoutMilliseconds": .int(120_000),
+        "resetSettleMilliseconds": .int(500),
+      ]
+    )
+    XCTAssertEqual(scaled.executionTimeoutSeconds, 3_741)
+    XCTAssertGreaterThanOrEqual(scaled.executionTimeoutSeconds * 1000, 3_735_500)
+
+    let fixture = try makeServiceFixture()
+    let baseline = BrokerCommandRequest(command: "acquire", group: "lease", options: [:])
+      .timeoutBudget(paths: fixture.paths)
+    XCTAssertEqual(baseline.executionTimeoutSeconds, 11_241)
+
+    try writeJSONObject([
+      "aliases": [
+        [
+          "alias": "build-1",
+          "capabilities": ["build-fast"],
+          "resetPolicy": "none",
+        ],
+      ],
+      "version": 1,
+    ], to: fixture.paths.hostConfigURL)
+    let oneCandidate = BrokerCommandRequest(command: "acquire", group: "lease", options: [:])
+      .timeoutBudget(paths: fixture.paths)
+    XCTAssertEqual(oneCandidate.executionTimeoutSeconds, baseline.executionTimeoutSeconds + 120)
+
+    try writeJSONObject([
+      "aliases": [
+        [
+          "alias": "build-1",
+          "capabilities": ["build-fast"],
+          "resetPolicy": "none",
+        ],
+        [
+          "alias": "build-2",
+          "capabilities": ["build-fast"],
+          "resetPolicy": "none",
+        ],
+      ],
+      "version": 1,
+    ], to: fixture.paths.hostConfigURL)
+    let twoCandidates = BrokerCommandRequest(command: "acquire", group: "lease", options: [:])
+      .timeoutBudget(paths: fixture.paths)
+    XCTAssertEqual(twoCandidates.executionTimeoutSeconds, oneCandidate.executionTimeoutSeconds)
+
+    try writeJSONObject([
+      "aliases": [
+        [
+          "alias": "manual-1",
+          "capabilities": ["manual-persistent"],
+          "resetPolicy": "none",
+        ],
+      ],
+      "version": 1,
+    ], to: fixture.paths.hostConfigURL)
+    let manual = BrokerCommandRequest(command: "acquire", group: "lease", options: [:])
+      .timeoutBudget(paths: fixture.paths)
+    XCTAssertEqual(manual.executionTimeoutSeconds, baseline.executionTimeoutSeconds)
+
+    try writeJSONObject([
+      "aliases": [
+        [
+          "alias": "manual-1",
+          "capabilities": ["manual-persistent"],
+          "resetPolicy": "none",
+        ],
+      ],
+      "slotReclaim": [
+        "manual": [
+          "enabled": true,
+        ],
+      ],
+      "version": 1,
+    ], to: fixture.paths.hostConfigURL)
+    let enabledManual = BrokerCommandRequest(command: "acquire", group: "lease", options: [:])
+      .timeoutBudget(paths: fixture.paths)
+    XCTAssertEqual(enabledManual.executionTimeoutSeconds, baseline.executionTimeoutSeconds + 120)
+
+    try writeJSONObject([
+      "aliases": [
+        [
+          "alias": "build-1",
+          "capabilities": ["build-fast"],
+          "resetPolicy": "none",
+        ],
+      ],
+      "slotReclaim": [
+        "enabled": false,
+      ],
+      "version": 1,
+    ], to: fixture.paths.hostConfigURL)
+    let disabled = BrokerCommandRequest(command: "acquire", group: "lease", options: [:])
+      .timeoutBudget(paths: fixture.paths)
+    XCTAssertEqual(disabled.executionTimeoutSeconds, baseline.executionTimeoutSeconds)
+
+    try writeJSONObject([
+      "aliases": [
+        [
+          "alias": "ui-1",
+          "capabilities": ["build-fast"],
+          "resetPolicy": "erase-on-acquire",
+        ],
+      ],
+      "version": 1,
+    ], to: fixture.paths.hostConfigURL)
+    let eraseOnAcquire = BrokerCommandRequest(command: "acquire", group: "lease", options: [:])
+      .timeoutBudget(paths: fixture.paths)
+    XCTAssertEqual(eraseOnAcquire.executionTimeoutSeconds, baseline.executionTimeoutSeconds)
   }
 
   func testRepairTimeoutBudgetScalesWithPendingRetirements() throws {
