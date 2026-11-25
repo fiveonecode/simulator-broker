@@ -4249,7 +4249,7 @@ test("service mutation timeouts cover broker lock waits", () => {
     command: "erase",
     group: "simulators",
     options: {},
-  }), 1_125_000);
+  }), 1_245_000);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "repair",
     group: "simulators",
@@ -4315,7 +4315,7 @@ test("service mutation timeouts cover broker lock waits", () => {
   for (const [command, baselineMs] of [
     ["boot", 1_125_000],
     ["shutdown", 1_005_000],
-    ["erase", 1_125_000],
+    ["erase", 1_245_000],
   ]) {
     assert.equal(serviceCommandExecutionTimeoutMs({
       command,

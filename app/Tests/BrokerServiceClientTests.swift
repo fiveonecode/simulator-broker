@@ -148,8 +148,8 @@ final class BrokerServiceClientTests: XCTestCase {
     XCTAssertEqual(BrokerCommandRequest(command: "boot", group: "simulators", options: [:]).transferTimeoutSeconds, 1190)
     XCTAssertEqual(BrokerCommandRequest(command: "shutdown", group: "simulators", options: [:]).executionTimeoutSeconds, 1010)
     XCTAssertEqual(BrokerCommandRequest(command: "shutdown", group: "simulators", options: [:]).transferTimeoutSeconds, 1070)
-    XCTAssertEqual(BrokerCommandRequest(command: "erase", group: "simulators", options: [:]).executionTimeoutSeconds, 1130)
-    XCTAssertEqual(BrokerCommandRequest(command: "erase", group: "simulators", options: [:]).transferTimeoutSeconds, 1190)
+    XCTAssertEqual(BrokerCommandRequest(command: "erase", group: "simulators", options: [:]).executionTimeoutSeconds, 1250)
+    XCTAssertEqual(BrokerCommandRequest(command: "erase", group: "simulators", options: [:]).transferTimeoutSeconds, 1310)
     XCTAssertEqual(BrokerCommandRequest(command: "repair", group: "simulators", options: [:]).executionTimeoutSeconds, 2150)
     XCTAssertEqual(BrokerCommandRequest(command: "repair", group: "simulators", options: [:]).transferTimeoutSeconds, 2210)
     XCTAssertEqual(

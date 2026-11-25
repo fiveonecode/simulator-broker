@@ -9345,6 +9345,11 @@ function runLifecycleActionBroker(paths, action, options = {}) {
       registryEntry.health = "repair-needed";
       registryEntry.driftReason = error.payload?.cause ?? error.message;
       registryEntry.driftCauseCode = knownDriftCauseCode(error.payload?.reasonCode);
+      // Queued prepare has not started simctl. Reconcile will not run it while
+      // the alias stays repair-needed, and delete would treat it as busy.
+      if (registryEntry.prepare?.state === "queued") {
+        registryEntry.prepare = null;
+      }
       registryEntry.updatedAt = timestamp;
       state.registry.updatedAt = timestamp;
       writeRegistry(paths, state.registry);

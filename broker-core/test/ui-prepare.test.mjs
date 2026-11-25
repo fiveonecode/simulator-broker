@@ -18,6 +18,7 @@ import {
   readEventsBroker,
   reconcileUiPrepareBroker,
   releaseLeaseBroker,
+  repairPurposeSimulatorsBroker,
   repairSimulatorBroker,
   resolveBrokerPaths,
 } from "../index.mjs";
@@ -992,6 +993,91 @@ test("purpose delete counts a preparing UI alias as held", () => {
     && error.payload?.held === 1);
   assert.equal(fixture.calls.length, 0);
   assert.equal(readJson(registryPath).aliases["ui-1"].prepare.state, "erasing");
+});
+
+test("a failed runtime repair clears a queued prepare so purpose delete can remove the alias", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const lease = acquireLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+    actorId: "agent-a",
+    actorType: "agent",
+    alias: "ui-1",
+    purposeId: "agent-ui-session",
+  })).lease;
+  releaseLeaseBroker(fixture.resolvedPaths, runtimeOptions(fixture, { leaseId: lease.leaseId }));
+  const queued = readJson(registryPath).aliases["ui-1"];
+  assert.equal(queued.prepare.state, "queued");
+
+  const simctlState = readJson(fixture.paths.simctl.statePath);
+  simctlState.devices = simctlState.devices.filter((device) => device.udid !== "SIM-UI-1");
+  writeJson(fixture.paths.simctl.statePath, simctlState);
+  hostStatusBroker(fixture.resolvedPaths, runtimeOptions(fixture));
+
+  const latched = readJson(registryPath).aliases["ui-1"];
+  assert.equal(latched.health, "repair-needed");
+  assert.equal(latched.driftReason, "simulator-missing");
+  assert.equal(latched.prepare.state, "queued");
+  assert.equal(latched.prepare.token, queued.prepare.token);
+  assert.equal(readJson(registryPath).aliases["ui-2"].health, "healthy");
+
+  fixture.adapter.listRuntimes = () => ({ runtimes: [] });
+  assert.throws(() => {
+    repairPurposeSimulatorsBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+      actorId: "agent-a",
+      actorType: "agent",
+      purposeId: "agent-ui-session",
+    }));
+  }, (error) => error instanceof BrokerError
+    && error.exitCode === 4
+    && error.payload?.reasonCode === "purpose-repair-failed"
+    && error.payload?.reasons?.includes("runtime-not-found")
+    && error.payload?.failed === 1
+    && error.payload?.held === 0);
+
+  const afterRepair = readJson(registryPath).aliases["ui-1"];
+  assert.equal(afterRepair.health, "repair-needed");
+  assert.equal(afterRepair.driftCauseCode, "runtime-not-found");
+  assert.equal(afterRepair.prepare ?? null, null);
+  assert.equal(readJson(registryPath).aliases["ui-2"].health, "healthy");
+
+  const deleted = deletePurposeSimulatorsBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+    actorId: "agent-a",
+    actorType: "agent",
+    purposeId: "agent-ui-session",
+  }));
+  assert.equal(deleted.deleted, 1);
+  assert.equal(deleted.failed, 0);
+  assert.equal(deleted.held, 0);
+  assert.equal(readJson(fixture.paths.hostConfigPath).aliases.some((alias) => alias.alias === "ui-1"), false);
+  assert.equal(readJson(registryPath).aliases["ui-1"] ?? null, null);
+  assert.equal(readJson(registryPath).aliases["ui-2"].health, "healthy");
+});
+
+test("a failed repair leaves an erasing prepare in place", () => {
+  const fixture = makeFixture();
+  const registryPath = path.join(fixture.paths.stateRoot, "registry.json");
+  const registry = readJson(registryPath);
+  registry.aliases["ui-1"].health = "repair-needed";
+  registry.aliases["ui-1"].driftReason = "simulator-missing";
+  registry.aliases["ui-1"].prepare = {
+    ownerPid: process.pid,
+    state: "erasing",
+    token: "prepare-token",
+  };
+  writeJson(registryPath, registry);
+  fixture.adapter.listRuntimes = () => ({ runtimes: [] });
+
+  assert.throws(() => {
+    repairSimulatorBroker(fixture.resolvedPaths, runtimeOptions(fixture, {
+      alias: "ui-1",
+    }));
+  }, (error) => error instanceof BrokerError && error.payload?.reasonCode === "runtime-not-found");
+
+  const after = readJson(registryPath).aliases["ui-1"];
+  assert.equal(after.health, "repair-needed");
+  assert.equal(after.driftCauseCode, "runtime-not-found");
+  assert.equal(after.prepare.state, "erasing");
+  assert.equal(after.prepare.token, "prepare-token");
 });
 
 test("a queued prepare does not hide a missing device", () => {

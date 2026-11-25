@@ -680,8 +680,11 @@ struct BrokerCommandRequest: Sendable {
     }
     var commandCount: Int
     switch command {
-    case "boot", "erase":
+    case "boot":
       commandCount = 2
+    case "erase":
+      // Shutdown, erase, and the unleased data-identity list.
+      commandCount = 3
     case "shutdown":
       commandCount = 1
     case "repair":

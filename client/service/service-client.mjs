@@ -53,7 +53,8 @@ const HOST_BOOTSTRAP_RETIREMENT_STATE_LOADS = 1;
 const HOST_BOOTSTRAP_SIMCTL_COMMANDS_PER_ALIAS = SIMCTL_INVENTORY_COMMANDS_PER_STATE_LOAD + 2;
 const SIMULATOR_LIFECYCLE_SIMCTL_COMMANDS = {
   boot: 2,
-  erase: 2,
+  // Shutdown, erase, and the unleased data-identity list.
+  erase: 3,
   repair: 10,
   shutdown: 1,
 };
