@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.16] - 2026-11-25
+
+Alpha 16 keeps the Alpha 15 install and four-custom-asset contract. UI
+shutdown, erase, and first boot run outside the broker mutation lock, with
+one reset lock per alias and at most two erase-or-boot operations at once.
+An empty runtime list does not mark every idle alias `repair-needed`.
+
 ### Changed
 
 - UI leases still erase before the next holder is returned. A running `brokerd`
