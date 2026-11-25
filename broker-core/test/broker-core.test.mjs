@@ -46,7 +46,7 @@ import {
   writeAppSnapshotArtifact,
   writeAppSnapshotArtifactUnderMutationLock,
 } from "../index.mjs";
-import { defaultProcessSampler } from "../containment.mjs";
+import { defaultProcessSampler, sampleProcessByPid } from "../containment.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS, SIMCTL_INVENTORY_MAX_BUFFER_BYTES, createSystemSimctlAdapter } from "../simctl.mjs";
 import { createDeviceRecord, createSimctlFixture } from "./support/simctl-fixture.mjs";
 
@@ -4292,6 +4292,43 @@ test("default process sampler bounds stalled process inventory subprocesses", ()
   });
 });
 
+test("lock owner sampler reads one live pid and treats an empty miss as absent", () => {
+  const records = sampleProcessByPid(process.pid);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].pid, process.pid);
+  assert.equal(typeof records[0].elapsed, "string");
+  assert.equal(records[0].elapsed.length > 0, true);
+
+  assert.deepEqual(sampleProcessByPid(4242, {
+    spawnSyncImpl() {
+      return { signal: null, status: 1 };
+    },
+  }), []);
+});
+
+test("lock owner sampler queries one pid and bounds a stalled sample", () => {
+  let receivedArgs = null;
+  let receivedTimeout = null;
+  assert.throws(() => {
+    sampleProcessByPid(process.pid, {
+      spawnSyncImpl(_command, args, options) {
+        receivedArgs = args;
+        receivedTimeout = options.timeout;
+        const error = new Error("spawn timed out");
+        error.code = "ETIMEDOUT";
+        return { error };
+      },
+      timeoutMs: 250,
+    });
+  }, (error) => {
+    assert.deepEqual(receivedArgs.slice(0, 2), ["-p", String(process.pid)]);
+    assert.equal(receivedArgs.includes("-axww"), false);
+    assert.equal(receivedTimeout, 250);
+    assert.equal(error.code, "PROCESS_SAMPLER_TIMEOUT");
+    return true;
+  });
+});
+
 test("system simctl boot propagates nonzero command results", () => {
   const adapter = createSystemSimctlAdapter({
     commandRunner(args, options) {
@@ -5499,6 +5536,63 @@ test("capacity reconcile treats busy matching capacity as non-actionable", () =>
   assert.equal(plan.blockedReasons[0].purposeId, "agent-ipad-session");
   assert.deepEqual(plan.blockedReasons[0].blockingReasons, [{ code: "matching-capacity-busy" }]);
   assert.equal(plan.blockedReasons[0].recommendedAction, "retry_when_available");
+});
+
+test("capacity check maps an in-progress UI prepare to busy capacity", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  function setPrepare(alias, state) {
+    const registry = readJson(resolvedPaths.registryPath);
+    registry.aliases[alias].prepare = {
+      ownerPid: process.pid,
+      state,
+      token: `${alias}-${state}`,
+    };
+    writeJson(resolvedPaths.registryPath, registry);
+  }
+
+  function checkUiCapacity() {
+    return checkCapacityBroker(resolvedPaths, runtimeOptions(paths, {
+      processExists: () => true,
+      purposeId: "agent-ui-session",
+    }));
+  }
+
+  setPrepare("ui-1", "erasing");
+  const partial = checkUiCapacity();
+  assert.equal(partial.purposes[0].status, "available");
+  assert.equal(partial.purposes[0].recommendedAction, "none");
+
+  setPrepare("ui-2", "booting");
+  const before = readJson(resolvedPaths.registryPath);
+  const report = checkUiCapacity();
+  const preview = reconcileCapacityBroker(resolvedPaths, runtimeOptions(paths, {
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+  }));
+
+  assert.equal(report.status, "needs_attention");
+  assert.equal(report.purposes[0].status, "unavailable");
+  assert.deepEqual(report.purposes[0].blockingReasons, [{ code: "matching-capacity-busy" }]);
+  assert.equal(report.purposes[0].recommendedAction, "retry_when_available");
+  assert.equal(JSON.stringify(report).includes("ui-1"), false);
+  assert.equal(preview.status, "blocked");
+  assert.deepEqual(preview.actions, []);
+  assert.equal(preview.blockedReasons[0].purposeId, "agent-ui-session");
+  assert.deepEqual(preview.blockedReasons[0].blockingReasons, [{ code: "matching-capacity-busy" }]);
+  assert.equal(preview.blockedReasons[0].recommendedAction, "retry_when_available");
+  assert.deepEqual(readJson(resolvedPaths.registryPath).aliases["ui-1"].prepare, before.aliases["ui-1"].prepare);
+  assert.deepEqual(readJson(resolvedPaths.registryPath).aliases["ui-2"].prepare, before.aliases["ui-2"].prepare);
+
+  setPrepare("ui-1", "queued");
+  setPrepare("ui-2", "queued");
+  const queued = checkUiCapacity();
+  assert.equal(queued.purposes[0].status, "available");
+  assert.equal(queued.purposes[0].recommendedAction, "none");
 });
 
 test("capacity reconcile apply creates additive capacity and is idempotent after a fresh no-changes preview", () => {
@@ -7011,14 +7105,16 @@ test("reset lock timeout preserves a live owner lock", () => {
   writeBaseProject(paths.projectFilePath);
   const resolvedPaths = brokerPaths(paths);
   initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
-  fs.mkdirSync(resolvedPaths.resetLockDir, { recursive: true });
-  writeJson(resolvedPaths.resetLockOwnerPath, {
+  const aliasLockDir = path.join(paths.stateRoot, "locks", "reset", "ui-1.lock");
+  const aliasLockOwnerPath = path.join(aliasLockDir, "owner.json");
+  fs.mkdirSync(aliasLockDir, { recursive: true });
+  writeJson(aliasLockOwnerPath, {
     pid: process.pid,
     startedAt: new Date(0).toISOString(),
   });
   const oldTimestamp = new Date(0);
-  fs.utimesSync(resolvedPaths.resetLockDir, oldTimestamp, oldTimestamp);
-  fs.utimesSync(resolvedPaths.resetLockOwnerPath, oldTimestamp, oldTimestamp);
+  fs.utimesSync(aliasLockDir, oldTimestamp, oldTimestamp);
+  fs.utimesSync(aliasLockOwnerPath, oldTimestamp, oldTimestamp);
 
   assert.throws(() => {
     acquireLeaseBroker(resolvedPaths, {
@@ -7030,11 +7126,17 @@ test("reset lock timeout preserves a live owner lock", () => {
       resetLockTimeoutMilliseconds: 1,
       simctlAdapter: paths.simctl.adapter,
     });
-  }, (error) => error.payload?.reasonCode === "reset-on-acquire-failed");
+  }, (error) => error.payload?.reasonCode === "reset-lock-timeout" && error.exitCode === 3);
 
-  assert.equal(fs.existsSync(resolvedPaths.resetLockOwnerPath), true);
-  assert.equal(readJson(resolvedPaths.resetLockOwnerPath).pid, process.pid);
+  assert.equal(fs.existsSync(aliasLockOwnerPath), true);
+  assert.equal(readJson(aliasLockOwnerPath).pid, process.pid);
   assert.equal(fs.readdirSync(path.join(paths.stateRoot, "leases")).length, 0);
+  const registry = readJson(resolvedPaths.registryPath);
+  assert.equal(registry.aliases["ui-1"].health, "healthy");
+  assert.equal(registry.aliases["ui-1"].activeLeaseId, null);
+  assert.equal(registry.aliases["ui-1"].driftReason ?? null, null);
+  assert.equal(registry.aliases["ui-1"].prepare ?? null, null);
+  assert.equal(registry.aliases["ui-1"].cleanProof ?? null, null);
 });
 
 test("project init scaffolds a starter project file and records it for later app snapshots", () => {
@@ -7578,6 +7680,119 @@ test("stale lease recovery restarts grace and reuses the reclaimed warm alias", 
   assert.ok(events.some((event) => event.type === "lease.reclaimed" && event.leaseId === staleLease.leaseId));
 });
 
+test("manual boot-on-acquire holds the mutation lock during simctl", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  let sawLock = false;
+  const adapter = {
+    ...paths.simctl.adapter,
+    bootDevice(simulatorId) {
+      sawLock = fs.existsSync(resolvedPaths.leaseLockDir);
+      return paths.simctl.adapter.bootDevice(simulatorId);
+    },
+    waitForBooted(simulatorId) {
+      sawLock = fs.existsSync(resolvedPaths.leaseLockDir);
+      return paths.simctl.adapter.waitForBooted(simulatorId);
+    },
+  };
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  const lease = acquireLeaseBroker(resolvedPaths, {
+    actorId: "operator",
+    actorType: "human",
+    ownerPid: process.pid,
+    processExists: (pid) => pid === process.pid,
+    purposeId: "manual-testing",
+    simctlAdapter: adapter,
+  }).lease;
+
+  assert.equal(lease.alias, "manual-1");
+  assert.equal(sawLock, true);
+  assert.equal(fs.existsSync(resolvedPaths.leaseLockDir), false);
+});
+
+// Claim and boot each create the mutation lock, and writing the lock owner
+// mkdirs that same directory again. Later creates stay held so the repair
+// write cannot take it. The lock owner is this process, so it stays live.
+function holdLeaseLockAfter(lockDir, ownerPath, successfulCreates, run) {
+  const originalMkdirSync = fs.mkdirSync;
+  let created = 0;
+  fs.mkdirSync = function patchedMkdirSync(target, ...args) {
+    if (target !== lockDir) {
+      return originalMkdirSync.call(fs, target, ...args);
+    }
+    if (created >= successfulCreates) {
+      if (!fs.existsSync(target)) {
+        originalMkdirSync.call(fs, target);
+        writeJson(ownerPath, {
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+        });
+      }
+      const held = new Error("EEXIST");
+      held.code = "EEXIST";
+      throw held;
+    }
+    created += 1;
+    return originalMkdirSync.call(fs, target, ...args);
+  };
+  try {
+    return run();
+  } finally {
+    fs.mkdirSync = originalMkdirSync;
+    fs.rmSync(lockDir, { force: true, recursive: true });
+  }
+}
+
+test("a failed manual boot leaves no active lease when the repair write cannot take the mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const failingAdapter = {
+    ...paths.simctl.adapter,
+    bootDevice() {
+      throw new Error("boot failed");
+    },
+  };
+  const repairTimeoutMs = 400;
+  const startedAt = Date.now();
+
+  assert.throws(() => {
+    holdLeaseLockAfter(
+      resolvedPaths.leaseLockDir,
+      resolvedPaths.leaseLockOwnerPath,
+      4,
+      () => {
+        acquireLeaseBroker(resolvedPaths, {
+          actorId: "operator",
+          actorType: "human",
+          leaseLockTimeoutMilliseconds: 50,
+          ownerPid: process.pid,
+          processExists: (pid) => pid === process.pid,
+          purposeId: "manual-testing",
+          resetLockTimeoutMilliseconds: repairTimeoutMs,
+          simctlAdapter: failingAdapter,
+        });
+      },
+    );
+  }, (error) => error instanceof BrokerError
+    && error.payload?.reasonCode === "boot-on-acquire-failed"
+    && error.payload?.rollbackFailed === true
+    && error.exitCode === 4);
+
+  assert.ok(Date.now() - startedAt >= repairTimeoutMs);
+  assert.equal(fs.readdirSync(resolvedPaths.leasesDir).length, 0);
+  hostStatusBroker(resolvedPaths, runtimeOptions(paths, {
+    processExists: (pid) => pid === process.pid,
+  }));
+  const after = readJson(resolvedPaths.registryPath).aliases["manual-1"];
+  assert.equal(after.activeLeaseId, null);
+});
+
 test("acquire marks an alias repair-needed and rolls back when boot fails", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
@@ -7608,7 +7823,7 @@ test("acquire marks an alias repair-needed and rolls back when boot fails", () =
   assert.equal(registry.aliases["ui-1"].driftReason, "boot-on-acquire-failed");
 });
 
-test("acquire reports boot failure when rollback registry persistence also fails", () => {
+test("a post-boot publish failure removes the lease when registry persistence fails", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
   writeBaseProject(paths.projectFilePath);
@@ -7634,10 +7849,12 @@ test("acquire reports boot failure when rollback registry persistence also fails
     });
   }, (error) =>
     error instanceof BrokerError
-      && error.payload?.reasonCode === "boot-on-acquire-failed"
-      && error.payload?.rollbackFailed === true);
+      && /EISDIR/.test(error.message)
+      && error.payload?.reasonCode !== "boot-on-acquire-failed"
+      && error.payload?.rollbackFailed === true
+      && typeof error.payload?.leaseId === "string");
 
-  assert.equal(fs.readdirSync(resolvedPaths.leasesDir).length, 1);
+  assert.equal(fs.readdirSync(resolvedPaths.leasesDir).length, 0);
   fs.rmSync(resolvedPaths.registryPath, { force: true, recursive: true });
 });
 

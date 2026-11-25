@@ -24,7 +24,7 @@ import {
   PROCESS_SAMPLER_TIMEOUT_MS,
   STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS,
 } from "../../broker-core/containment.mjs";
-import { HOST_BOOTSTRAP_DEVICE_WARNING, readEventsBroker, resolveBrokerPaths } from "../../broker-core/index.mjs";
+import { HOST_BOOTSTRAP_DEVICE_WARNING, readEventsBroker, resolveBrokerPaths, uiAliasLockWaitMs, uiPrepareAliasBudgetMs } from "../../broker-core/index.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS } from "../../broker-core/simctl.mjs";
 import { createDeviceRecord, createSimctlFixture } from "../../broker-core/test/support/simctl-fixture.mjs";
 
@@ -4104,7 +4104,7 @@ test("service lease acquire timeout includes reset and boot-on-acquire budgets",
     command: "acquire",
     group: "lease",
     options: {},
-  }), 1_425_250);
+  }), 11_235_250);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "acquire",
     group: "lease",
@@ -4113,7 +4113,7 @@ test("service lease acquire timeout includes reset and boot-on-acquire budgets",
       resetLockTimeoutMilliseconds: 120_000,
       resetSettleMilliseconds: 500,
     },
-  }), 1_545_500);
+  }), 3_735_500);
 });
 
 test("service idle timeouts cover serialized state, snapshots, and bounded shutdown work", () => {
@@ -4156,7 +4156,9 @@ test("service stop timeout adds serialized command drain and idle reconciliation
 
   assert.equal(
     serviceStopTimeoutMs(paths, { activeCommandDrainTimeoutMilliseconds }),
-    idleReconciliationBudgetMilliseconds + activeCommandDrainTimeoutMilliseconds,
+    idleReconciliationBudgetMilliseconds
+      + activeCommandDrainTimeoutMilliseconds
+      + (2 * uiPrepareAliasBudgetMs()),
   );
 });
 
@@ -4247,7 +4249,7 @@ test("service mutation timeouts cover broker lock waits", () => {
     command: "erase",
     group: "simulators",
     options: {},
-  }), 1_125_000);
+  }), 1_245_000);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "repair",
     group: "simulators",
@@ -4268,22 +4270,112 @@ test("service mutation timeouts cover broker lock waits", () => {
   }, {
     pendingRetirementCount: 3,
   }), 2_865_000);
+  const deletePrepareCheckMs = (3 * SIMCTL_COMMAND_TIMEOUT_MS) + PROCESS_SAMPLER_TIMEOUT_MS + 60_000;
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "delete",
     group: "simulators",
     options: {},
-  }), 2_385_000);
+  }), 2_385_000 + deletePrepareCheckMs);
   const deletePaths = resolveBrokerPaths({
     hostConfigPath: fixture.hostConfigPath,
     stateRoot: fixture.stateRoot,
   });
+  const twoAliasDeleteMs = 885_000 + 60_000 + (2 * 2 * SIMCTL_COMMAND_TIMEOUT_MS);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "delete",
     group: "simulators",
     options: {},
   }, {
     paths: deletePaths,
-  }), 885_000 + 60_000 + (2 * 2 * SIMCTL_COMMAND_TIMEOUT_MS));
+  }), twoAliasDeleteMs + deletePrepareCheckMs);
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "delete",
+    group: "simulators",
+    options: { alias: "ui-1" },
+  }, {
+    paths: deletePaths,
+  }), twoAliasDeleteMs + deletePrepareCheckMs + 60_000);
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "delete",
+    group: "simulators",
+    options: {
+      alias: "ui-1",
+      resetLockTimeoutMilliseconds: 15_000,
+    },
+  }, {
+    paths: deletePaths,
+  }), twoAliasDeleteMs + deletePrepareCheckMs + 15_000);
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "delete",
+    group: "simulators",
+    options: { alias: "not-configured" },
+  }, {
+    paths: deletePaths,
+  }), twoAliasDeleteMs + deletePrepareCheckMs);
+  for (const [command, baselineMs] of [
+    ["boot", 1_125_000],
+    ["shutdown", 1_005_000],
+    ["erase", 1_245_000],
+  ]) {
+    assert.equal(serviceCommandExecutionTimeoutMs({
+      command,
+      group: "simulators",
+      options: {},
+    }, {
+      paths: deletePaths,
+    }), baselineMs);
+    assert.equal(serviceCommandExecutionTimeoutMs({
+      command,
+      group: "simulators",
+      options: { alias: "ui-1" },
+    }, {
+      paths: deletePaths,
+    }), baselineMs + 60_000);
+    assert.equal(serviceCommandExecutionTimeoutMs({
+      command,
+      group: "simulators",
+      options: { alias: "  ui-1  " },
+    }, {
+      paths: deletePaths,
+    }), baselineMs + 60_000);
+    assert.equal(serviceCommandExecutionTimeoutMs({
+      command,
+      group: "simulators",
+      options: {
+        alias: "ui-1",
+        resetLockTimeoutMilliseconds: 15_000,
+      },
+    }, {
+      paths: deletePaths,
+    }), baselineMs + 15_000);
+    assert.equal(serviceCommandExecutionTimeoutMs({
+      command,
+      group: "simulators",
+      options: { alias: "not-configured" },
+    }, {
+      paths: deletePaths,
+    }), baselineMs);
+  }
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "repair",
+    group: "simulators",
+    options: { alias: "ui-1" },
+  }, {
+    paths: deletePaths,
+  }), 2_145_000);
+  const purposeAliasReloadMs = 2 * ((3 * SIMCTL_COMMAND_TIMEOUT_MS) + PROCESS_SAMPLER_TIMEOUT_MS + 60_000);
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "delete",
+    group: "simulators",
+    options: { purposeId: "agent-ui-session" },
+  }, {
+    paths: deletePaths,
+  }), twoAliasDeleteMs + (2 * uiAliasLockWaitMs()) + purposeAliasReloadMs);
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "delete",
+    group: "simulators",
+    options: { purposeId: "agent-ui-session" },
+  }), 2_385_000);
 });
 
 test("service command transfer timeout reserves queue budget before dispatch", () => {
@@ -4431,10 +4523,12 @@ test("service timeouts reserve slot reclaim list, du, shutdown, and erase", () =
   const oneReclaimBudgetMs = (4 * SIMCTL_COMMAND_TIMEOUT_MS) + 60_000 + 250;
   const twoReclaimBudgetMs = (7 * SIMCTL_COMMAND_TIMEOUT_MS) + (2 * (60_000 + 250));
 
+  // No-reclaim erase already counts shutdown and the Shutting Down wait.
+  // Reclaim replaces that pair with list, du, and one shutdown, so it stays one cap longer.
   assert.equal(
     serviceCommandExecutionTimeoutMs(acquire, { paths: onePaths })
       - serviceCommandExecutionTimeoutMs(acquire, { paths: baselinePaths }),
-    2 * SIMCTL_COMMAND_TIMEOUT_MS,
+    SIMCTL_COMMAND_TIMEOUT_MS,
   );
   assert.equal(
     serviceCommandExecutionTimeoutMs(acquire, { paths: twoPaths }),

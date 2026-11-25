@@ -15,12 +15,16 @@ export const STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS = 2
 const DEFAULT_TERM_WAIT_MS = DEFAULT_CONTAINMENT_TERM_WAIT_MS;
 const DEFAULT_POST_KILL_POLL_MS = DEFAULT_CONTAINMENT_POST_KILL_POLL_MS;
 const DEFAULT_POST_KILL_WAIT_MS = DEFAULT_CONTAINMENT_POST_KILL_WAIT_MS;
-const PROCESS_SAMPLER_ARGS = Object.freeze([
-  "-axww",
+const PROCESS_SAMPLER_COLUMNS = Object.freeze([
   "-o",
   "pid=,ppid=,pgid=,rss=,vsz=,etime=,stat=,command=",
 ]);
+const PROCESS_SAMPLER_ARGS = Object.freeze([
+  "-axww",
+  ...PROCESS_SAMPLER_COLUMNS,
+]);
 export const PROCESS_SAMPLER_TIMEOUT_MS = 10_000;
+const LOCK_OWNER_SAMPLER_TIMEOUT_MS = 1_000;
 const COMMAND_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=.*/;
 const COMMAND_WRAPPER_NAMES = new Set(["env", "exec"]);
 const ENV_WRAPPER_VALUE_OPTIONS = new Set(["-C", "--chdir", "-P", "-S", "--split-string", "-u", "--unset"]);
@@ -248,17 +252,15 @@ function processSamplerTimeoutError(cause) {
   return error;
 }
 
-export function defaultProcessSampler({
-  spawnSyncImpl = spawnSync,
-  timeoutMs = PROCESS_SAMPLER_TIMEOUT_MS,
-} = {}) {
+function runPsSampler(args, { spawnSyncImpl, timeoutMs }) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "simbroker-ps-"));
   const outputPath = path.join(tempDir, "processes.txt");
   let outputFd = null;
 
   try {
     outputFd = fs.openSync(outputPath, "w");
-    const result = spawnSyncImpl("ps", PROCESS_SAMPLER_ARGS, {
+    const result = spawnSyncImpl("ps", args, {
+      killSignal: "SIGKILL",
       stdio: ["ignore", outputFd, "ignore"],
       timeout: timeoutMs,
     });
@@ -268,25 +270,54 @@ export function defaultProcessSampler({
       }
       throw result.error;
     }
-    if (result.signal === "SIGTERM" && result.status === null) {
+    if (result.status === null && (result.signal === "SIGTERM" || result.signal === "SIGKILL")) {
       throw processSamplerTimeoutError(null);
-    }
-    if (result.status !== 0) {
-      const error = new Error(`ps exited with status ${result.status}`);
-      error.code = "PS_SAMPLER_FAILED";
-      error.status = result.status;
-      error.signal = result.signal;
-      throw error;
     }
     fs.closeSync(outputFd);
     outputFd = null;
     const output = fs.readFileSync(outputPath, "utf8");
-    return parsePsOutput(output);
+    if (result.status !== 0) {
+      const error = new Error(`ps exited with status ${result.status}`);
+      error.code = "PS_SAMPLER_FAILED";
+      error.output = output;
+      error.signal = result.signal;
+      error.status = result.status;
+      throw error;
+    }
+    return output;
   } finally {
     if (outputFd !== null) {
       fs.closeSync(outputFd);
     }
     fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+export function defaultProcessSampler({
+  spawnSyncImpl = spawnSync,
+  timeoutMs = PROCESS_SAMPLER_TIMEOUT_MS,
+} = {}) {
+  return parsePsOutput(runPsSampler(PROCESS_SAMPLER_ARGS, { spawnSyncImpl, timeoutMs }));
+}
+
+export function sampleProcessByPid(pid, {
+  spawnSyncImpl = spawnSync,
+  timeoutMs = LOCK_OWNER_SAMPLER_TIMEOUT_MS,
+} = {}) {
+  const normalizedPid = Number(pid);
+  if (!Number.isInteger(normalizedPid) || normalizedPid <= 0) {
+    return [];
+  }
+  try {
+    return parsePsOutput(runPsSampler(
+      ["-p", String(normalizedPid), ...PROCESS_SAMPLER_COLUMNS],
+      { spawnSyncImpl, timeoutMs },
+    ));
+  } catch (error) {
+    if (error?.code === "PS_SAMPLER_FAILED" && error.status === 1 && String(error.output ?? "").trim() === "") {
+      return [];
+    }
+    throw error;
   }
 }
 

@@ -9,7 +9,7 @@ import {
   STALE_CONTAINMENT_PROCESS_SAMPLER_INVOCATIONS,
   leaseHasContainmentProcessMetadata,
 } from "../../broker-core/containment.mjs";
-import { BrokerError } from "../../broker-core/index.mjs";
+import { BrokerError, UI_RESET_SHUTDOWN_COMMANDS, uiAcquireLockBudgetMs, uiAliasLockWaitMs, uiPrepareAliasBudgetMs } from "../../broker-core/index.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS } from "../../broker-core/simctl.mjs";
 import { classifyReclaimSlot, resolveSlotReclaimPolicy } from "../../broker-core/slot-reclaim.mjs";
 
@@ -27,10 +27,15 @@ const SERVICE_STARTUP_STATE_LOADS = 2;
 const SERVICE_STARTUP_LEASE_LOCK_WAITS = 2;
 const SLOT_RECLAIM_SHARED_LIST_COMMANDS = 1;
 const SLOT_RECLAIM_COMMANDS_PER_ALIAS = 3;
-const LEASE_ACQUIRE_RESET_ERASE_SIMCTL_COMMANDS = 2;
+const LEASE_ACQUIRE_ERASE_COMMANDS = 1;
+// Shutdown, the Shutting Down wait, and erase. Reclaim stays the longer device budget.
+const LEASE_ACQUIRE_RESET_ERASE_SIMCTL_COMMANDS = UI_RESET_SHUTDOWN_COMMANDS + LEASE_ACQUIRE_ERASE_COMMANDS;
 const LEASE_ACQUIRE_BOOT_SIMCTL_COMMANDS = 2;
 const LEASE_ACQUIRE_RESET_SIMCTL_COMMANDS = LEASE_ACQUIRE_RESET_ERASE_SIMCTL_COMMANDS
   + LEASE_ACQUIRE_BOOT_SIMCTL_COMMANDS;
+// Claim, decision, publish, lease.acquired, and the post-acquire app snapshot.
+const LEASE_ACQUIRE_STATE_LOADS = 5;
+const LEASE_ACQUIRE_DATA_IDENTITY_LISTS = 2;
 // Reclaim shutdown/erase replaces reset-on-acquire shutdown/erase, then boot still runs.
 const LEASE_ACQUIRE_RECLAIM_SIMCTL_COMMANDS = SLOT_RECLAIM_SHARED_LIST_COMMANDS
   + SLOT_RECLAIM_COMMANDS_PER_ALIAS
@@ -48,7 +53,8 @@ const HOST_BOOTSTRAP_RETIREMENT_STATE_LOADS = 1;
 const HOST_BOOTSTRAP_SIMCTL_COMMANDS_PER_ALIAS = SIMCTL_INVENTORY_COMMANDS_PER_STATE_LOAD + 2;
 const SIMULATOR_LIFECYCLE_SIMCTL_COMMANDS = {
   boot: 2,
-  erase: 2,
+  // Shutdown, erase, and the unleased data-identity list.
+  erase: 3,
   repair: 10,
   shutdown: 1,
 };
@@ -145,6 +151,12 @@ function hostBootstrapRetirementCountFromPaths(paths) {
 function hostAliasCountFromPaths(paths, fallback = HOST_BOOTSTRAP_ALIAS_COUNT) {
   const hostConfig = readJsonIfPresent(paths?.hostConfigPath);
   return Array.isArray(hostConfig?.aliases) ? hostConfig.aliases.length : fallback;
+}
+
+function eraseOnAcquireAliasCountFromPaths(paths) {
+  const hostConfig = readJsonIfPresent(paths?.hostConfigPath);
+  const aliases = Array.isArray(hostConfig?.aliases) ? hostConfig.aliases : [];
+  return aliases.filter((alias) => alias?.resetPolicy === "erase-on-acquire").length;
 }
 
 function enabledSlotReclaimCandidateCount(paths) {
@@ -320,7 +332,7 @@ function leaseAcquireResetSimctlBudgetMs(request, options = {}) {
   const commandCount = enabledSlotReclaimCandidateCount(options.paths) > 0
     ? LEASE_ACQUIRE_RECLAIM_SIMCTL_COMMANDS
     : LEASE_ACQUIRE_RESET_SIMCTL_COMMANDS;
-  return commandCount * SIMCTL_COMMAND_TIMEOUT_MS;
+  return (commandCount + LEASE_ACQUIRE_DATA_IDENTITY_LISTS) * SIMCTL_COMMAND_TIMEOUT_MS;
 }
 
 function leaseReleaseSlotReclaimBudgetMs(request, options = {}) {
@@ -360,6 +372,64 @@ function idleReconcileSlotReclaimBudgetMs(request, options = {}) {
     return 0;
   }
   return slotReclaimBudgetMs(request, enabledSlotReclaimCandidateCount(options.paths));
+}
+
+function purposeDeleteRequest(request) {
+  return request?.group === "simulators"
+    && request?.command === "delete"
+    && typeof request?.options?.purposeId === "string"
+    && request.options.purposeId.trim() !== "";
+}
+
+function configuredHostAliases(paths) {
+  const hostConfig = readJsonIfPresent(paths?.hostConfigPath);
+  return Array.isArray(hostConfig?.aliases) ? hostConfig.aliases : null;
+}
+
+function purposeDeleteAliasLockBudgetMs(request, options = {}) {
+  if (!purposeDeleteRequest(request)) {
+    return 0;
+  }
+  return eraseOnAcquireAliasCountFromPaths(options.paths) * uiAliasLockWaitMs({
+    resetLockTimeoutMilliseconds: request?.options?.resetLockTimeoutMilliseconds,
+  });
+}
+
+function deletePrepareCheckBudgetMs(request, options = {}) {
+  if (request?.group !== "simulators" || request?.command !== "delete" || purposeDeleteRequest(request)) {
+    return 0;
+  }
+  return leaseLockTimeoutMs(request) + brokerStateLoadBudgetMs(request, 1, options);
+}
+
+function singleAliasEraseOnAcquireResetLockBudgetMs(request, options = {}) {
+  if (request?.group !== "simulators"
+    || !["boot", "delete", "erase", "shutdown"].includes(request?.command)
+    || purposeDeleteRequest(request)) {
+    return 0;
+  }
+  const alias = request?.options?.alias;
+  if (typeof alias !== "string" || alias.trim() === "") {
+    return 0;
+  }
+  const match = configuredHostAliases(options.paths)?.find((candidate) => candidate?.alias === alias.trim());
+  if (match?.resetPolicy !== "erase-on-acquire") {
+    return 0;
+  }
+  return positiveDurationMs(request?.options?.resetLockTimeoutMilliseconds, DEFAULT_LOCK_TIMEOUT_MS);
+}
+
+function purposeDeleteAliasReloadBudgetMs(request, options = {}) {
+  if (!purposeDeleteRequest(request)) {
+    return 0;
+  }
+  const aliasCount = configuredHostAliases(options.paths)?.length ?? 0;
+  if (aliasCount === 0) {
+    return 0;
+  }
+  return aliasCount * (
+    leaseLockTimeoutMs(request) + brokerStateLoadBudgetMs(request, 1, options)
+  );
 }
 
 function simulatorLifecycleSimctlBudgetMs(request, options = {}) {
@@ -491,11 +561,11 @@ export function serviceCommandExecutionTimeoutMs(request, options = {}) {
       DEFAULT_COMMAND_TIMEOUT_MS,
       DEFAULT_COMMAND_TIMEOUT_MS
         + leaseLockTimeoutMs(request)
-        + positiveDurationMs(request?.options?.resetLockTimeoutMilliseconds, DEFAULT_LOCK_TIMEOUT_MS)
+        + uiAcquireLockBudgetMs(request?.options?.resetLockTimeoutMilliseconds)
         + positiveDurationMs(request?.options?.resetSettleMilliseconds, DEFAULT_RESET_SETTLE_MS)
         + leaseAcquireResetSimctlBudgetMs(request, options)
         + snapshotLockBudgetMs
-        + stateLoadBudgetForRequestMs,
+        + brokerStateLoadBudgetMs(request, LEASE_ACQUIRE_STATE_LOADS, options),
     );
   }
   if (request?.group === "lease" && request?.command === "contain") {
@@ -534,14 +604,19 @@ export function serviceCommandExecutionTimeoutMs(request, options = {}) {
       + leaseLockTimeoutMs(request)
       + snapshotLockBudgetMs
       + stateLoadBudgetForRequestMs
-      + simulatorLifecycleSimctlBudgetMs(request, options);
+      + simulatorLifecycleSimctlBudgetMs(request, options)
+      + purposeDeleteAliasLockBudgetMs(request, options)
+      + deletePrepareCheckBudgetMs(request, options)
+      + singleAliasEraseOnAcquireResetLockBudgetMs(request, options)
+      + purposeDeleteAliasReloadBudgetMs(request, options);
   }
   if (request?.group === "simulators") {
     return DEFAULT_COMMAND_TIMEOUT_MS
       + leaseLockTimeoutMs(request)
       + snapshotLockBudgetMs
       + stateLoadBudgetForRequestMs
-      + simulatorLifecycleSimctlBudgetMs(request, options);
+      + simulatorLifecycleSimctlBudgetMs(request, options)
+      + singleAliasEraseOnAcquireResetLockBudgetMs(request, options);
   }
   if (request?.group === "idle") {
     return DEFAULT_COMMAND_TIMEOUT_MS
@@ -588,7 +663,9 @@ export function serviceStopTimeoutMs(paths, response = {}) {
     command: "reconcile",
     group: "idle",
     options: {},
-  }, { paths }) + (response?.activeCommandDrainTimeoutMilliseconds ?? 0);
+  }, { paths })
+    + (response?.activeCommandDrainTimeoutMilliseconds ?? 0)
+    + (eraseOnAcquireAliasCountFromPaths(paths) * uiPrepareAliasBudgetMs());
 }
 
 export function serviceStartupTimeoutMs(options = {}) {

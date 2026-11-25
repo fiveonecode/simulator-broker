@@ -18,6 +18,7 @@ import {
   appSnapshotBrokerUnderMutationLock,
   readEventsBroker,
   reconcileIdleBroker,
+  reconcileUiPrepareBroker,
   writeAppSnapshotArtifactUnderMutationLock,
 } from "../../broker-core/index.mjs";
 import { executeBrokerCommand, streamEventsLocal } from "../command-dispatch.mjs";
@@ -974,6 +975,8 @@ async function runServiceWorkerTask(data) {
   switch (data.type) {
     case "idle-reconciliation":
       return runIdleReconciliationWorkerTask(data);
+    case "ui-prepare":
+      return reconcileUiPrepareBroker(data.paths, data.options ?? {});
     case "command":
       return executeBrokerCommand(data.paths, data.request);
     case "app-snapshot":
@@ -1056,6 +1059,31 @@ export async function startBrokerService(paths, options = {}) {
   let server = null;
   let idleReconcileTimer = null;
   let activeIdleReconciliation = null;
+  let activeUiPrepare = null;
+  const scheduleUiPrepare = () => {
+    if (activeUiPrepare !== null || shuttingDown) {
+      return;
+    }
+    const scheduled = runServiceWorker({
+      expectedRuntimeDescriptor: startupRuntime,
+      options: {},
+      paths,
+      type: "ui-prepare",
+    }, {
+      exitErrorMessage: "Scheduled UI prepare worker exited before completion.",
+    }).catch((error) => {
+      if (error instanceof BrokerError && error.payload?.reasonCode === SERVICE_RUNTIME_INCOMPATIBLE_REASON_CODE) {
+        return;
+      }
+      (options.onUiPrepareError ?? console.error)(error);
+    }).finally(() => {
+      if (activeUiPrepare === scheduled) {
+        activeUiPrepare = null;
+      }
+    });
+    activeUiPrepare = scheduled;
+  };
+  scheduleUiPrepare();
   let commandWorkerQueue = Promise.resolve();
   const activeCommandWorkers = new Map();
   const activeSnapshotWorkers = new Map();
@@ -1267,6 +1295,9 @@ export async function startBrokerService(paths, options = {}) {
     }
     if (activeIdleReconciliation !== null) {
       await activeIdleReconciliation;
+    }
+    if (activeUiPrepare !== null) {
+      await activeUiPrepare;
     }
     if (activeCommandWorkers.size > 0) {
       await Promise.allSettled(activeCommandWorkers.keys());
@@ -1583,6 +1614,7 @@ export async function startBrokerService(paths, options = {}) {
           }
         });
         activeIdleReconciliation = scheduledIdleReconciliation;
+        scheduleUiPrepare();
       }, IDLE_RECONCILE_INTERVAL_MS);
       idleReconcileTimer?.unref?.();
       releaseStartupLock();
@@ -1594,7 +1626,7 @@ export async function startBrokerService(paths, options = {}) {
   });
 }
 
-if (!isMainThread && ["idle-reconciliation", "command", "app-snapshot"].includes(workerData?.type)) {
+if (!isMainThread && ["idle-reconciliation", "ui-prepare", "command", "app-snapshot"].includes(workerData?.type)) {
   runServiceWorkerTask(workerData)
     .then((result) => {
       parentPort?.postMessage({ ok: true, result });

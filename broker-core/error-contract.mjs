@@ -41,6 +41,7 @@ const UNAVAILABLE_REASON_CODES = new Set([
   "device-type-not-found",
   "force-override-forbidden",
   "lease-conflict",
+  "lease-lost",
   "no-matching-alias",
   "pin-conflict",
   "project-in-use",

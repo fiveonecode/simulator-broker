@@ -86,7 +86,11 @@ Idle cleanup is also confirm-only.
 
 ## Slot disk reclaim
 
-UI aliases erase on every acquire. Build aliases keep their data on purpose, so
+UI aliases are erased before each lease is returned. When `brokerd` is running
+it can erase and boot a free UI alias after release, and a later lease reuses
+that clean device only when the broker can prove the data volume is still the
+one it erased. A lease that finds no such proof still shuts the device down,
+erases it, and boots it. Build aliases keep their data on purpose, so
 test hosts can reuse installed apps. That leftover data (symbol caches, unified
 logs, test-host tmp) can grow without bound.
 
