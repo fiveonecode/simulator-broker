@@ -561,6 +561,7 @@ Add stronger profiles next for:
   `simctl`
 - `npm run test:broker-core` also proves most-recent-release reuse for UI and
   build capacity, concurrent standby expansion, boot-on-acquire rollback,
+  including removal of a manual lease when the repair write misses the mutation lock,
   grace-boundary eligibility, all safety exclusions, stale grace restart,
   mutation-lock serialization, shutdown failure repair state, and confirmed
   count-only cleanup

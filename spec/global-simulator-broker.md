@@ -197,9 +197,12 @@ Current implementation slice:
   caller shortens that wait only by passing a reset-lock timeout. The
   lease-lock timeout stays on the claim mutation lock. Build and manual
   boot-on-acquire hold the mutation lock across `boot` and `bootstatus`.
-  Publishing the boot result waits on the mutation lock after that alias lock
-  is released. If a reset-lock or mutation-lock wait ends before `simctl`, or
-  while publishing the boot result or `lease.acquired`, or if the decision
+  If that boot throws, the repair write waits the same reset-holder budget as
+  publishing a UI boot, retries once, and removes the lease file when the
+  registry write still fails. Publishing the UI boot result waits on the
+  mutation lock after that alias lock is released. If a reset-lock or
+  mutation-lock wait ends before `simctl`, or while publishing the boot result
+  or `lease.acquired`, or if the decision
   reload fails before shutdown, erase, or boot, acquire drops only the claimed
   lease, leaves prepare, health, and the clean proof in place, and returns
   without a lease id. Any other error from the post-boot reload, the

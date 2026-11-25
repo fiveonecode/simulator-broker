@@ -7969,8 +7969,15 @@ function rollbackAcquireLeaseFailureSafe(paths, state, leaseRecord, timestamp, r
   }
 }
 
+function repairAfterSimctlLockOptions(leaseRecord, options = {}) {
+  return {
+    ...acquireLockOptions(leaseRecord, options),
+    timeoutMs: uiResetHolderWaitMs(options),
+  };
+}
+
 function repairAcquiredLeaseAfterSimctl(paths, leaseRecord, options, reasonCode) {
-  const locks = uiPublishLockOptions(leaseRecord, options);
+  const locks = repairAfterSimctlLockOptions(leaseRecord, options);
   const writeRepair = (wait) => withLeaseMutationLock(paths, () => {
     const state = loadBrokerState(paths, freshLeaseStateLoadOptions(leaseRecord, options));
     return rollbackAcquireLeaseFailureSafe(paths, state, leaseRecord, leaseRecord.startedAt, reasonCode);
@@ -8553,20 +8560,7 @@ export function acquireLeaseBroker(paths, options = {}) {
     const reasonCode = claimed.leaseRecord.resetPolicy === "erase-on-acquire"
       ? "reset-on-acquire-failed"
       : "boot-on-acquire-failed";
-    let rollbackError = null;
-    try {
-      rollbackError = withLeaseMutationLock(paths, () => {
-        const state = loadBrokerState(paths, freshLeaseStateLoadOptions(claimed.leaseRecord, options));
-        return rollbackAcquireLeaseFailureSafe(paths, state, claimed.leaseRecord, claimed.timestamp, reasonCode);
-      }, {
-        now: claimed.timestamp,
-        processExists: options.processExists,
-        processSampler: options.processSampler,
-        timeoutMs: options.leaseLockTimeoutMilliseconds ?? DEFAULT_LOCK_TIMEOUT_MS,
-      });
-    } catch (rollbackLoadError) {
-      rollbackError = rollbackLoadError;
-    }
+    const rollbackError = repairAcquiredLeaseAfterSimctl(paths, claimed.leaseRecord, options, reasonCode);
     throw new BrokerError(
       reasonCode === "reset-on-acquire-failed"
         ? `Failed to reset alias ${claimed.leaseRecord.alias} before handing out the lease.`

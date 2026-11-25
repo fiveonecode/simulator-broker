@@ -7713,6 +7713,86 @@ test("manual boot-on-acquire holds the mutation lock during simctl", () => {
   assert.equal(fs.existsSync(resolvedPaths.leaseLockDir), false);
 });
 
+// Claim and boot each create the mutation lock, and writing the lock owner
+// mkdirs that same directory again. Later creates stay held so the repair
+// write cannot take it. The lock owner is this process, so it stays live.
+function holdLeaseLockAfter(lockDir, ownerPath, successfulCreates, run) {
+  const originalMkdirSync = fs.mkdirSync;
+  let created = 0;
+  fs.mkdirSync = function patchedMkdirSync(target, ...args) {
+    if (target !== lockDir) {
+      return originalMkdirSync.call(fs, target, ...args);
+    }
+    if (created >= successfulCreates) {
+      if (!fs.existsSync(target)) {
+        originalMkdirSync.call(fs, target);
+        writeJson(ownerPath, {
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+        });
+      }
+      const held = new Error("EEXIST");
+      held.code = "EEXIST";
+      throw held;
+    }
+    created += 1;
+    return originalMkdirSync.call(fs, target, ...args);
+  };
+  try {
+    return run();
+  } finally {
+    fs.mkdirSync = originalMkdirSync;
+    fs.rmSync(lockDir, { force: true, recursive: true });
+  }
+}
+
+test("a failed manual boot leaves no active lease when the repair write cannot take the mutation lock", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+  const failingAdapter = {
+    ...paths.simctl.adapter,
+    bootDevice() {
+      throw new Error("boot failed");
+    },
+  };
+  const repairTimeoutMs = 400;
+  const startedAt = Date.now();
+
+  assert.throws(() => {
+    holdLeaseLockAfter(
+      resolvedPaths.leaseLockDir,
+      resolvedPaths.leaseLockOwnerPath,
+      4,
+      () => {
+        acquireLeaseBroker(resolvedPaths, {
+          actorId: "operator",
+          actorType: "human",
+          leaseLockTimeoutMilliseconds: 50,
+          ownerPid: process.pid,
+          processExists: (pid) => pid === process.pid,
+          purposeId: "manual-testing",
+          resetLockTimeoutMilliseconds: repairTimeoutMs,
+          simctlAdapter: failingAdapter,
+        });
+      },
+    );
+  }, (error) => error instanceof BrokerError
+    && error.payload?.reasonCode === "boot-on-acquire-failed"
+    && error.payload?.rollbackFailed === true
+    && error.exitCode === 4);
+
+  assert.ok(Date.now() - startedAt >= repairTimeoutMs);
+  assert.equal(fs.readdirSync(resolvedPaths.leasesDir).length, 0);
+  hostStatusBroker(resolvedPaths, runtimeOptions(paths, {
+    processExists: (pid) => pid === process.pid,
+  }));
+  const after = readJson(resolvedPaths.registryPath).aliases["manual-1"];
+  assert.equal(after.activeLeaseId, null);
+});
+
 test("acquire marks an alias repair-needed and rolls back when boot fails", () => {
   const paths = makePaths();
   writeBaseHostConfig(paths.hostConfigPath);
