@@ -206,6 +206,69 @@ final class BrokerServiceClientTests: XCTestCase {
     )
   }
 
+  func testEraseOnAcquireLifecycleTimeoutReservesAliasResetLock() throws {
+    let fixture = try makeServiceFixture()
+    try writeJSONObject([
+      "aliases": [
+        ["alias": "ui-1", "resetPolicy": "erase-on-acquire"],
+        ["alias": "build-1", "resetPolicy": "none"],
+      ],
+      "version": 1,
+    ], to: fixture.paths.hostConfigURL)
+
+    for command in ["boot", "shutdown", "erase"] {
+      let baseline = BrokerCommandRequest(command: command, group: "simulators", options: [:])
+        .timeoutBudget(paths: fixture.paths)
+      let reserved = BrokerCommandRequest(
+        command: command,
+        group: "simulators",
+        options: ["alias": .string("ui-1")]
+      ).timeoutBudget(paths: fixture.paths)
+      XCTAssertEqual(reserved.executionTimeoutSeconds, baseline.executionTimeoutSeconds + 60)
+      XCTAssertEqual(reserved.transferTimeoutSeconds, reserved.executionTimeoutSeconds + 60)
+
+      let trimmed = BrokerCommandRequest(
+        command: command,
+        group: "simulators",
+        options: ["alias": .string("  ui-1  ")]
+      ).timeoutBudget(paths: fixture.paths)
+      XCTAssertEqual(trimmed.executionTimeoutSeconds, baseline.executionTimeoutSeconds + 60)
+
+      let otherPolicy = BrokerCommandRequest(
+        command: command,
+        group: "simulators",
+        options: ["alias": .string("build-1")]
+      ).timeoutBudget(paths: fixture.paths)
+      XCTAssertEqual(otherPolicy.executionTimeoutSeconds, baseline.executionTimeoutSeconds)
+
+      let shortened = BrokerCommandRequest(
+        command: command,
+        group: "simulators",
+        options: [
+          "alias": .string("ui-1"),
+          "resetLockTimeoutMilliseconds": .int(15_000),
+        ]
+      ).timeoutBudget(paths: fixture.paths)
+      XCTAssertEqual(shortened.executionTimeoutSeconds, baseline.executionTimeoutSeconds + 15)
+
+      let missing = BrokerCommandRequest(
+        command: command,
+        group: "simulators",
+        options: ["alias": .string("not-configured")]
+      ).timeoutBudget(paths: fixture.paths)
+      XCTAssertEqual(missing.executionTimeoutSeconds, baseline.executionTimeoutSeconds)
+    }
+
+    let repairBaseline = BrokerCommandRequest(command: "repair", group: "simulators", options: [:])
+      .timeoutBudget(paths: fixture.paths)
+    let repair = BrokerCommandRequest(
+      command: "repair",
+      group: "simulators",
+      options: ["alias": .string("ui-1")]
+    ).timeoutBudget(paths: fixture.paths)
+    XCTAssertEqual(repair.executionTimeoutSeconds, repairBaseline.executionTimeoutSeconds)
+  }
+
   func testIdleCleanupEnvelopeDecodesCountOnlyPlanFields() throws {
     let envelope = try JSONDecoder().decode(BrokerCommandEnvelope.self, from: Data("""
     {

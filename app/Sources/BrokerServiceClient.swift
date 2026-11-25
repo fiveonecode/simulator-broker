@@ -230,6 +230,7 @@ struct BrokerCommandRequest: Sendable {
         + snapshotLockBudget
         + stateLoadBudget
         + simulatorLifecycleSimctlBudgetSeconds(paths: paths)
+        + singleAliasEraseOnAcquireResetLockBudgetSeconds(paths: paths)
     }
     if group == "idle" {
       return Self.defaultCommandTimeoutSeconds
@@ -629,7 +630,9 @@ struct BrokerCommandRequest: Sendable {
   }
 
   private func singleAliasEraseOnAcquireResetLockBudgetSeconds(paths: BrokerRuntimePaths?) -> Int {
-    guard group == "simulators", command == "delete", !isPurposeDelete else {
+    guard group == "simulators",
+          ["boot", "delete", "erase", "shutdown"].contains(command),
+          !isPurposeDelete else {
       return 0
     }
     guard let alias = options["alias"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),

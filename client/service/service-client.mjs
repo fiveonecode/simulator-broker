@@ -402,7 +402,9 @@ function deletePrepareCheckBudgetMs(request, options = {}) {
 }
 
 function singleAliasEraseOnAcquireResetLockBudgetMs(request, options = {}) {
-  if (request?.group !== "simulators" || request?.command !== "delete" || purposeDeleteRequest(request)) {
+  if (request?.group !== "simulators"
+    || !["boot", "delete", "erase", "shutdown"].includes(request?.command)
+    || purposeDeleteRequest(request)) {
     return 0;
   }
   const alias = request?.options?.alias;
@@ -612,7 +614,8 @@ export function serviceCommandExecutionTimeoutMs(request, options = {}) {
       + leaseLockTimeoutMs(request)
       + snapshotLockBudgetMs
       + stateLoadBudgetForRequestMs
-      + simulatorLifecycleSimctlBudgetMs(request, options);
+      + simulatorLifecycleSimctlBudgetMs(request, options)
+      + singleAliasEraseOnAcquireResetLockBudgetMs(request, options);
   }
   if (request?.group === "idle") {
     return DEFAULT_COMMAND_TIMEOUT_MS

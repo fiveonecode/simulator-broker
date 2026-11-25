@@ -4312,6 +4312,57 @@ test("service mutation timeouts cover broker lock waits", () => {
   }, {
     paths: deletePaths,
   }), twoAliasDeleteMs + deletePrepareCheckMs);
+  for (const [command, baselineMs] of [
+    ["boot", 1_125_000],
+    ["shutdown", 1_005_000],
+    ["erase", 1_125_000],
+  ]) {
+    assert.equal(serviceCommandExecutionTimeoutMs({
+      command,
+      group: "simulators",
+      options: {},
+    }, {
+      paths: deletePaths,
+    }), baselineMs);
+    assert.equal(serviceCommandExecutionTimeoutMs({
+      command,
+      group: "simulators",
+      options: { alias: "ui-1" },
+    }, {
+      paths: deletePaths,
+    }), baselineMs + 60_000);
+    assert.equal(serviceCommandExecutionTimeoutMs({
+      command,
+      group: "simulators",
+      options: { alias: "  ui-1  " },
+    }, {
+      paths: deletePaths,
+    }), baselineMs + 60_000);
+    assert.equal(serviceCommandExecutionTimeoutMs({
+      command,
+      group: "simulators",
+      options: {
+        alias: "ui-1",
+        resetLockTimeoutMilliseconds: 15_000,
+      },
+    }, {
+      paths: deletePaths,
+    }), baselineMs + 15_000);
+    assert.equal(serviceCommandExecutionTimeoutMs({
+      command,
+      group: "simulators",
+      options: { alias: "not-configured" },
+    }, {
+      paths: deletePaths,
+    }), baselineMs);
+  }
+  assert.equal(serviceCommandExecutionTimeoutMs({
+    command: "repair",
+    group: "simulators",
+    options: { alias: "ui-1" },
+  }, {
+    paths: deletePaths,
+  }), 2_145_000);
   const purposeAliasReloadMs = 2 * ((3 * SIMCTL_COMMAND_TIMEOUT_MS) + PROCESS_SAMPLER_TIMEOUT_MS + 60_000);
   assert.equal(serviceCommandExecutionTimeoutMs({
     command: "delete",
