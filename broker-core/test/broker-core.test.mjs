@@ -46,7 +46,7 @@ import {
   writeAppSnapshotArtifact,
   writeAppSnapshotArtifactUnderMutationLock,
 } from "../index.mjs";
-import { defaultProcessSampler } from "../containment.mjs";
+import { defaultProcessSampler, sampleProcessByPid } from "../containment.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS, SIMCTL_INVENTORY_MAX_BUFFER_BYTES, createSystemSimctlAdapter } from "../simctl.mjs";
 import { createDeviceRecord, createSimctlFixture } from "./support/simctl-fixture.mjs";
 
@@ -4288,6 +4288,43 @@ test("default process sampler bounds stalled process inventory subprocesses", ()
     assert.equal(receivedTimeout, 1234);
     assert.equal(error.code, "PROCESS_SAMPLER_TIMEOUT");
     assert.equal(error.reasonCode, "process-sampler-timeout");
+    return true;
+  });
+});
+
+test("lock owner sampler reads one live pid and treats an empty miss as absent", () => {
+  const records = sampleProcessByPid(process.pid);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].pid, process.pid);
+  assert.equal(typeof records[0].elapsed, "string");
+  assert.equal(records[0].elapsed.length > 0, true);
+
+  assert.deepEqual(sampleProcessByPid(4242, {
+    spawnSyncImpl() {
+      return { signal: null, status: 1 };
+    },
+  }), []);
+});
+
+test("lock owner sampler queries one pid and bounds a stalled sample", () => {
+  let receivedArgs = null;
+  let receivedTimeout = null;
+  assert.throws(() => {
+    sampleProcessByPid(process.pid, {
+      spawnSyncImpl(_command, args, options) {
+        receivedArgs = args;
+        receivedTimeout = options.timeout;
+        const error = new Error("spawn timed out");
+        error.code = "ETIMEDOUT";
+        return { error };
+      },
+      timeoutMs: 250,
+    });
+  }, (error) => {
+    assert.deepEqual(receivedArgs.slice(0, 2), ["-p", String(process.pid)]);
+    assert.equal(receivedArgs.includes("-axww"), false);
+    assert.equal(receivedTimeout, 250);
+    assert.equal(error.code, "PROCESS_SAMPLER_TIMEOUT");
     return true;
   });
 });

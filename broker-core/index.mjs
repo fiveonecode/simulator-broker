@@ -12,6 +12,7 @@ import {
   leaseHasContainmentProcessMetadata,
   mergeLeaseRuntimeMetadata,
   PROCESS_SAMPLER_TIMEOUT_MS,
+  sampleProcessByPid,
 } from "./containment.mjs";
 import { resolveBrokerExitCode } from "./error-contract.mjs";
 import { SIMCTL_COMMAND_TIMEOUT_MS, createDeviceIndex, resolveSimctlAdapter } from "./simctl.mjs";
@@ -4595,7 +4596,11 @@ function lockOwnerProcessIsLive(owner, { observedAt, processExists, processSampl
 
   let processRecords;
   try {
-    processRecords = processSampler();
+    // A full `ps -axww` can outlive a short lock timeout on a busy runner.
+    // The default sampler only needs this owner's lifetime, so query that pid.
+    processRecords = processSampler === defaultProcessSampler
+      ? sampleProcessByPid(ownerPid)
+      : processSampler();
   } catch {
     return true;
   }
