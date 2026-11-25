@@ -6836,7 +6836,7 @@ function evaluatePurposeCapacity({ inventory, projectConfig, purpose, state }) {
   const reasonCodes = new Set();
   for (const candidate of structuralCandidates) {
     for (const reason of candidate.reasons) {
-      if (reason.code === "lease-conflict") {
+      if (reason.code === "lease-conflict" || reason.code === "prepare-in-progress") {
         reasonCodes.add("matching-capacity-busy");
       } else if (reason.code === "pinned-for-other-project") {
         reasonCodes.add("pin-conflict");

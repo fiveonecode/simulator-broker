@@ -5538,6 +5538,63 @@ test("capacity reconcile treats busy matching capacity as non-actionable", () =>
   assert.equal(plan.blockedReasons[0].recommendedAction, "retry_when_available");
 });
 
+test("capacity check maps an in-progress UI prepare to busy capacity", () => {
+  const paths = makePaths();
+  writeBaseHostConfig(paths.hostConfigPath);
+  writeBaseProject(paths.projectFilePath);
+  const resolvedPaths = brokerPaths(paths);
+  initBroker(resolvedPaths, runtimeOptions(paths, { processExists: () => true }));
+
+  function setPrepare(alias, state) {
+    const registry = readJson(resolvedPaths.registryPath);
+    registry.aliases[alias].prepare = {
+      ownerPid: process.pid,
+      state,
+      token: `${alias}-${state}`,
+    };
+    writeJson(resolvedPaths.registryPath, registry);
+  }
+
+  function checkUiCapacity() {
+    return checkCapacityBroker(resolvedPaths, runtimeOptions(paths, {
+      processExists: () => true,
+      purposeId: "agent-ui-session",
+    }));
+  }
+
+  setPrepare("ui-1", "erasing");
+  const partial = checkUiCapacity();
+  assert.equal(partial.purposes[0].status, "available");
+  assert.equal(partial.purposes[0].recommendedAction, "none");
+
+  setPrepare("ui-2", "booting");
+  const before = readJson(resolvedPaths.registryPath);
+  const report = checkUiCapacity();
+  const preview = reconcileCapacityBroker(resolvedPaths, runtimeOptions(paths, {
+    processExists: () => true,
+    purposeId: "agent-ui-session",
+  }));
+
+  assert.equal(report.status, "needs_attention");
+  assert.equal(report.purposes[0].status, "unavailable");
+  assert.deepEqual(report.purposes[0].blockingReasons, [{ code: "matching-capacity-busy" }]);
+  assert.equal(report.purposes[0].recommendedAction, "retry_when_available");
+  assert.equal(JSON.stringify(report).includes("ui-1"), false);
+  assert.equal(preview.status, "blocked");
+  assert.deepEqual(preview.actions, []);
+  assert.equal(preview.blockedReasons[0].purposeId, "agent-ui-session");
+  assert.deepEqual(preview.blockedReasons[0].blockingReasons, [{ code: "matching-capacity-busy" }]);
+  assert.equal(preview.blockedReasons[0].recommendedAction, "retry_when_available");
+  assert.deepEqual(readJson(resolvedPaths.registryPath).aliases["ui-1"].prepare, before.aliases["ui-1"].prepare);
+  assert.deepEqual(readJson(resolvedPaths.registryPath).aliases["ui-2"].prepare, before.aliases["ui-2"].prepare);
+
+  setPrepare("ui-1", "queued");
+  setPrepare("ui-2", "queued");
+  const queued = checkUiCapacity();
+  assert.equal(queued.purposes[0].status, "available");
+  assert.equal(queued.purposes[0].recommendedAction, "none");
+});
+
 test("capacity reconcile apply creates additive capacity and is idempotent after a fresh no-changes preview", () => {
   const paths = makePaths();
   writeIPhoneOnlyHostConfig(paths.hostConfigPath);

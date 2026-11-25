@@ -1070,7 +1070,12 @@ runtime. A stale plan shows the broker message, which tells the operator to
 rerun preview. Success refreshes through the existing mutation path.
 
 Busy matching capacity stays blocked and does not create an extra
-simulator. Repair-needed capacity stays on purpose repair. A missing
+simulator. An `erasing` or `booting` prepare is that same busy state:
+`matching-capacity-busy` and `retry_when_available`. Capacity check and
+reconcile preview leave that prepare in place, including when the alias
+reset lock is already free, and they do not create a replacement. A
+`queued` prepare has not started `simctl` and stays selectable.
+Repair-needed capacity stays on purpose repair. A missing
 runtime or device type stays `install_runtime` or `run_broker_doctor`.
 Setup and `host init` are unchanged. Idle enable, disable, and cleanup stay
 human-only.
